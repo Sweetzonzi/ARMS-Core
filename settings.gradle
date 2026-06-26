@@ -1,0 +1,54 @@
+pluginManagement {
+    repositories {
+        mavenLocal()
+        gradlePluginPortal()
+        maven { url = 'https://maven.neoforged.net/releases' }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'ARMS-Core'
+
+// ==========================================
+// 复合构建：优先使用同级源码目录作为依赖
+// 若目录不存在则回退到 Maven / 本地 jar
+// ==========================================
+
+def sparkCoreDir = file("${spark_core_dir}")
+if (sparkCoreDir.exists()) {
+    includeBuild(sparkCoreDir) {
+        dependencySubstitution {
+            substitute(module("io.github.solarmoonqaq:spark-core-${mod_loader}"))
+                    .using(project(":"))
+        }
+    }
+} else {
+    println("[ARMS-Core] Spark-Core 源码未找到，将使用已发布的 jar")
+}
+
+def ballisticsFrameworkDir = file("${ballistics_framework_dir}")
+if (ballisticsFrameworkDir.exists()) {
+    includeBuild(ballisticsFrameworkDir) {
+        dependencySubstitution {
+            substitute(module("io.github.sweetzonzi:ballistics_framework-${minecraft_version}"))
+                    .using(project(":"))
+        }
+    }
+} else {
+    println("[ARMS-Core] BallisticsFramework 源码未找到，将使用已发布的 jar")
+}
+
+def machineMaxDir = file("${machine_max_dir}")
+if (machineMaxDir.exists()) {
+    includeBuild(machineMaxDir) {
+        dependencySubstitution {
+            substitute(module("io.github.sweetzonzi.machine_max:MachineMax-${minecraft_version}"))
+                    .using(project(":"))
+        }
+    }
+} else {
+    println("[ARMS-Core] Machine-Max 源码未找到，将使用已发布的 jar")
+}

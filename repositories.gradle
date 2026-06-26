@@ -1,0 +1,116 @@
+// ==========================================
+// 仓库与依赖声明
+// 由 build.gradle 通过 apply from 引入
+// ==========================================
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven {
+        name = "Progwml6 maven"
+        url = "https://dvs1.progwml6.com/files/maven/"
+    }
+    maven {
+        name = "ModMaven"
+        url = "https://modmaven.dev"
+    }
+    maven {
+        url = "https://www.cursemaven.com"
+        content {
+            includeGroup "curse.maven"
+        }
+    }
+    maven {
+        name = "KosmX's maven"
+        url = 'https://maven.kosmx.dev/'
+    }
+    maven {
+        name = "Jared's maven"
+        url = "https://maven.blamejared.com/"
+    }
+    maven {
+        name = 'tterrag maven'
+        url = 'https://maven.tterrag.com/'
+    }
+    maven {
+        name = "Create Maven"
+        url = "https://maven.createmod.net"
+    }
+    maven {
+        url = "https://maven.ithundxr.dev/snapshots"
+    }
+    maven {
+        url = "https://jitpack.io"
+    }
+    maven {
+        url = "https://api.modrinth.com/maven"
+    }
+    maven {
+        url = "https://maven.ryanliptak.com/"
+    }
+    maven {
+        url = "https://maven.theillusivec4.top/"
+    }
+    maven {
+        name = 'Kotlin for Forge'
+        url = 'https://thedarkcolour.github.io/KotlinForForge/'
+    }
+    maven {
+        name = 'GeckoLib'
+        url = 'https://dl.cloudsmith.io/public/geckolib3/geckolib/maven/'
+        content {
+            includeGroup("software.bernie.geckolib")
+        }
+    }
+    maven {
+        url = 'https://maven.azuredoom.com/mods'
+    }
+    maven {
+        name = "Sighs Maven"
+        url = "https://maven.sighs.cc/repository/maven-releases/"
+    }
+    maven {
+        name = "Latvian"
+        url = "https://maven.latvian.dev/releases"
+        content {
+            includeGroup "dev.latvian.mods"
+            includeGroup "dev.latvian.apps"
+        }
+    }
+    flatDir {
+        dir 'libs'
+    }
+}
+
+dependencies {
+    // ---- 核心依赖 ----
+
+    // 1) Spark-Core：物理引擎 + 实体注册框架
+    try {
+        // 复合构建模式下使用源码
+        implementation project(':Spark-Core')
+    } catch (Exception ignore) {
+        // 回退到已发布的 jar
+        implementation "io.github.solarmoonqaq:spark-core-${mod_loader}:${spark_core_version}"
+    }
+
+    // 2) BallisticsFramework：终端弹道计算 API
+    try {
+        implementation project(':BallisticsFramework')
+    } catch (Exception ignore) {
+        implementation "io.github.sweetzonzi:ballistics_framework-${minecraft_version}-${mod_loader}:${ballistics_framework_version}"
+    }
+
+    // 3) Machine-Max：载具模组（Part-SubPart-Connector 装配系统、子系统网络、信号总线、能量网）
+    try {
+        implementation project(':Machine-Max')
+    } catch (Exception ignore) {
+        implementation "io.github.sweetzonzi.machine_max:MachineMax-${minecraft_version}:${machine_max_version}"
+    }
+
+    // ---- 编译/运行时辅助工具 ----
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+}

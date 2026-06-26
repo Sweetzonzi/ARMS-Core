@@ -1,0 +1,59 @@
+# 机娘模组 ARMS-Core 加载配置
+modLoader = "javafml" #mandatory
+loaderVersion = "${loader_version_range}" #mandatory
+license = "${mod_license}"
+
+[[mods]]
+modId = "${mod_id}" #mandatory
+version = "${mod_version}" #mandatory
+displayName = "${mod_name}" #mandatory
+authors = "${mod_authors}" #optional
+description = '''${mod_description}'''
+
+# Mixin 配置
+[[mixins]]
+config = "${mod_id}.mixins.json"
+
+# ==========================================
+# 依赖声明
+# ==========================================
+
+# NeoForge
+[[dependencies."${mod_id}"]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neo_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+# Minecraft
+[[dependencies."${mod_id}"]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+# Spark-Core：物理引擎与实体注册框架
+[[dependencies."${mod_id}"]]
+modId = "spark_core"
+type = "required"
+versionRange = "${spark_core_version}"
+ordering = "NONE"
+side = "BOTH"
+
+# Machine-Max：载具模组（Part/SubPart/Connector/Subsystem 核心框架）
+[[dependencies."${mod_id}"]]
+modId = "machine_max"
+type = "required"
+versionRange = "${machine_max_version}"
+ordering = "NONE"
+side = "BOTH"
+
+# BallisticsFramework：终端弹道计算
+[[dependencies."${mod_id}"]]
+modId = "ballistics_framework"
+type = "required"
+versionRange = "${ballistics_framework_version}"
+ordering = "NONE"
+side = "BOTH"
