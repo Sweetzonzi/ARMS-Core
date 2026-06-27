@@ -33,7 +33,7 @@ def ballisticsFrameworkDir = file("${ballistics_framework_dir}")
 if (ballisticsFrameworkDir.exists()) {
     includeBuild(ballisticsFrameworkDir) {
         dependencySubstitution {
-            substitute(module("io.github.sweetzonzi:ballistics_framework-${minecraft_version}"))
+            substitute(module("io.github.sweetzonzi:ballistics_framework-${minecraft_version}-${mod_loader}"))
                     .using(project(":"))
         }
     }
