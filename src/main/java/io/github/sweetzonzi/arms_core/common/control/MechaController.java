@@ -228,8 +228,11 @@ public class MechaController extends PhysicsCharacter {
         float dirZ = inputDirZ;
 
         // 从 KCC 读取当前水平速率（已含上帧阻尼效果）
+        // 注意：Bullet KCC 的 getLinearVelocity() 返回的是 m_walkDirection（即本帧位移量），
+        // 而非速度（m/s），因为 stepForwardAndStrafe 将 walkDirection 直接作为位移使用。
+        // 因此需要除以 dt 还原为真实速度（m/s）。
         Vector3f vel = getLinearVelocity(tmp1);
-        float hSpeed = (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+        float hSpeed = (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z) / dt;
 
         if (hasInput) {
             // ── 更新爬坡角 (§3.5 末段、§8.1) ──
