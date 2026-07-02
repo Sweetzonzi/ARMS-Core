@@ -18,8 +18,8 @@ import org.slf4j.Logger;
  *
  * @author Sweetzonzi
  */
-@Mod(ArmsCore.MOD_ID)
-public class ArmsCore {
+@Mod(ARMS.MOD_ID)
+public class ARMS {
 
     /** 模组 ID */
     public static final String MOD_ID = "arms_core";
@@ -27,7 +27,7 @@ public class ArmsCore {
     /** 日志器 */
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public ArmsCore(IEventBus modEventBus, ModContainer modContainer) {
+    public ARMS(IEventBus modEventBus, ModContainer modContainer) {
         modEventBus.addListener(this::commonSetup);
 
         // 注册事件总线（服务端事件如 ServerStarting）

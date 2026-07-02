@@ -7,21 +7,26 @@ import com.jme3.bullet.collision.PhysicsRayTestResult;
 import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
 import com.jme3.bullet.objects.PhysicsCharacter;
 import com.jme3.math.FastMath;
+import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
-import io.github.sweetzonzi.arms_core.ArmsCore;
+import io.github.sweetzonzi.arms_core.ARMS;
 
 import java.util.List;
 
 /**
- * 机娘运动学角色控制器（对应设计文档 §1-4 行走物理模型）。
+ * 机娘运动学角色控制器（对应设计文档：行走物理模型）。
  * <p>
  * 继承 {@link PhysicsCharacter}（Bullet {@code btKinematicCharacterController}），
- * 通过手动积分驱动力模型 → {@code setWalkDirection} 实现运动。
+ * 通过手动积分驱动力模型 → {@code setLinearVelocity} 实现运动。
  * KCC 内部负责碰撞 sweep / 滑墙 / auto-step / 爬坡角限制 / 着地检测。
+ * <p>
+ * 支持多通道合成：玩家物理输入 + 动画根骨骼位移（animDelta）叠加写入 KCC，
+ * 配合 gravityScale / inputScale 参数调制，由外部 MoLang 与 MechaControl 驱动。
  * <p>
  * 线程模型：
  * <ul>
- *   <li>主线程：{@link #setMoveInput}、{@link #setJumpInput} 写入 volatile 字段</li>
+ *   <li>主线程：{@link #setMoveInput}、{@link #setJumpInput}、{@link #setGravityScale}、
+ *       {@link #setInputScale}、{@link #setAnimRootDelta}、{@link #setSeparationDistance} 写入 volatile 字段</li>
  *   <li>物理线程：{@link #prePhysicsTick} 读取 volatile 输入，计算力并施加</li>
  * </ul>
  * <p>
@@ -71,6 +76,32 @@ public class MechaController extends PhysicsCharacter {
     /** 跳跃键本帧松开（单帧标记，物理线程消费后清零） */
     private volatile boolean jumpReleased;
 
+    // ── 动画与参数调制（外部写入，物理线程读取）──
+
+    /** 重力缩放系数，1.0 = 正常重力，0.0 = 浮空。由 MoLang ctrl.set_gravity_scale 改写 */
+    private volatile float gravityScale = 1.0f;
+
+    /** 玩家能动性缩放，同时作用于行走净力与跳跃冲量。1.0 = 正常，0.0 = 全锁。由 MoLang ctrl.set_input_scale 改写 */
+    private volatile float inputScale = 1.0f;
+
+    /** 动画根骨骼帧间位移 X 分量（世界坐标，m/tick），由 MechaControl 每物理步写入 */
+    private volatile float animDeltaX;
+    /** 动画根骨骼帧间位移 Y 分量（世界坐标，m/tick） */
+    private volatile float animDeltaY;
+    /** 动画根骨骼帧间位移 Z 分量（世界坐标，m/tick） */
+    private volatile float animDeltaZ;
+
+    /**
+     * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）。
+     * 由 MechaControl 每物理步写入，用于转身斩/回旋踢等动画驱动的面向变化。
+     * 正值 = 逆时针旋转（面向左转，对应 Minecraft yaw 增大方向）。
+     * 在 prePhysicsTick 中叠加到 KCC 的 Y 轴旋转。
+     */
+    private volatile float animRootYawDelta;
+
+    /** 控制器与躯干刚体的分离距离 (m)，用于行走力折减，超过 SEP_MAX 则触发 RAGDOLL */
+    private volatile float separationDistance;
+
     // ── 物理线程独占状态 ──
 
     /** 是否正在蓄力跳跃 */
@@ -84,10 +115,12 @@ public class MechaController extends PhysicsCharacter {
     /** 地面法向量（世界坐标，Y 上），射线检测获取 */
     private final Vector3f groundNormal = new Vector3f(0, 1, 0);
 
-    // ── 临时向量，减少物理线程分配 ──
+    // ── 临时向量与四元数，减少物理线程分配 ──
     private final Vector3f tmp1 = new Vector3f();
     private final Vector3f tmp2 = new Vector3f();
     private final Vector3f tmp3 = new Vector3f();
+    private final Quaternion tmpQuat = new Quaternion();
+    private final float[] tmpAngles = new float[3];
 
     // ═══════════════════════════════════════════════
     // 构造
@@ -102,7 +135,7 @@ public class MechaController extends PhysicsCharacter {
         this.physicsSpace = physicsSpace;
         this.capsuleHalfTotal = shape.getHeight() / 2f + shape.getRadius();
 
-        // KCC 配置（§1.2、§5.1）
+        // KCC 配置
         setGravity(MechaWalkingAttr.GRAVITY);         // 重力加速度
         setMaxSlope(FastMath.QUARTER_PI);             // 初始 45°，有输入时由 μ 动态更新
         setLinearDamping(MechaWalkingAttr.C1);        // 粘滞阻尼完全由 KCC 内部处理
@@ -153,6 +186,67 @@ public class MechaController extends PhysicsCharacter {
         }
     }
 
+    /**
+     * 设置重力缩放系数。
+     * <p>
+     * 由 MoLang {@code ctrl.set_gravity_scale(s)} 在动画关键帧脚本中调用。
+     * 0.0 = 浮空（KCC 重力关闭），1.0 = 正常重力。
+     */
+    public void setGravityScale(float s) {
+        this.gravityScale = s;
+    }
+
+    /**
+     * 设置玩家能动性缩放。
+     * <p>
+     * 由 MoLang {@code ctrl.set_input_scale(s)} 在动画关键帧脚本中调用。
+     * 同时调制行走净力与跳跃冲量。0.0 = 全锁（移动+跳跃），1.0 = 正常。
+     */
+    public void setInputScale(float s) {
+        this.inputScale = s;
+    }
+
+    /**
+     * 设置动画根骨骼帧间位移。
+     * <p>
+     * 由上层控制编排（MechaControl）每物理步调用，写入当前帧与上帧根骨骼世界坐标差。
+     * 单位：m/tick（直接与 KCC XZ 位移叠加，无需转换）。
+     *
+     * @param dx 世界坐标 X 位移 (m/tick)
+     * @param dy 世界坐标 Y 位移 (m/tick)
+     * @param dz 世界坐标 Z 位移 (m/tick)
+     */
+    public void setAnimRootDelta(float dx, float dy, float dz) {
+        this.animDeltaX = dx;
+        this.animDeltaY = dy;
+        this.animDeltaZ = dz;
+    }
+
+    /**
+     * 设置动画根骨骼帧间 Y 轴旋转增量。
+     * <p>
+     * 由 MechaControl 从 body_root 骨骼的帧间旋转差提取。
+     * 用于转身斩、回旋踢、动画 idle 微晃等动画驱动面向变化。
+     * <p>
+     * KCC 的 angularFactor 为 (0,1,0) —— 只接收 Y 轴旋转，X/Z 被冻结。
+     * 因此只需传入 deltaYaw，在 prePhysicsTick 中直接叠加到 KCC 当前 Y 旋转。
+     *
+     * @param deltaYaw Y 轴旋转增量 (rad/tick)，正值 = 逆时针（yaw 增大方向）
+     */
+    public void setAnimRootYawDelta(float deltaYaw) {
+        this.animRootYawDelta = deltaYaw;
+    }
+
+    /**
+     * 设置控制器与躯干刚体的当前分离距离。
+     * <p>
+     * 由上层控制编排（MechaControl）每物理步更新，用于行走力折减。
+     * 分离超过 {@link MechaWalkingAttr#SEP_MAX} 时行走力归零，并触发 RAGDOLL 状态切换。
+     */
+    public void setSeparationDistance(float sep) {
+        this.separationDistance = sep;
+    }
+
     // ═══════════════════════════════════════════════
     // 物理步回调（物理线程调用）
     // ═══════════════════════════════════════════════
@@ -160,19 +254,48 @@ public class MechaController extends PhysicsCharacter {
     /**
      * 每物理步调用一次，完成全部行走/跳跃物理计算。
      * <p>
-     * 调用顺序：地面检测 → 跳跃更新 → 行走力计算与施加。
+     * 调用顺序：动画根旋转 → 重力调制 → 地面检测 → 跳跃更新 → 行走力计算与施加。
      *
      * @param dt 物理步长 (s)，通常 1/20
      */
     public void prePhysicsTick(float dt) {
-        // 1. 地面检测（KCC 着地 + 射线法线）
+        // 0. 动画根骨骼 Y 轴旋转 — 转身斩/回旋踢等动画驱动的面向变化
+        applyAnimRootYaw();
+
+        // 1. 重力调制 — 每步按 gravityScale 动态缩放 KCC 重力加速度
+        setGravity(MechaWalkingAttr.GRAVITY * gravityScale);
+
+        // 2. 地面检测（KCC 着地 + 射线法线）
         updateGround();
 
-        // 2. 跳跃蓄力与施放（§4）
+        // 3. 跳跃蓄力与施放
         updateJump(dt);
 
-        // 3. 行走力计算与施加（§3）
+        // 4. 行走力计算与施加（含 inputScale、animDelta、分离距离折减）
         updateWalk(dt);
+    }
+
+    // ═══════════════════════════════════════════════
+    // 动画根旋转
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 将动画根骨骼的 Y 轴旋转增量叠加到 KCC 当前面向。
+     * <p>
+     * angularFactor 为 (0,1,0)，所以只读写 Y 轴旋转。
+     * 读取当前 quaternion → 提取 yaw → 叠加 delta → 构造新 quaternion → 写回。
+     */
+    private void applyAnimRootYaw() {
+        float deltaYaw = animRootYawDelta;
+        if (Math.abs(deltaYaw) < EPSILON) return;
+
+        getPhysicsRotation(tmpQuat);
+        tmpQuat.toAngles(tmpAngles);  // [yaw, pitch, roll]
+        float newYaw = tmpAngles[0] + deltaYaw;
+
+        // 重新构造只含 Y 旋转的四元数（X/Z 旋转被 angularFactor 冻结，无须保留）
+        tmpQuat.fromAngles(newYaw, 0, 0);
+        setPhysicsRotation(tmpQuat);
     }
 
     // ═══════════════════════════════════════════════
@@ -208,18 +331,21 @@ public class MechaController extends PhysicsCharacter {
     }
 
     // ═══════════════════════════════════════════════
-    // 行走力模型（§3 完整模型）
+    // 行走力模型
     // ═══════════════════════════════════════════════
 
     /**
-     * 计算行走净力并施加位移（物理线程）。
+     * 计算行走净力并施加位移（物理线程），支持多通道合成。
      * <p>
      * 流程：读取 KCC 当前速度 → 驱动力 → 抓地力钳制 → 空中衰减 → 内阻/坡度扣除
-     * → 净力 → 加速度积分 → setWalkDirection。
+     * → 净力 → inputScale 调制 → 分离距离折减 → 加速度积分 → setLinearVelocity（含 animDelta 叠加）。
      * <p>
      * 粘滞阻尼（c₁）由 KCC 内部 {@code setLinearDamping} 自动处理，
      * 我们不手动乘衰减因子——有输入时 netForce 与阻尼抗衡达稳态，
      * 无输入时沿用当前 KCC 速度作为 walk direction，KCC 阻尼自然衰减至零。
+     * <p>
+     * 动画根运动叠加：物理位移（m/tick）与 animDelta（m/tick）直接相加写入 XZ；
+     * Y 分量 animDeltaY 需 /dt 转为 m/s 写入 KCC 垂直速度。
      */
     private void updateWalk(float dt) {
         // 快照 volatile 输入
@@ -227,83 +353,105 @@ public class MechaController extends PhysicsCharacter {
         float dirX = inputDirX;
         float dirZ = inputDirZ;
 
-        // 从 KCC 读取当前水平速率（已含上帧阻尼效果）
-        // 注意：Bullet KCC 的 getLinearVelocity() 返回的是 m_walkDirection（即本帧位移量），
-        // 而非速度（m/s），因为 stepForwardAndStrafe 将 walkDirection 直接作为位移使用。
-        // 因此需要除以 dt 还原为真实速度（m/s）。
+        // 快照动画位移与调制参数
+        float adx = animDeltaX;
+        float ady = animDeltaY;
+        float adz = animDeltaZ;
+        float inScale = inputScale;
+        float sepDist = separationDistance;
+
+        // 从 KCC 读取当前速度：XZ ÷ dt → m/s，Y 已是 m/s
         Vector3f vel = getLinearVelocity(tmp1);
         float hSpeed = (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z) / dt;
+        float verticalVel = vel.y; // KCC Y 分量即 m/s 速度，无动画位移时透传以免重置重力累积
 
         if (hasInput) {
-            // ── 更新爬坡角 (§3.5 末段、§8.1) ──
+            // ── 更新爬坡角 ──
             float mu = getEffectiveFriction();
             setMaxSlope((float) Math.atan(mu));
 
-            // ── §3.3-3.4: 驱动力（定制点，含多源叠加与力-速曲线） ──
+            // ── 驱动力（定制点，含多源叠加与力-速曲线）──
             float fDrive = computeDriveForce(hSpeed);
 
-            // ── §3.5: 地面抓地力钳制 ──
+            // ── 地面抓地力钳制 ──
             float slopeCos = Math.abs(groundNormal.y); // cos(θ)
             float normalForce = getControllerMass() * MechaWalkingAttr.GRAVITY * slopeCos;
             float fEffective;
             if (grounded) {
                 fEffective = Math.min(fDrive, mu * normalForce);
             } else {
-                // §3.7 空中衰减
+                // 空中衰减
                 fEffective = fDrive * MechaWalkingAttr.AIR_CONTROL;
             }
 
-            // ── §3.6: 内阻 ──
+            // ── 内阻 ──
             float fResist = MechaWalkingAttr.C0 * getControllerMass() * MechaWalkingAttr.GRAVITY;
 
-            // ── §3.6: 坡度重力分量 = m·g·sin(θ) ──
+            // ── 坡度重力分量 = m·g·sin(θ) ──
             float sinTheta = (float) Math.sqrt(Math.max(0, 1 - slopeCos * slopeCos));
             float fSlope = getControllerMass() * MechaWalkingAttr.GRAVITY * sinTheta;
 
             float fNet = fEffective - fResist - fSlope;
             if (fNet < 0) fNet = 0;
 
-            // ── §4.4: 蓄力期间行走速度折减 ──
+            // ── inputScale 调制净力（MoLang ctrl.set_input_scale）──
+            fNet *= inScale;
+
+            // ── 蓄力期间行走速度折减 ──
             if (charging) {
                 float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
                 fNet *= (1.0f - ratio * MechaJumpAttr.CHARGE_WALK_PENALTY);
             }
 
-            // ── §3.8: 手动积分 → setWalkDirection ──
+            // ── 分离距离保护：行走力随分离距离折减 ──
+            float sepFactor = 1.0f - sepDist / MechaWalkingAttr.SEP_MAX;
+            if (sepFactor < 0) sepFactor = 0;
+            fNet *= sepFactor;
+
+            // ── 手动积分 → setLinearVelocity（含动画根运动叠加）──
             // 粘滞阻尼由 KCC setLinearDamping 内部处理，不在此处手动乘衰减因子
             float accel = fNet / getControllerMass();
             float newSpeed = hSpeed + accel * dt;
-            float delta = newSpeed * dt;
-            ArmsCore.LOGGER.debug("hSpeed = {}, accel = {}, fNet = {}, delta = {} ", hSpeed, accel, fNet, delta);
-            setWalkDirection(tmp2.set(dirX * delta, 0, dirZ * delta));
+            float dispXZ = newSpeed * dt; // m/s × s → m，即 KCC XZ 位移量 (m/tick)
+
+            // Y 分量：动画位移需 /dt 转为 m/s；无动画位移时透传 KCC 垂直速度以免重置重力累积
+            float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
+
+            ARMS.LOGGER.debug("hSpeed = {}, accel = {}, fNet = {}, dispXZ = {} ", hSpeed, accel, fNet, dispXZ);
+            setLinearVelocity(tmp2.set(dirX * dispXZ + adx, yVel, dirZ * dispXZ + adz));
 
         } else {
-            // ── §3.9: 无输入制动 ──
+            // ── 无输入制动 ──
             // 主动摩擦刹车：减速度 = μ × g × cos(θ)，与质量无关。
             // μ 高（粗糙地面）→ 急停，μ 低（冰面）→ 长距离滑行。
             // 粘滞阻尼 c₁ 由 KCC setLinearDamping 叠加提供空气阻力级衰减。
+            // 动画位移依然叠加（如受击后仰动画），无动画时透传 KCC 垂直速度。
             float slopeCos = Math.abs(groundNormal.y);
             float brakeDecel = getEffectiveFriction() * MechaWalkingAttr.GRAVITY * slopeCos;
             float newSpeed = hSpeed - brakeDecel * dt;
             if (newSpeed < 0) newSpeed = 0;
 
+            float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
+
             if (newSpeed > EPSILON) {
                 // 刹车后的速度沿当前实际方向
                 float invSpeed = 1f / hSpeed; // hSpeed > EPSILON 保证非零
-                float delta = newSpeed * dt;
-                setWalkDirection(tmp2.set(vel.x * invSpeed * delta, 0, vel.z * invSpeed * delta));
+                float dispXZ = newSpeed * dt;
+                setLinearVelocity(tmp2.set(vel.x * invSpeed * dispXZ + adx, yVel, vel.z * invSpeed * dispXZ + adz));
             } else {
-                setWalkDirection(tmp2.set(0, 0, 0));
+                setLinearVelocity(tmp2.set(adx, yVel, adz));
             }
         }
     }
 
     // ═══════════════════════════════════════════════
-    // 跳跃蓄力模型（§4）
+    // 跳跃蓄力模型
     // ═══════════════════════════════════════════════
 
     /**
      * 更新跳跃蓄力状态，并在松开时通过 KCC 内建 {@link #jump()} 施放（物理线程）。
+     * <p>
+     * 跳跃冲量受 {@link #inputScale} 调制：inputScale = 0 时跳跃被完全禁止。
      */
     private void updateJump(float dt) {
         boolean held = jumpHeld;
@@ -314,16 +462,16 @@ public class MechaController extends PhysicsCharacter {
         }
 
         if (!charging) {
-            // 空闲状态：按下开始蓄力（须着地）
-            if (held && grounded) {
+            // 空闲状态：按下开始蓄力（须着地、且 inputScale > 0 允许跳跃）
+            if (held && grounded && inputScale > EPSILON) {
                 charging = true;
                 chargeTimer = 0f;
             }
         } else {
             if (released) {
-                // 松开：按当前 ratio 施放冲量（§4.3 + §4.5）
+                // 松开：按当前蓄力比施放冲量，受 inputScale 调制
                 float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
-                float impulse = computeJumpImpulse(ratio);
+                float impulse = computeJumpImpulse(ratio) * inputScale;
                 float vRaw = impulse / getControllerMass();
                 float vTakeoff = Math.min(vRaw, getJumpSpeedCap());
 
@@ -335,7 +483,7 @@ public class MechaController extends PhysicsCharacter {
                 chargeTimer = 0f;
 
             } else if (!held || !grounded) {
-                // §4.4 中断：松键后重置、或离地
+                // 中断：松键后重置、或离地
                 charging = false;
                 chargeTimer = 0f;
 
@@ -351,7 +499,7 @@ public class MechaController extends PhysicsCharacter {
     // ═══════════════════════════════════════════════
 
     /**
-     * 计算当前水平速率下的总驱动力（§3.3-3.4）。
+     * 计算当前水平速率下的总驱动力。
      * <p>
      * 默认实现：本体单源功率-力-速曲线。
      * 子类覆写以实现多源叠加（本体 + 各腿部助力子系统），
@@ -361,7 +509,7 @@ public class MechaController extends PhysicsCharacter {
      * @return 总驱动力 (N)
      */
     protected float computeDriveForce(float currentSpeed) {
-        // §3.3 第一步：功率限力
+        // 第一步：功率限力
         float fPower;
         if (currentSpeed < EPSILON) {
             fPower = MechaWalkingAttr.F_MAX; // 除零兜底
@@ -369,10 +517,10 @@ public class MechaController extends PhysicsCharacter {
             fPower = MechaWalkingAttr.P_BASE / currentSpeed;
         }
 
-        // §3.3 第二步：力上限钳制
+        // 第二步：力上限钳制
         float fRaw = Math.min(fPower, MechaWalkingAttr.F_MAX);
 
-        // §3.3 第三步：超速衰减
+        // 第三步：超速衰减
         if (currentSpeed <= MechaWalkingAttr.V_RATED) {
             return fRaw;
         }
@@ -380,7 +528,7 @@ public class MechaController extends PhysicsCharacter {
     }
 
     /**
-     * 计算跳跃冲量（§4.2-4.5）。
+     * 计算跳跃冲量。
      * <p>
      * 默认实现：素体裸身线性蓄力曲线。
      * 子类覆写以实现多腿叠加：Σ I_per_leg(ratio)，取 v_extend 最大值作为硬上限。
@@ -393,7 +541,7 @@ public class MechaController extends PhysicsCharacter {
     }
 
     /**
-     * 起跳速度硬上限（§4.5）。
+     * 起跳速度硬上限。
      * <p>
      * 默认返回素体 v_extend。多腿时子类应覆写为 max(各腿 v_extend)。
      */
@@ -402,7 +550,7 @@ public class MechaController extends PhysicsCharacter {
     }
 
     /**
-     * 有效地面摩擦系数（§3.5）。
+     * 有效地面摩擦系数。
      * <p>
      * 默认返回裸足 μ_naked。子类覆写为 max(各腿 μ_foot)。
      */
@@ -411,7 +559,7 @@ public class MechaController extends PhysicsCharacter {
     }
 
     /**
-     * 控制器质量（§1.5）。
+     * 控制器质量。
      * <p>
      * 仅用于手动积分 a = F/m，不参与 KCC 刚体（KCC 是幽灵体无质量）。
      * 子类覆写返回机体总质量。

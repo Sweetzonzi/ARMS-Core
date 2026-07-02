@@ -3,7 +3,7 @@ package io.github.sweetzonzi.arms_core.client;
 import cn.solarmoon.spark_core.api.SparkLevel;
 import cn.solarmoon.spark_core.event.PhysicsLevelTickEvent;
 import cn.solarmoon.spark_core.physics.PhysicsHelperKt;
-import io.github.sweetzonzi.arms_core.ArmsCore;
+import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaController;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
@@ -25,8 +25,8 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
  *
  * @author Sweetzonzi
  */
-@EventBusSubscriber(modid = ArmsCore.MOD_ID, value = Dist.CLIENT)
-public class ArmsCoreClient {
+@EventBusSubscriber(modid = ARMS.MOD_ID, value = Dist.CLIENT)
+public class ARMSClient {
 
     /** 胶囊半径 (m) */
     private static final float CAPSULE_RADIUS = 0.4f;
