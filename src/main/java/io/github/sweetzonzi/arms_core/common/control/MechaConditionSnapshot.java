@@ -26,11 +26,17 @@ public class MechaConditionSnapshot {
     /** 左右输入，[-1, 1]，正=右移 */
     public float inputStrafe;
 
-    /** 跳跃键是否按住（持续状态，不同于离散事件） */
+    /** 跳跃键是否按住（持续状态，用于蓄力） */
     public boolean jumpPressed;
+
+    /** 跳跃键本帧松开（单帧标记，用于 jump_charge → jump 触发） */
+    public boolean jumpReleased;
 
     /** 冲刺键是否按住 */
     public boolean sprintPressed;
+
+    /** 慢走键是否按住（精细移动，触发 walk gait） */
+    public boolean walkKeyPressed;
 
     // ==========================================
     // 视角
@@ -88,7 +94,9 @@ public class MechaConditionSnapshot {
         this.inputForward = src.inputForward;
         this.inputStrafe = src.inputStrafe;
         this.jumpPressed = src.jumpPressed;
+        this.jumpReleased = src.jumpReleased;
         this.sprintPressed = src.sprintPressed;
+        this.walkKeyPressed = src.walkKeyPressed;
         this.viewYaw = src.viewYaw;
         this.viewPitch = src.viewPitch;
         this.inWater = src.inWater;
