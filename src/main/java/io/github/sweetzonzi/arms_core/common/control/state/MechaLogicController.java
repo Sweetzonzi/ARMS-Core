@@ -1,7 +1,9 @@
 package io.github.sweetzonzi.arms_core.common.control.state;
 
+import cn.solarmoon.spark_core.gas.GameplayTagContainer;
 import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;
 import cn.solarmoon.spark_core.state_machine.graph.StateNode;
+import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.state.preset.GaitSubGraphs;
 import io.github.sweetzonzi.arms_core.common.control.state.preset.PostureLogicGraphs;
@@ -24,8 +26,10 @@ import java.util.Map;
  * <p>
  * 使用方式（MechaControl 端）：
  * <pre>
- *   // 1. 构造
- *   MechaLogicController logic = new MechaLogicController();
+ *   // 1. 构造（容器由 MechaControl 创建，表现层也共用）
+ *   StateVariableContainer vars = new StateVariableContainer();
+ *   GameplayTagContainer tags = new GameplayTagContainer();
+ *   MechaLogicController logic = new MechaLogicController(vars, tags);
  *
  *   // 2. 每帧：写入快照 + KCC 状态到 variables
  *   logic.getVariables().set(ON_GROUND, kcc.onGround());
@@ -55,17 +59,22 @@ public class MechaLogicController extends StateGraphController {
      * 构造逻辑层控制器，包含 posture 顶层状态机及全部子控。
      * <p>
      * 子控键名需与 {@link PostureLogicGraphs} 中各节点声明的 subGraphs 键名一致。
+     * 所有子控共享外部传入的 {@code variables} 和 {@code tags} 容器，
+     * 确保快照写入（HAS_INPUT 等）与子控条件求值在同一容器上。
+     *
+     * @param variables 共享变量容器（由 MechaControl 创建，表现层也共用）
+     * @param tags      共享标签容器
      */
-    public MechaLogicController() {
+    public MechaLogicController(StateVariableContainer variables, GameplayTagContainer tags) {
         super(PostureLogicGraphs.GRAPH, Map.of(
-                "stand_gait",  new StateGraphController(GaitSubGraphs.STAND, Map.of()),
-                "stand_vert",  new StateGraphController(VerticalSubGraphs.STAND, Map.of()),
-                "air_gait",    new StateGraphController(GaitSubGraphs.AIR, Map.of()),     // 空中水平移动
-                "air_vert",    new StateGraphController(VerticalSubGraphs.AIR, Map.of()),
-                "water_gait",  new StateGraphController(GaitSubGraphs.WATER, Map.of()),
-                "crouch_gait", new StateGraphController(GaitSubGraphs.CROUCH, Map.of()),
-                "prone_gait",  new StateGraphController(GaitSubGraphs.PRONE, Map.of())
-        ));
+                "stand_gait",  new StateGraphController(GaitSubGraphs.STAND, Map.of(), variables, tags),
+                "stand_vert",  new StateGraphController(VerticalSubGraphs.STAND, Map.of(), variables, tags),
+                "air_gait",    new StateGraphController(GaitSubGraphs.AIR, Map.of(), variables, tags),
+                "air_vert",    new StateGraphController(VerticalSubGraphs.AIR, Map.of(), variables, tags),
+                "water_gait",  new StateGraphController(GaitSubGraphs.WATER, Map.of(), variables, tags),
+                "crouch_gait", new StateGraphController(GaitSubGraphs.CROUCH, Map.of(), variables, tags),
+                "prone_gait",  new StateGraphController(GaitSubGraphs.PRONE, Map.of(), variables, tags)
+        ), variables, tags);
     }
 
     // ═══════════════════════════════════════════════
