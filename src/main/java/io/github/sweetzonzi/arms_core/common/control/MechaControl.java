@@ -1,7 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control;
 
 import io.github.sweetzonzi.arms_core.ARMS;
-import io.github.sweetzonzi.machine_max.common.mech.vehicle.data.SubPart;
+import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 
 import java.util.EnumSet;
 import java.util.Set;

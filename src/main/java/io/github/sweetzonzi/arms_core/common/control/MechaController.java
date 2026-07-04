@@ -7,7 +7,6 @@ import com.jme3.bullet.collision.PhysicsRayTestResult;
 import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
 import com.jme3.bullet.objects.PhysicsCharacter;
 import com.jme3.math.FastMath;
-import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 
@@ -115,12 +114,13 @@ public class MechaController extends PhysicsCharacter {
     /** 地面法向量（世界坐标，Y 上），射线检测获取 */
     private final Vector3f groundNormal = new Vector3f(0, 1, 0);
 
-    // ── 临时向量与四元数，减少物理线程分配 ──
+    /** 控制器当前 Y 轴朝向（弧度），由 {@link #applyAnimRootYaw} 累积动画根骨骼 Y 旋转增量 */
+    private float currentYaw;
+
+    // ── 临时向量，减少物理线程分配 ──
     private final Vector3f tmp1 = new Vector3f();
     private final Vector3f tmp2 = new Vector3f();
     private final Vector3f tmp3 = new Vector3f();
-    private final Quaternion tmpQuat = new Quaternion();
-    private final float[] tmpAngles = new float[3];
 
     // ═══════════════════════════════════════════════
     // 构造
@@ -280,22 +280,16 @@ public class MechaController extends PhysicsCharacter {
     // ═══════════════════════════════════════════════
 
     /**
-     * 将动画根骨骼的 Y 轴旋转增量叠加到 KCC 当前面向。
+     * 将动画根骨骼的 Y 轴旋转增量累积到控制器当前 Y 轴朝向。
      * <p>
-     * angularFactor 为 (0,1,0)，所以只读写 Y 轴旋转。
-     * 读取当前 quaternion → 提取 yaw → 叠加 delta → 构造新 quaternion → 写回。
+     * KCC 本身没有旋转概念，我们在 MechaController 内自行维护一个 {@code currentYaw} 字段。
+     * 每次动画帧叠加根骨骼的 Y 旋转增量到此字段，
+     * {@link #updateWalk} 中用其旋转行走方向输入。
      */
     private void applyAnimRootYaw() {
         float deltaYaw = animRootYawDelta;
         if (Math.abs(deltaYaw) < EPSILON) return;
-
-        getPhysicsRotation(tmpQuat);
-        tmpQuat.toAngles(tmpAngles);  // [yaw, pitch, roll]
-        float newYaw = tmpAngles[0] + deltaYaw;
-
-        // 重新构造只含 Y 旋转的四元数（X/Z 旋转被 angularFactor 冻结，无须保留）
-        tmpQuat.fromAngles(newYaw, 0, 0);
-        setPhysicsRotation(tmpQuat);
+        currentYaw += deltaYaw;
     }
 
     // ═══════════════════════════════════════════════
@@ -414,11 +408,17 @@ public class MechaController extends PhysicsCharacter {
             float newSpeed = hSpeed + accel * dt;
             float dispXZ = newSpeed * dt; // m/s × s → m，即 KCC XZ 位移量 (m/tick)
 
+            // ── 用 currentYaw 旋转输入方向 ──
+            float cos = (float) Math.cos(currentYaw);
+            float sin = (float) Math.sin(currentYaw);
+            float rotatedX = dirX * cos - dirZ * sin;
+            float rotatedZ = dirX * sin + dirZ * cos;
+
             // Y 分量：动画位移需 /dt 转为 m/s；无动画位移时透传 KCC 垂直速度以免重置重力累积
             float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
 
             ARMS.LOGGER.debug("hSpeed = {}, accel = {}, fNet = {}, dispXZ = {} ", hSpeed, accel, fNet, dispXZ);
-            setLinearVelocity(tmp2.set(dirX * dispXZ + adx, yVel, dirZ * dispXZ + adz));
+            setLinearVelocity(tmp2.set(rotatedX * dispXZ + adx, yVel, rotatedZ * dispXZ + adz));
 
         } else {
             // ── 无输入制动 ──

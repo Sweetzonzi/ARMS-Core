@@ -1,4 +1,4 @@
-package io.github.sweetzonzi.arms_core.common.control.state;
+package io.github.sweetzonzi.arms_core.common.control.state.graph;
 
 import cn.solarmoon.spark_core.state_machine.graph.StateCondition;
 import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;

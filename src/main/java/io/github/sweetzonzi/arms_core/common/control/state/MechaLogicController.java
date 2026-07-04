@@ -1,7 +1,11 @@
-package io.github.sweetzonzi.arms_core.common.control.state.graph;
+package io.github.sweetzonzi.arms_core.common.control.state;
 
 import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;
 import cn.solarmoon.spark_core.state_machine.graph.StateNode;
+import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.state.preset.GaitSubGraphs;
+import io.github.sweetzonzi.arms_core.common.control.state.preset.PostureLogicGraphs;
+import io.github.sweetzonzi.arms_core.common.control.state.preset.VerticalSubGraphs;
 
 import java.util.Map;
 
@@ -54,12 +58,13 @@ public class MechaLogicController extends StateGraphController {
      */
     public MechaLogicController() {
         super(PostureLogicGraphs.GRAPH, Map.of(
-                "stand_gait",  new StateGraphController(GaitSubGraphs.STAND),
-                "stand_vert",  new StateGraphController(VerticalSubGraphs.STAND),
-                "air_vert",    new StateGraphController(VerticalSubGraphs.AIR),
-                "water_gait",  new StateGraphController(GaitSubGraphs.WATER),
-                "crouch_gait", new StateGraphController(GaitSubGraphs.CROUCH),
-                "prone_gait",  new StateGraphController(GaitSubGraphs.PRONE)
+                "stand_gait",  new StateGraphController(GaitSubGraphs.STAND, Map.of()),
+                "stand_vert",  new StateGraphController(VerticalSubGraphs.STAND, Map.of()),
+                "air_gait",    new StateGraphController(GaitSubGraphs.AIR, Map.of()),     // 空中水平移动
+                "air_vert",    new StateGraphController(VerticalSubGraphs.AIR, Map.of()),
+                "water_gait",  new StateGraphController(GaitSubGraphs.WATER, Map.of()),
+                "crouch_gait", new StateGraphController(GaitSubGraphs.CROUCH, Map.of()),
+                "prone_gait",  new StateGraphController(GaitSubGraphs.PRONE, Map.of())
         ));
     }
 
@@ -71,8 +76,9 @@ public class MechaLogicController extends StateGraphController {
 
     @Override
     public void onTriggered(ActionEvent event, StateNode source, StateNode target) {
+        super.onTriggered(event, source, target);
         if (DEBUG_LOG && target != null && event.getType() != null) {
-            System.out.printf("[MechaLogic] %s --(%s)--> %s%n",
+            ARMS.LOGGER.debug("[MechaLogic] {} --({})--> {}",
                     source != null ? source.getName() : "?",
                     event.getType(),
                     target.getName());
@@ -83,14 +89,14 @@ public class MechaLogicController extends StateGraphController {
     public void onEntry(StateNode node) {
         super.onEntry(node);
         if (DEBUG_LOG) {
-            System.out.printf("[MechaLogic] >> 进入 %s%n", node.getName());
+            ARMS.LOGGER.debug("[MechaLogic] >> 进入 {}", node.getName());
         }
     }
 
     @Override
     public void onExit(StateNode node) {
         if (DEBUG_LOG) {
-            System.out.printf("[MechaLogic] << 离开 %s%n", node.getName());
+            ARMS.LOGGER.debug("[MechaLogic] << 离开 {}", node.getName());
         }
         super.onExit(node);
     }
