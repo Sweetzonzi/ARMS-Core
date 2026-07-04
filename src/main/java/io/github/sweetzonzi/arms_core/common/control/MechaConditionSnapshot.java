@@ -5,7 +5,7 @@ package io.github.sweetzonzi.arms_core.common.control;
  * <p>
  * 包含外部输入（玩家按键、视角）和宿主环境条件（水中、死亡、睡觉等）。
  * 不包括 KCC 推导状态（onGround、speed 等）—— 这些由 MechaControl 内部
- * 从 {@link MechaController} 直接采集，与快照一同汇入 StateVariableContainer。
+ * 从 {@link MechaCharacter} 直接采集，与快照一同汇入 StateVariableContainer。
  * <p>
  * 字段全量保留，当前不支持的条件固定返回 false / 0。
  * <p>

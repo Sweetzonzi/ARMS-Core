@@ -1,8 +1,5 @@
 package io.github.sweetzonzi.arms_core.common.control;
 
-import io.github.sweetzonzi.arms_core.ARMS;
-import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
-
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -17,7 +14,7 @@ import java.util.Set;
  *       {@code AnimStateMachine}（零件自主动作），每物理帧推进状态转移</li>
  *   <li><b>动画编排</b> — 从根 SubPart 的 body_root 骨骼提取帧间位移写入 KCC
  *       （animRootDelta），并聚合动画完成状态供状态机条件查询</li>
- *   <li><b>物理桥接</b> — 将玩家输入转发给 {@link MechaController}（KCC 封装），
+ *   <li><b>物理桥接</b> — 将玩家输入转发给 {@link MechaCharacter}（KCC 封装），
  *       在 {@link #onPhysicsStep} 中调用 {@code kcc.prePhysicsTick(dt)} 完成行走/跳跃物理积分</li>
  *   <li><b>MoLang 集成</b> — 将 StateVariableContainer 注入 {@code MechaMolangContext}，
  *       使 JSON 动画控制器可通过 {@code ctrl.*} 绑定读取状态</li>
@@ -41,7 +38,7 @@ public class MechaControl {
     private final MechaControlHolder holder;
 
     /** KCC 运动学胶囊控制器（行走物理 + 跳跃 + 碰撞 sweep） */
-    private final MechaController kcc;
+    private final MechaCharacter kcc;
 
     // ==========================================
     // 输入缓冲
@@ -86,7 +83,7 @@ public class MechaControl {
      * @param holder 持有者（ArmsCore 或 MechControllerSubsystem），不可为 null
      * @param kcc    已初始化的运动学角色控制器
      */
-    public MechaControl(MechaControlHolder holder, MechaController kcc) {
+    public MechaControl(MechaControlHolder holder, MechaCharacter kcc) {
         this.holder = holder;
         this.kcc = kcc;
         this.conditionSnapshot = MechaConditionSnapshot.createEmpty();
@@ -243,7 +240,7 @@ public class MechaControl {
         }
 
         // 跳跃输入：Holder 调用方负责比较上帧/本帧按键状态计算 released 标记
-        // TODO: 当前 MechaController.setJumpInput(held, released) 需要调用方提供 released 标记。
+        // TODO: 当前 MechaCharacter.setJumpInput(held, released) 需要调用方提供 released 标记。
         // 简单方案：在 Snapshot 中加入 jumpReleased 字段，或由 Holder 自行调用 kcc.setJumpInput
         kcc.setJumpInput(snap.jumpPressed, false);
     }
@@ -335,7 +332,7 @@ public class MechaControl {
     }
 
     /** 获取 KCC 引用（调试/子系统合力叠加等场景） */
-    public MechaController getKCC() {
+    public MechaCharacter getKCC() {
         return kcc;
     }
 

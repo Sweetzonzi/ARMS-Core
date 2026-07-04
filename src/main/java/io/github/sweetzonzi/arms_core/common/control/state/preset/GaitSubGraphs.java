@@ -24,7 +24,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  * <pre>
  * 各 posture 的 gait 支持范围：
  *   stand:  idle / creep / jog / sprint / drift / dodge / stun / hard_land
- *   air:    idle / creep / jog / drift / dodge / stun
+ *   air:    idle / creep / jog / sprint / drift / dodge / stun
  *   water:  idle / creep / jog / sprint / drift / dodge / stun
  *   crouch: idle / creep / jog / sprint / drift / dodge / stun
  *   prone:  idle / creep / jog / drift / dodge / stun
@@ -81,7 +81,7 @@ public final class GaitSubGraphs {
     // ═══════════════════════════════════════════════
 
     public static final StateMachineGraph STAND  = buildGaitGraph(Posture.STAND, true, true);
-    public static final StateMachineGraph AIR    = buildGaitGraph(Posture.AIR, false, false);
+    public static final StateMachineGraph AIR    = buildGaitGraph(Posture.AIR, true, false);
     public static final StateMachineGraph CROUCH = buildGaitGraph(Posture.CROUCH, true, false);
     public static final StateMachineGraph PRONE  = buildGaitGraph(Posture.PRONE, false, false);
     public static final StateMachineGraph WATER  = buildGaitGraph(Posture.WATER, true, false);

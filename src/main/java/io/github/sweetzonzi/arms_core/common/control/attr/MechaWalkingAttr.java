@@ -1,4 +1,4 @@
-package io.github.sweetzonzi.arms_core.common.control;
+package io.github.sweetzonzi.arms_core.common.control.attr;
 
 /**
  * 行走物理参数（硬编码，后续改为数据驱动）

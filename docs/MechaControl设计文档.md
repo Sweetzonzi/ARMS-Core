@@ -27,7 +27,7 @@
 | 输入消费 | 接收 Holder 写入的 `MechaConditionSnapshot` 和 `MechaEvent`，连同 KCC 内部采集的物理状态，汇入 `StateVariableContainer` |
 | 状态机驱动 | 管理中央 `MultiAnimStateMachine`（全局动作）和本地 `AnimStateMachine`（零件自主动作），每物理帧推进 |
 | 动画编排 | 从根 SubPart 提取 `animRootDelta` 写入 KCC，聚合动画完成状态 |
-| 物理桥接 | 转发玩家输入给 `MechaController`（KCC），调用 `prePhysicsTick(dt)` |
+| 物理桥接 | 转发玩家输入给 `MechaCharacter`（KCC），调用 `prePhysicsTick(dt)` |
 | MoLang 集成 | 将 `StateVariableContainer` 注入 `MechaMolangContext`，供 JSON 动画控制器 `ctrl.*` 查询 |
 
 **为什么不是子系统**：MechaControl 是直接操作物理刚体的纯逻辑组件，不依赖信号总线。它作为 `ArmsCore` 私有字段（机娘）或 `MechControllerSubsystem` 持有（可驾驶机甲），不暴露为 UGC 可配置的子系统。
@@ -129,7 +129,7 @@ public enum MechaEvent {
 ```java
 public class MechaControl {
     MechaControlHolder holder;
-    MechaController kcc;                              // KCC 运动学控制器
+    MechaCharacter kcc;                              // KCC 运动学控制器
 
     MechaConditionSnapshot conditionSnapshot;       // 本帧条件快照
     EnumSet<MechaEvent> pendingEvents;              // 本帧事件队列
@@ -146,7 +146,7 @@ public class MechaControl {
 ### 5.2 构造
 
 ```java
-public MechaControl(MechaControlHolder holder, MechaController kcc)
+public MechaControl(MechaControlHolder holder, MechaCharacter kcc)
 ```
 
 构造时建立双向绑定：holder 持有 MechaControl，MechaControl 持有 holder。
@@ -269,7 +269,7 @@ flowchart TB
         CSM -->|AnimGroup 分层| Render[Spk-Core AnimController 混合]
         LSM --> Render
 
-        S1 -->|forward/strafe/jump| MECHC[MechaController(KCC)]
+        S1 -->|forward/strafe/jump| MECHC[MechaCharacter(KCC)]
         KCC -->|setAnimRootDelta| MECHC
     end
 
@@ -349,9 +349,9 @@ MechControllerSubsystem.onPhysicsStep(dt):
 
 ## 8. 与现有系统的对接
 
-### 8.1 MechaController（KCC）
+### 8.1 MechaCharacter（KCC）
 
-`MechaController` 已实现完整的行走/跳跃物理（`prePhysicsTick`）。MechaControl 在它之前：
+`MechaCharacter` 已实现完整的行走/跳跃物理（`prePhysicsTick`）。MechaControl 在它之前：
 1. `forwardInputToKCC()` 写入 `setMoveInput` / `setJumpInput`
 2. 动画编排后写入 `setAnimRootDelta` / `setGravityScale` / `setSeparationDistance`
 3. 最后调用 `kcc.prePhysicsTick(dt)` 完成物理积分

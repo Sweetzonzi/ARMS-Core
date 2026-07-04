@@ -29,7 +29,7 @@ import java.util.Map;
  *   // 1. 构造（容器由 MechaControl 创建，表现层也共用）
  *   StateVariableContainer vars = new StateVariableContainer();
  *   GameplayTagContainer tags = new GameplayTagContainer();
- *   MechaLogicController logic = new MechaLogicController(vars, tags);
+ *   MechaLogicStateMachine logic = new MechaLogicStateMachine(vars, tags);
  *
  *   // 2. 每帧：写入快照 + KCC 状态到 variables
  *   logic.getVariables().set(ON_GROUND, kcc.onGround());
@@ -53,7 +53,7 @@ import java.util.Map;
  *
  * @author Sweetzonzi
  */
-public class MechaLogicController extends StateGraphController {
+public class MechaLogicStateMachine extends StateGraphController {
 
     /**
      * 构造逻辑层控制器，包含 posture 顶层状态机及全部子控。
@@ -65,7 +65,7 @@ public class MechaLogicController extends StateGraphController {
      * @param variables 共享变量容器（由 MechaControl 创建，表现层也共用）
      * @param tags      共享标签容器
      */
-    public MechaLogicController(StateVariableContainer variables, GameplayTagContainer tags) {
+    public MechaLogicStateMachine(StateVariableContainer variables, GameplayTagContainer tags) {
         super(PostureLogicGraphs.GRAPH, Map.of(
                 "stand_gait",  new StateGraphController(GaitSubGraphs.STAND, Map.of(), variables, tags),
                 "stand_vert",  new StateGraphController(VerticalSubGraphs.STAND, Map.of(), variables, tags),

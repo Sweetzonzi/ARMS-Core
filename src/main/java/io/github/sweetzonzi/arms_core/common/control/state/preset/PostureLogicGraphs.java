@@ -110,7 +110,7 @@ public final class PostureLogicGraphs {
      * posture 顶层状态机图。
      * <p>
      * 由 {@link MechaLogicController} 构造时传入。
-     * 子图键名需与 {@code MechaLogicController} 的 children Map 键名一致。
+     * 子图键名需与 {@code MechaLogicStateMachine} 的 children Map 键名一致。
      */
     public static final StateMachineGraph GRAPH = buildGraph();
 

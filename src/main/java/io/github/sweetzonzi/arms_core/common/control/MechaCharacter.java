@@ -9,6 +9,8 @@ import com.jme3.bullet.objects.PhysicsCharacter;
 import com.jme3.math.FastMath;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 
 import java.util.List;
 
@@ -40,7 +42,7 @@ import java.util.List;
  *
  * @author Sweetzonzi
  */
-public class MechaController extends PhysicsCharacter {
+public class MechaCharacter extends PhysicsCharacter {
 
     // ═══════════════════════════════════════════════
     // 常量
@@ -130,7 +132,7 @@ public class MechaController extends PhysicsCharacter {
      * @param shape        胶囊碰撞形状
      * @param physicsSpace 物理空间（用于地面射线检测）
      */
-    public MechaController(CapsuleCollisionShape shape, PhysicsSpace physicsSpace) {
+    public MechaCharacter(CapsuleCollisionShape shape, PhysicsSpace physicsSpace) {
         super(shape, MechaWalkingAttr.STEP_HEIGHT_BASE);
         this.physicsSpace = physicsSpace;
         this.capsuleHalfTotal = shape.getHeight() / 2f + shape.getRadius();
@@ -282,7 +284,7 @@ public class MechaController extends PhysicsCharacter {
     /**
      * 将动画根骨骼的 Y 轴旋转增量累积到控制器当前 Y 轴朝向。
      * <p>
-     * KCC 本身没有旋转概念，我们在 MechaController 内自行维护一个 {@code currentYaw} 字段。
+     * KCC 本身没有旋转概念，我们在 MechaCharacter 内自行维护一个 {@code currentYaw} 字段。
      * 每次动画帧叠加根骨骼的 Y 旋转增量到此字段，
      * {@link #updateWalk} 中用其旋转行走方向输入。
      */

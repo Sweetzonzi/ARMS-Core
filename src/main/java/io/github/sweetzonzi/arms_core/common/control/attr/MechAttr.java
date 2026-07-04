@@ -1,4 +1,4 @@
-package io.github.sweetzonzi.arms_core.common.control;
+package io.github.sweetzonzi.arms_core.common.control.attr;
 
 /**
  * 机娘 / 外骨骼素体定义元数据（存根）。
@@ -17,6 +17,6 @@ package io.github.sweetzonzi.arms_core.common.control;
  *
  * @author Sweetzonzi
  */
-public class MechChassisDefinition {
+public class MechAttr {
     // TODO: 从 mech_chassis.json 加载完整定义
 }

@@ -1,5 +1,6 @@
 package io.github.sweetzonzi.arms_core.common.control;
 
+import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 
 import java.util.Collection;
@@ -58,7 +59,7 @@ public interface MechaControlHolder {
      * 包含：控制器胶囊尺寸、质量、关节马达力曲线、默认装配方案、肢体映射等。
      * 由 {@code mech_chassis.json} 加载。
      */
-    MechChassisDefinition getChassis();
+    MechAttr getAttr();
 
     // ==========================================
     // 默认方法 — 输入写入

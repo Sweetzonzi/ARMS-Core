@@ -1,4 +1,4 @@
-package io.github.sweetzonzi.arms_core.common.control;
+package io.github.sweetzonzi.arms_core.common.control.attr;
 
 /**
  * 跳跃物理参数（硬编码，后续改为数据驱动）
@@ -7,7 +7,7 @@ package io.github.sweetzonzi.arms_core.common.control;
  * 跳跃以冲量建模，支持蓄力机制与多腿叠加。
  * <p>
  * 注：I_MIN / I_MAX / V_EXTEND 为素体裸身值。安装助力腿后，
- * 由 {@code MechaController} 子类覆写 {@code computeJumpImpulse} 等定制点叠加各腿参数。
+ * 由 {@code MechaCharacter} 子类覆写 {@code computeJumpImpulse} 等定制点叠加各腿参数。
  *
  * @author Sweetzonzi
  */

@@ -4,7 +4,7 @@ import cn.solarmoon.spark_core.api.SparkLevel;
 import cn.solarmoon.spark_core.event.PhysicsLevelTickEvent;
 import cn.solarmoon.spark_core.physics.PhysicsHelperKt;
 import io.github.sweetzonzi.arms_core.ARMS;
-import io.github.sweetzonzi.arms_core.common.control.MechaController;
+import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
 import com.jme3.math.Vector3f;
@@ -18,10 +18,10 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 /**
  * ARMS-Core 客户端入口。
  * <p>
- * 负责懒初始化 {@link MechaController} 并每帧读取玩家 WASD/跳跃输入，
+ * 负责懒初始化 {@link MechaCharacter} 并每帧读取玩家 WASD/跳跃输入，
  * 转换到世界坐标系后写入控制器的 volatile 字段。
  * <p>
- * 物理步进由 {@link #onPrePhysicsTick} 委托给 {@link MechaController#prePhysicsTick}。
+ * 物理步进由 {@link #onPrePhysicsTick} 委托给 {@link MechaCharacter#prePhysicsTick}。
  *
  * @author Sweetzonzi
  */
@@ -34,7 +34,7 @@ public class ARMSClient {
     private static final float CAPSULE_HEIGHT = 1.6f;
 
     /** 控制器实例 */
-    private static volatile MechaController controller;
+    private static volatile MechaCharacter controller;
     /** 上帧跳跃键状态（用于检测松开边沿） */
     private static boolean wasJumpDown;
     /** 是否已初始化 */
@@ -59,7 +59,7 @@ public class ARMSClient {
             return;
         }
 
-        MechaController ctrl = controller;
+        MechaCharacter ctrl = controller;
         if (ctrl == null) return;
 
         // ── WASD 输入 → 世界坐标方向 ──
@@ -92,7 +92,7 @@ public class ARMSClient {
 
     @SubscribeEvent
     public static void onPrePhysicsTick(PhysicsLevelTickEvent.Pre event) {
-        MechaController ctrl = controller;
+        MechaCharacter ctrl = controller;
         if (ctrl == null) return;
         // 仅处理本客户端的物理世界
         Minecraft mc = Minecraft.getInstance();
@@ -112,7 +112,7 @@ public class ARMSClient {
     private static void initController(LocalPlayer player) {
         CapsuleCollisionShape shape = new CapsuleCollisionShape(CAPSULE_RADIUS, CAPSULE_HEIGHT);
         PhysicsSpace space = SparkLevel.getPhysicsLevel(player.level()).getWorld();
-        MechaController ctrl = new MechaController(shape, space);
+        MechaCharacter ctrl = new MechaCharacter(shape, space);
 
         // 初始位置设为玩家位置（胶囊中心在玩家脚底上方 capsuleHalfTotal 处）
         float halfTotal = shape.getHeight() / 2f + shape.getRadius();
