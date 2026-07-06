@@ -35,6 +35,9 @@ public enum Posture {
     /** 卧倒 — 0.6m 胶囊，最低轮廓，禁用跳跃 */
     PRONE("prone", 0.1f),
 
+    /** 骑乘 — 作为乘客乘坐载具，KCC 完全抑制，无自主移动 */
+    RIDING("riding", 0f),
+
     /** 布娃娃 — 物理完全接管，无自主移动 */
     RAGDOLL("ragdoll", 0f);
 

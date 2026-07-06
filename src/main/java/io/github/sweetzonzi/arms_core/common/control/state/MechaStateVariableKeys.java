@@ -90,6 +90,10 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> IS_RAGDOLLED =
             key("arms_core:is_ragdolled", false);
 
+    /** 骑乘 — 作为乘客乘坐载具中 */
+    public static final StateVariableKey<Boolean> IS_RIDING =
+            key("arms_core:is_riding", false);
+
     // ═══════════════════════════════════════════════
     // 表现层便利布尔 — gait（one-hot）
     // ═══════════════════════════════════════════════

@@ -19,20 +19,27 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *     [*] ──▶ stand ──(!onGround)──▶ air
  *              │   ├──(onGround && inWater)──▶ water
  *              │   ├──(event:sneak)──▶ crouch
+ *              │   ├──(event:mount)──▶ ride
  *              │   ├──(event:knockdown)──▶ prone
  *              │   └──(isDead)──▶ ragdoll
  *           air ──(onGround)──▶ stand
  *              ├──(!onGround && inWater)──▶ water
+ *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
  *         water ──(onGround && !inWater)──▶ stand
+ *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
  *        crouch ──(event:sneak)──▶ stand
  *              ├──(event:prone)──▶ prone
+ *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
  *         prone ──(event:prone)──▶ crouch
+ *              ├──(event:mount)──▶ ride
+ *              └──(isDead)──▶ ragdoll
+ *         ride  ──(event:dismount)──▶ stand
  *              └──(isDead)──▶ ragdoll
  *       ragdoll 终态，无出口
  * </pre>
@@ -45,6 +52,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *   <li>water: "water_gait"</li>
  *   <li>crouch: "crouch_gait"</li>
  *   <li>prone: "prone_gait"</li>
+ *   <li>ride: 无（骑乘期间 KCC 完全抑制，无需 gait/vert）</li>
  *   <li>ragdoll: 无</li>
  * </ul>
  *
@@ -92,6 +100,7 @@ public final class PostureLogicGraphs {
     private static final StateAction SET_POSTURE_WATER   = MechaStateActions.postureFlags(Posture.WATER);
     private static final StateAction SET_POSTURE_CROUCH  = MechaStateActions.postureFlags(Posture.CROUCH);
     private static final StateAction SET_POSTURE_PRONE   = MechaStateActions.postureFlags(Posture.PRONE);
+    private static final StateAction SET_POSTURE_RIDING  = MechaStateActions.postureFlags(Posture.RIDING);
     private static final StateAction SET_POSTURE_RAGDOLL = MechaStateActions.postureFlags(Posture.RAGDOLL);
 
     // ═══════════════════════════════════════════════
@@ -122,6 +131,7 @@ public final class PostureLogicGraphs {
                         new StateTransition(null, Posture.AIR.molangName(), COND_NOT_ON_GROUND),
                         new StateTransition(null, Posture.WATER.molangName(), COND_STAND_TO_WATER),
                         new StateTransition("sneak", Posture.CROUCH.molangName(), StateCondition.True.INSTANCE),
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
                 ),
@@ -139,6 +149,7 @@ public final class PostureLogicGraphs {
                 List.of(
                         new StateTransition(null, Posture.STAND.molangName(), COND_ON_GROUND),
                         new StateTransition(null, Posture.WATER.molangName(), COND_AIR_TO_WATER),
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
                         // 飞行切换（fly toggle）由 MechaControl 直接操作 air_vert 子控
@@ -156,6 +167,7 @@ public final class PostureLogicGraphs {
                 Posture.WATER.molangName(),
                 List.of(
                         new StateTransition(null, Posture.STAND.molangName(), COND_WATER_TO_STAND),
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
                 ),
@@ -170,6 +182,7 @@ public final class PostureLogicGraphs {
                 List.of(
                         new StateTransition("sneak", Posture.STAND.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("prone", Posture.PRONE.molangName(), StateCondition.True.INSTANCE),
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
                 ),
@@ -183,11 +196,24 @@ public final class PostureLogicGraphs {
                 Posture.PRONE.molangName(),
                 List.of(
                         new StateTransition("prone", Posture.CROUCH.molangName(), StateCondition.True.INSTANCE),
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
                 ),
                 List.of(SET_POSTURE_PRONE),
                 NO_ACTIONS,
                 Map.of("prone_gait", GaitSubGraphs.PRONE)
+        );
+
+        // —— ride 节点 — 骑乘姿态，无子控，KCC 完全抑制 ——
+        StateNode rideNode = new StateNode(
+                Posture.RIDING.molangName(),
+                List.of(
+                        new StateTransition("dismount", Posture.STAND.molangName(), StateCondition.True.INSTANCE),
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                ),
+                List.of(SET_POSTURE_RIDING),
+                NO_ACTIONS,
+                NO_SUBGRAPHS
         );
 
         // —— ragdoll 节点（终态） ——
@@ -201,7 +227,7 @@ public final class PostureLogicGraphs {
 
         return new StateMachineGraph(
                 standNode,
-                List.of(airNode, waterNode, crouchNode, proneNode, ragdollNode)
+                List.of(airNode, waterNode, crouchNode, proneNode, rideNode, ragdollNode)
         );
     }
 }

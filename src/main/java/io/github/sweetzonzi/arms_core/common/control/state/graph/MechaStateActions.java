@@ -89,7 +89,7 @@ public final class MechaStateActions {
     // ═══════════════════════════════════════════════
 
     /**
-     * 写入 posture 枚举 + 7 个 one-hot 布尔键。
+     * 写入 posture 枚举 + 8 个 one-hot 布尔键。
      *
      * @param p 当前姿态
      */
@@ -101,6 +101,7 @@ public final class MechaStateActions {
                 IN_WATER_POSTURE, p == Posture.WATER,
                 IS_CROUCHING, p == Posture.CROUCH,
                 IS_PRONE, p == Posture.PRONE,
+                IS_RIDING, p == Posture.RIDING,
                 IS_RAGDOLLED, p == Posture.RAGDOLL
         ));
     }
