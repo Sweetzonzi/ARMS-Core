@@ -18,6 +18,15 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
 // ---- 仓库与依赖（独立文件，方便维护） ----
 apply from: 'repositories.gradle'
 
@@ -86,6 +95,12 @@ neoForge {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+    }
+
+    // Provide the Minecraft/NeoForge runtime and tested mod classes to JUnit.
+    unitTest {
+        enable()
+        testedMod.set(mods.getByName(project.mod_id))
     }
 }
 

@@ -40,6 +40,12 @@ public final class GaitSubGraphs {
 
     private GaitSubGraphs() {}
 
+    /** 低于此水平速度（m/s）视为已经停止。 */
+    public static final float STOP_SPEED_THRESHOLD = 0.05f;
+
+    /** idle 只有超过此速度（m/s）才进入 drift，形成滞回区间。 */
+    public static final float DRIFT_ENTRY_SPEED_THRESHOLD = 0.15f;
+
     // ═══════════════════════════════════════════════
     // 通用条件
     // ═══════════════════════════════════════════════
@@ -47,6 +53,24 @@ public final class GaitSubGraphs {
     private static final StateCondition COND_HAS_INPUT = isTrue(HAS_INPUT);
     private static final StateCondition COND_NO_INPUT = isFalse(HAS_INPUT);
     private static final StateCondition COND_WALK_KEY = isTrue(WALK_KEY_DOWN);
+
+    /** 无输入且已经停止。 */
+    private static final StateCondition COND_STOPPED = new StateCondition.All(List.of(
+            COND_NO_INPUT,
+            floatLe(StateVariableKeys.SPEED, STOP_SPEED_THRESHOLD)
+    ));
+
+    /** 无输入但仍有可见残余速度。 */
+    private static final StateCondition COND_COASTING = new StateCondition.All(List.of(
+            COND_NO_INPUT,
+            floatGt(StateVariableKeys.SPEED, STOP_SPEED_THRESHOLD)
+    ));
+
+    /** idle 使用更高的进入阈值，避免在停止边界附近与 drift 抖动。 */
+    private static final StateCondition COND_IDLE_TO_DRIFT = new StateCondition.All(List.of(
+            COND_NO_INPUT,
+            floatGt(StateVariableKeys.SPEED, DRIFT_ENTRY_SPEED_THRESHOLD)
+    ));
 
     /** 有输入 + 慢走键 → creep gait */
     private static final StateCondition COND_CREEP =
@@ -56,8 +80,9 @@ public final class GaitSubGraphs {
     private static final StateCondition COND_JOG =
             new StateCondition.All(List.of(COND_HAS_INPUT, isFalse(WALK_KEY_DOWN)));
 
-    /** sprint 条件：冲刺键按住 + 能量 > 0 */
+    /** sprint 条件：有常速输入 + 冲刺键按住 + 能量 > 0 */
     private static final StateCondition COND_SPRINT = new StateCondition.All(List.of(
+            COND_JOG,
             isTrue(StateVariableKeys.IS_SPRINTING),
             floatGt(ENERGY, 0f)
     ));
@@ -126,21 +151,21 @@ public final class GaitSubGraphs {
         idleTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
         idleTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
         // 无输入 + 有残余速度 → drift
-        idleTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_NO_INPUT));
-        // TODO: 精确条件：无输入 && horizontal_speed > 阈值
+        idleTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_IDLE_TO_DRIFT));
         idleTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                 StateCondition.True.INSTANCE));
 
         var idleActions = new java.util.ArrayList<StateAction>();
         idleActions.add(setIdle);
-        idleActions.add(MechaStateActions.enableInput());
+        idleActions.add(MechaStateActions.enableGaitInput());
 
         StateNode idleNode = new StateNode(Gait.IDLE.molangName(),
                 idleTransitions, idleActions, NO_ACTIONS, NO_SUBGRAPHS);
 
         // ═══ creep — 低速精细移动 ═══
         var creepTransitions = new java.util.ArrayList<StateTransition>();
-        creepTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
+        creepTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
+        creepTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_COASTING));
         creepTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
         creepTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                 StateCondition.True.INSTANCE));
@@ -150,7 +175,8 @@ public final class GaitSubGraphs {
 
         // ═══ jog — 常速移动 ═══
         var jogTransitions = new java.util.ArrayList<StateTransition>();
-        jogTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
+        jogTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
+        jogTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_COASTING));
         jogTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
         if (hasSprint)
             jogTransitions.add(new StateTransition(null, Gait.SPRINT.molangName(), COND_SPRINT));
@@ -164,7 +190,9 @@ public final class GaitSubGraphs {
         StateNode sprintNode = null;
         if (hasSprint) {
             var sprintTransitions = new java.util.ArrayList<StateTransition>();
-            sprintTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
+            sprintTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
+            sprintTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_COASTING));
+            sprintTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
             sprintTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_NOT_SPRINT));
             sprintTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                     StateCondition.True.INSTANCE));
@@ -175,8 +203,7 @@ public final class GaitSubGraphs {
         // ═══ drift — 惯性滑行（所有姿态均有）════
         var driftTransitions = new java.util.ArrayList<StateTransition>();
         // 速度归零 → idle
-        driftTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
-        // TODO: 精确条件：horizontal_speed ≈ 0
+        driftTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
         // 恢复输入 → creep 或 jog
         driftTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
         driftTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
@@ -188,7 +215,8 @@ public final class GaitSubGraphs {
 
         // ═══ dodge — 闪避/翻滚/推进器/空中 dash ═══
         var dodgeTransitions = new java.util.ArrayList<StateTransition>();
-        dodgeTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
+        dodgeTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
+        dodgeTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_COASTING));
         dodgeTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
         dodgeTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
 
@@ -201,7 +229,7 @@ public final class GaitSubGraphs {
                         new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT)
                         // TODO: 真实实现需用计时器条件替代 COND_NO_INPUT
                 ),
-                List.of(setStun, MechaStateActions.disableMove()),
+                List.of(setStun, MechaStateActions.disableGaitInput()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         // ═══ hard_land — 重落地恢复（可被 dodge 取消）════
@@ -215,7 +243,7 @@ public final class GaitSubGraphs {
 
             hardLandNode = new StateNode(Gait.HARD_LAND.molangName(),
                     hardLandTransitions,
-                    List.of(setHardLand, MechaStateActions.disableMove()),
+                    List.of(setHardLand, MechaStateActions.disableGaitInput()),
                     NO_ACTIONS, NO_SUBGRAPHS);
         }
 

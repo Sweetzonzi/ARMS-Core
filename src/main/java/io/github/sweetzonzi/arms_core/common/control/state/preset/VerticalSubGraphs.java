@@ -1,13 +1,13 @@
 package io.github.sweetzonzi.arms_core.common.control.state.preset;
 
 import cn.solarmoon.spark_core.state_machine.graph.*;
-import cn.solarmoon.spark_core.state_machine.presets.StateVariableKeys;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
 import io.github.sweetzonzi.arms_core.common.control.state.graph.MechaStateActions;
 
 import java.util.List;
 import java.util.Map;
 
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.KCC_JUMP_CHARGING;
 import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVariableCondition.*;
 
 /**
@@ -40,7 +40,8 @@ public final class VerticalSubGraphs {
     // 条件
     // ═══════════════════════════════════════════════
 
-    private static final StateCondition COND_ON_GROUND = isTrue(StateVariableKeys.ON_GROUND);
+    private static final StateCondition COND_KCC_CHARGING = isTrue(KCC_JUMP_CHARGING);
+    private static final StateCondition COND_KCC_NOT_CHARGING = isFalse(KCC_JUMP_CHARGING);
 
     // ═══════════════════════════════════════════════
     // 空常量复用
@@ -64,24 +65,19 @@ public final class VerticalSubGraphs {
         StateNode groundNode = new StateNode(
                 Vertical.GROUND.molangName(),
                 List.of(
-                        // 跳跃键按下 → 进入蓄力
-                        new StateTransition("jump_start", Vertical.JUMP_CHARGE.molangName(),
-                                StateCondition.True.INSTANCE)
+                        // KCC 开始蓄力后，逻辑层在下一物理步镜像该状态
+                        new StateTransition(null, Vertical.JUMP_CHARGE.molangName(), COND_KCC_CHARGING)
                 ),
-                List.of(setGround, MechaStateActions.enableInput()),  // 地面时恢复输入能力
+                List.of(setGround, MechaStateActions.enableVerticalInput()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
-        // jump_charge: 跳跃蓄力中（跳跃键按住），离地前松开会回到 ground
+        // jump_charge: 由 KCC 蓄力状态驱动，避免 ON_GROUND=true 时立即退出
         StateNode jumpChargeNode = new StateNode(
                 Vertical.JUMP_CHARGE.molangName(),
                 List.of(
-                        // 跳跃键松开 → 施加冲量（瞬时，KCC 直接调用），回到 ground
-                        new StateTransition("jump_release", Vertical.GROUND.molangName(),
-                                StateCondition.True.INSTANCE),
-                        // 如果离地前松开 → 取消跳跃，回 ground
-                        new StateTransition(null, Vertical.GROUND.molangName(), COND_ON_GROUND)
+                        new StateTransition(null, Vertical.GROUND.molangName(), COND_KCC_NOT_CHARGING)
                 ),
-                List.of(setJumpCharge, MechaStateActions.disableMove(), MechaStateActions.disableJump()),
+                List.of(setJumpCharge, MechaStateActions.disableVerticalInput()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         return new StateMachineGraph(groundNode, List.of(jumpChargeNode));
@@ -111,7 +107,7 @@ public final class VerticalSubGraphs {
                         new StateTransition("fly", Vertical.FLY.molangName(),
                                 StateCondition.True.INSTANCE)
                 ),
-                List.of(setFall),
+                List.of(setFall, MechaStateActions.enableVerticalMoveOnly()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         // glide: 鞘翅滑翔
@@ -125,7 +121,7 @@ public final class VerticalSubGraphs {
                         new StateTransition("fly", Vertical.FLY.molangName(),
                                 StateCondition.True.INSTANCE)
                 ),
-                List.of(setGlide),
+                List.of(setGlide, MechaStateActions.enableVerticalMoveOnly()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         // hover: 推进悬浮
@@ -137,7 +133,7 @@ public final class VerticalSubGraphs {
                         new StateTransition("fly", Vertical.FLY.molangName(),
                                 StateCondition.True.INSTANCE)
                 ),
-                List.of(setHover),
+                List.of(setHover, MechaStateActions.enableVerticalMoveOnly()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         // fly: 创造飞行=
@@ -147,7 +143,7 @@ public final class VerticalSubGraphs {
                         new StateTransition("fly", Vertical.FALL.molangName(),
                                 StateCondition.True.INSTANCE)
                 ),
-                List.of(setFly),
+                List.of(setFly, MechaStateActions.enableVerticalMoveOnly()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
         // 默认初始态为 fall

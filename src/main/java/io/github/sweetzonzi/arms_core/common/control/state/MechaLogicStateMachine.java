@@ -5,22 +5,30 @@ import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;
 import cn.solarmoon.spark_core.state_machine.graph.StateNode;
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.preset.GaitSubGraphs;
 import io.github.sweetzonzi.arms_core.common.control.state.preset.PostureLogicGraphs;
 import io.github.sweetzonzi.arms_core.common.control.state.preset.VerticalSubGraphs;
 
 import java.util.Map;
 
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.*;
+
 /**
  * 机娘逻辑层控制器 —— 封装 posture 顶层状态机及其子控制器。
  *
  * <p>
+ * 生命周期要求：构造完成后控制器处于 <b>stopped</b> 状态，必须先调用
+ * {@link #reset()} 或 {@link #start()} 才能接收事件或推进。
+ * </p>
+ *
+ * <p>
  * 子控制器激活/关闭机制（继承自 {@link StateGraphController}）：
  * <ol>
- *   <li>构造时传入全部子控制器到 {@code children} Map</li>
+ *   <li>构造时传入全部子控制器到 {@code children} Map（均为 stopped 状态）</li>
  *   <li>posture 状态机进入某节点时，查找该节点声明的 {@code subGraphs} 键名</li>
- *   <li>匹配的 children 被 {@code reset()} 并加入 {@code activeChildren}</li>
- *   <li>离开节点时，活跃子控全部 {@code onExit} + 清空</li>
+ *   <li>匹配的 children 被 {@code start()} 并加入 {@code activeChildren}</li>
+ *   <li>离开节点时，活跃子控全部 {@code stop()} + 清空</li>
  * </ol>
  *
  * <p>
@@ -31,24 +39,27 @@ import java.util.Map;
  *   GameplayTagContainer tags = new GameplayTagContainer();
  *   MechaLogicStateMachine logic = new MechaLogicStateMachine(vars, tags);
  *
- *   // 2. 每帧：写入快照 + KCC 状态到 variables
+ *   // 2. 启动（stopped → 进入初始节点）
+ *   logic.reset();  // 或 start()
+ *
+ *   // 3. 每帧：写入快照 + KCC 状态到 variables
  *   logic.getVariables().set(ON_GROUND, kcc.onGround());
  *   logic.getVariables().set(HAS_INPUT, snapshot.inputForward != 0 || ...);
  *   // ...
  *
- *   // 3. 注入离散事件
- *   if (pendingEvents.contains(TOGGLE_SNEAK)) logic.triggerEvent("sneak");
- *   if (pendingEvents.contains(TOGGLE_PRONE)) logic.triggerEvent("prone");
- *   if (pendingEvents.contains(DODGE))        logic.triggerEvent("dodge");
- *   if (pendingEvents.contains(TOGGLE_FLY))   logic.triggerEvent("fly");
+ *   // 4. 注入离散事件（broadcastEvent 沿活跃树递归传播）
+ *   if (pendingEvents.contains(TOGGLE_SNEAK)) logic.broadcastEvent("sneak");
+ *   if (pendingEvents.contains(TOGGLE_PRONE)) logic.broadcastEvent("prone");
+ *   if (pendingEvents.contains(DODGE))        logic.broadcastEvent("dodge");
+ *   if (pendingEvents.contains(TOGGLE_FLY))   logic.broadcastEvent("fly");
  *
- *   // 4. 驱动状态机
+ *   // 5. 驱动状态机
  *   logic.progress();  // 递归驱动子控 + 自身 auto 转移
  *
- *   // 5. 读取产出变量
- *   String posture = logic.getVariables().get(POSTURE);  // "stand" / "air" / ...
- *   String gait    = logic.getVariables().get(GAIT);     // "idle" / "walk" / ...
- *   String vert    = logic.getVariables().get(VERTICAL); // "ground" / "jump" / ...
+ *   // 6. 读取产出变量
+ *   Posture posture = logic.getVariables().get(POSTURE);
+ *   Gait gait       = logic.getVariables().get(GAIT);
+ *   Vertical vert   = logic.getVariables().get(VERTICAL);
  * </pre>
  *
  * @author Sweetzonzi
@@ -77,6 +88,43 @@ public class MechaLogicStateMachine extends StateGraphController {
         ), variables, tags);
     }
 
+    /** 完成所有活跃子机和 posture 推进后，再合并本帧最终输入许可。 */
+    @Override
+    public void progress() {
+        super.progress();
+        updateInputPermissions();
+    }
+
+    /**
+     * 合并 posture、gait 和 vertical 的输入许可。
+     * 没有 vertical 子机的 posture 不读取上一个 vertical 子机遗留的输出。
+     */
+    private void updateInputPermissions() {
+        StateVariableContainer variables = getVariables();
+        Posture posture = variables.get(POSTURE);
+        boolean postureAllowsMove = posture != Posture.RIDING && posture != Posture.RAGDOLL;
+        boolean postureAllowsJump = posture == Posture.STAND;
+        boolean hasVerticalMachine = posture == Posture.STAND || posture == Posture.AIR;
+
+        boolean verticalAllowsMove = !hasVerticalMachine || variables.get(VERTICAL_CAN_MOVE);
+        boolean verticalAllowsJump = !hasVerticalMachine || variables.get(VERTICAL_CAN_JUMP);
+
+        variables.set(CAN_MOVE,
+                postureAllowsMove && variables.get(GAIT_CAN_MOVE) && verticalAllowsMove);
+        variables.set(CAN_JUMP,
+                postureAllowsJump && variables.get(GAIT_CAN_JUMP) && verticalAllowsJump);
+    }
+
+    /** 当前逻辑状态是否允许水平移动。 */
+    public boolean canMove() {
+        return getVariables().get(CAN_MOVE);
+    }
+
+    /** 当前逻辑状态是否允许开始跳跃。 */
+    public boolean canJump() {
+        return getVariables().get(CAN_JUMP);
+    }
+
     // ═══════════════════════════════════════════════
     // 调试日志（生产环境关闭）
     // ═══════════════════════════════════════════════
@@ -97,6 +145,8 @@ public class MechaLogicStateMachine extends StateGraphController {
     @Override
     public void onEntry(StateNode node) {
         super.onEntry(node);
+        // StateGraphController.start() 不可重载；在根节点 entry 后覆盖 start/reset 路径。
+        updateInputPermissions();
         if (DEBUG_LOG) {
             ARMS.LOGGER.debug("[MechaLogic] >> 进入 {}", node.getName());
         }

@@ -20,7 +20,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * <ul>
  *   <li>写入逻辑层产出枚举（POSTURE / GAIT / VERTICAL）</li>
  *   <li>写入表现层便利布尔（one-hot）</li>
- *   <li>写入派生布尔（IS_STUNNED / CAN_MOVE / CAN_JUMP）</li>
+ *   <li>写入 gait / vertical 各自的输入许可，由 MechaControl 合并最终结果</li>
  *   <li>写入 KCC 可读的浮点（MOVE_SPEED_MODIFIER）</li>
  * </ul>
  *
@@ -169,23 +169,45 @@ public final class MechaStateActions {
     // 派生布尔
     // ═══════════════════════════════════════════════
 
-    /** 写入 CAN_MOVE = true / CAN_JUMP = true（用于退出 stun/hard_land 时恢复输入能力） */
-    public static StateAction enableInput() {
+    /** gait 子机恢复水平移动和跳跃许可。 */
+    public static StateAction enableGaitInput() {
         return new BatchWriteAction(Map.of(
-                CAN_MOVE, true,
-                CAN_JUMP, true,
+                GAIT_CAN_MOVE, true,
+                GAIT_CAN_JUMP, true,
                 IS_KNOCKED_DOWN, false
         ));
     }
 
-    /** 写入 CAN_MOVE = false（stun / hard_land / knockdown 期间禁止水平输入） */
-    public static StateAction disableMove() {
-        return writeBool(CAN_MOVE, false);
+    /** gait 子机禁止水平移动和开始跳跃（stun / hard_land）。 */
+    public static StateAction disableGaitInput() {
+        return new BatchWriteAction(Map.of(
+                GAIT_CAN_MOVE, false,
+                GAIT_CAN_JUMP, false
+        ));
     }
 
-    /** 写入 CAN_JUMP = false（jump_charge / stun 期间禁止跳跃） */
-    public static StateAction disableJump() {
-        return writeBool(CAN_JUMP, false);
+    /** vertical 子机允许地面移动和开始跳跃。 */
+    public static StateAction enableVerticalInput() {
+        return new BatchWriteAction(Map.of(
+                VERTICAL_CAN_MOVE, true,
+                VERTICAL_CAN_JUMP, true
+        ));
+    }
+
+    /** vertical 子机允许空中移动，但禁止开始新的跳跃。 */
+    public static StateAction enableVerticalMoveOnly() {
+        return new BatchWriteAction(Map.of(
+                VERTICAL_CAN_MOVE, true,
+                VERTICAL_CAN_JUMP, false
+        ));
+    }
+
+    /** vertical 子机在跳跃蓄力期间禁止移动和重复开始跳跃。 */
+    public static StateAction disableVerticalInput() {
+        return new BatchWriteAction(Map.of(
+                VERTICAL_CAN_MOVE, false,
+                VERTICAL_CAN_JUMP, false
+        ));
     }
 
     // ═══════════════════════════════════════════════

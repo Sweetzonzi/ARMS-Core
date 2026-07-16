@@ -25,7 +25,7 @@ import net.minecraft.resources.ResourceLocation;
  * <ul>
  *   <li><b>逻辑层产出（枚举）</b> — POSTURE / GAIT / VERTICAL，由状态机 onEntry 写入</li>
  *   <li><b>表现层便利布尔</b> — IS_CREEPING / IS_FALLING 等，与枚举同时写入</li>
- *   <li><b>派生布尔</b> — IS_STUNNED / CAN_MOVE / CAN_JUMP，供输入处理 gating</li>
+ *   <li><b>输入许可</b> — gait / vertical 分别产出许可，MechaControl 合并为 CAN_MOVE / CAN_JUMP</li>
  *   <li><b>浮点</b> — MOVE_SPEED_MODIFIER，KCC 直接读取</li>
  *   <li><b>快照写入</b> — HAS_INPUT / WALK_KEY_DOWN 等</li>
  *   <li><b>事件 latch</b> — EVENT_* 系列</li>
@@ -170,6 +170,22 @@ public final class MechaStateVariableKeys {
     // 派生 — 输入 gating（MechaControl 查询用）
     // ═══════════════════════════════════════════════
 
+    /** gait 子机是否允许水平移动输入 */
+    public static final StateVariableKey<Boolean> GAIT_CAN_MOVE =
+            key("arms_core:gait_can_move", true);
+
+    /** gait 子机是否允许开始跳跃 */
+    public static final StateVariableKey<Boolean> GAIT_CAN_JUMP =
+            key("arms_core:gait_can_jump", true);
+
+    /** vertical 子机是否允许水平移动输入 */
+    public static final StateVariableKey<Boolean> VERTICAL_CAN_MOVE =
+            key("arms_core:vertical_can_move", true);
+
+    /** vertical 子机是否允许开始跳跃 */
+    public static final StateVariableKey<Boolean> VERTICAL_CAN_JUMP =
+            key("arms_core:vertical_can_jump", true);
+
     /** 是否允许水平移动输入（综合：非 stun、非硬直、非 ragdoll、非击倒起身） */
     public static final StateVariableKey<Boolean> CAN_MOVE =
             key("arms_core:can_move", true);
@@ -197,6 +213,10 @@ public final class MechaStateVariableKeys {
     /** 是否在水中（眼部位置浸水检测，快照字段） */
     public static final StateVariableKey<Boolean> IN_WATER =
             key("arms_core:in_water", false);
+
+    /** KCC 是否正在蓄力跳跃；作为 vertical 子机的权威输入，不是表现层产出 */
+    public static final StateVariableKey<Boolean> KCC_JUMP_CHARGING =
+            key("arms_core:kcc_jump_charging", false);
 
     // ═══════════════════════════════════════════════
     // 事件 latch（由 MechaControl 从 pendingEvents 汇入）

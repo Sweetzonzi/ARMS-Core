@@ -16,27 +16,32 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *
  * <pre>
  * 状态转移图：
- *     [*] ──▶ stand ──(!onGround)──▶ air
- *              │   ├──(onGround && inWater)──▶ water
+ *     [*] ──▶ stand ──(!onGround && !inWater)──▶ air
+ *              │   ├──(inWater)──▶ water
  *              │   ├──(event:sneak)──▶ crouch
  *              │   ├──(event:mount)──▶ ride
  *              │   ├──(event:knockdown)──▶ prone
  *              │   └──(isDead)──▶ ragdoll
- *           air ──(onGround)──▶ stand
- *              ├──(!onGround && inWater)──▶ water
+ *           air ──(onGround && !inWater)──▶ stand
+ *              ├──(inWater)──▶ water
  *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
  *         water ──(onGround && !inWater)──▶ stand
+ *              ├──(!onGround && !inWater)──▶ air
  *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
- *        crouch ──(event:sneak)──▶ stand
+ *        crouch ──(!onGround && !inWater)──▶ air
+ *              ├──(inWater)──▶ water
+ *              ├──(event:sneak)──▶ stand
  *              ├──(event:prone)──▶ prone
  *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
  *              └──(isDead)──▶ ragdoll
- *         prone ──(event:prone)──▶ crouch
+ *         prone ──(!onGround && !inWater)──▶ air
+ *              ├──(inWater)──▶ water
+ *              ├──(event:prone)──▶ crouch
  *              ├──(event:mount)──▶ ride
  *              └──(isDead)──▶ ragdoll
  *         ride  ──(event:dismount)──▶ stand
@@ -76,17 +81,13 @@ public final class PostureLogicGraphs {
     private static final StateCondition COND_NOT_IN_WATER = isFalse(IN_WATER);
     private static final StateCondition COND_IS_DEAD = isTrue(StateVariableKeys.IS_DEAD);
 
-    /** onGround && inWater → stand → water */
-    private static final StateCondition COND_STAND_TO_WATER =
-            new StateCondition.All(List.of(COND_ON_GROUND, COND_IN_WATER));
-
-    /** !onGround && inWater → air → water */
-    private static final StateCondition COND_AIR_TO_WATER =
-            new StateCondition.All(List.of(COND_NOT_ON_GROUND, COND_IN_WATER));
-
     /** onGround && !inWater → water → stand */
     private static final StateCondition COND_WATER_TO_STAND =
             new StateCondition.All(List.of(COND_ON_GROUND, COND_NOT_IN_WATER));
+
+    /** !onGround && !inWater → 任意地面/水中姿态 → air */
+    private static final StateCondition COND_TO_AIR =
+            new StateCondition.All(List.of(COND_NOT_ON_GROUND, COND_NOT_IN_WATER));
 
     /** 有击倒事件 */
     private static final StateCondition COND_KNOCKDOWN = isTrue(EVENT_KNOCKDOWN);
@@ -128,12 +129,12 @@ public final class PostureLogicGraphs {
         StateNode standNode = new StateNode(
                 Posture.STAND.molangName(),
                 List.of(
-                        new StateTransition(null, Posture.AIR.molangName(), COND_NOT_ON_GROUND),
-                        new StateTransition(null, Posture.WATER.molangName(), COND_STAND_TO_WATER),
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
+                        new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
+                        new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
                         new StateTransition("sneak", Posture.CROUCH.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)
                 ),
                 List.of(SET_POSTURE_STAND),
                 NO_ACTIONS,
@@ -147,11 +148,11 @@ public final class PostureLogicGraphs {
         StateNode airNode = new StateNode(
                 Posture.AIR.molangName(),
                 List.of(
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
+                        new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
                         new StateTransition(null, Posture.STAND.molangName(), COND_ON_GROUND),
-                        new StateTransition(null, Posture.WATER.molangName(), COND_AIR_TO_WATER),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)
                         // 飞行切换（fly toggle）由 MechaControl 直接操作 air_vert 子控
                 ),
                 List.of(SET_POSTURE_AIR),
@@ -166,10 +167,11 @@ public final class PostureLogicGraphs {
         StateNode waterNode = new StateNode(
                 Posture.WATER.molangName(),
                 List.of(
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
                         new StateTransition(null, Posture.STAND.molangName(), COND_WATER_TO_STAND),
+                        new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)
                 ),
                 List.of(SET_POSTURE_WATER),
                 NO_ACTIONS,
@@ -180,11 +182,13 @@ public final class PostureLogicGraphs {
         StateNode crouchNode = new StateNode(
                 Posture.CROUCH.molangName(),
                 List.of(
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
+                        new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
+                        new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
                         new StateTransition("sneak", Posture.STAND.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("prone", Posture.PRONE.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)
                 ),
                 List.of(SET_POSTURE_CROUCH),
                 NO_ACTIONS,
@@ -195,9 +199,11 @@ public final class PostureLogicGraphs {
         StateNode proneNode = new StateNode(
                 Posture.PRONE.molangName(),
                 List.of(
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
+                        new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
+                        new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
                         new StateTransition("prone", Posture.CROUCH.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE)
                 ),
                 List.of(SET_POSTURE_PRONE),
                 NO_ACTIONS,
@@ -208,8 +214,8 @@ public final class PostureLogicGraphs {
         StateNode rideNode = new StateNode(
                 Posture.RIDING.molangName(),
                 List.of(
-                        new StateTransition("dismount", Posture.STAND.molangName(), StateCondition.True.INSTANCE),
-                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD)
+                        new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
+                        new StateTransition("dismount", Posture.STAND.molangName(), StateCondition.True.INSTANCE)
                 ),
                 List.of(SET_POSTURE_RIDING),
                 NO_ACTIONS,
