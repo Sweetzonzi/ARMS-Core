@@ -16,6 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 abstract class LogicStateMachineTestSupport {
 
+    /** 测试固定步长：20 TPS 一帧 (s) */
+    protected static final float TEST_DT = 0.05f;
+
     protected StateVariableContainer variables;
     protected GameplayTagContainer tags;
     protected MechaLogicStateMachine machine;
@@ -54,7 +57,7 @@ abstract class LogicStateMachineTestSupport {
 
     protected void progress(int frames) {
         for (int i = 0; i < frames; i++) {
-            machine.progress();
+            machine.progress(TEST_DT);
         }
     }
 
@@ -66,28 +69,28 @@ abstract class LogicStateMachineTestSupport {
             }
             case AIR -> {
                 setEnvironment(false, false, false);
-                machine.progress();
+                machine.progress(TEST_DT);
             }
             case WATER -> {
                 setEnvironment(true, true, false);
-                machine.progress();
+                machine.progress(TEST_DT);
             }
             case CROUCH -> {
                 machine.broadcastEvent("sneak");
-                machine.progress();
+                machine.progress(TEST_DT);
             }
             case PRONE -> {
                 machine.broadcastEvent("sneak");
                 machine.broadcastEvent("prone");
-                machine.progress();
+                machine.progress(TEST_DT);
             }
             case RIDING -> {
                 machine.broadcastEvent("mount");
-                machine.progress();
+                machine.progress(TEST_DT);
             }
             case RAGDOLL -> {
                 variables.set(StateVariableKeys.IS_DEAD, true);
-                machine.progress();
+                machine.progress(TEST_DT);
             }
         }
         assertEquals(posture, variables.get(POSTURE));
@@ -96,8 +99,8 @@ abstract class LogicStateMachineTestSupport {
     protected void enterSprint() {
         variables.set(ENERGY, 100f);
         setMovement(true, false, true, 1f);
-        machine.progress();
-        machine.progress();
+        machine.progress(TEST_DT);
+        machine.progress(TEST_DT);
         assertEquals(Gait.SPRINT, variables.get(GAIT));
     }
 

@@ -182,13 +182,14 @@ public class MechaControl {
      */
     public void onPhysicsStep(float dt) {
         // —— 1. 汇入快照与步进前 KCC 状态 ——
-        writeStateInputs(dt);
+        float safeDt = Math.max(dt, 1.0e-6f);
+        writeStateInputs(safeDt);
 
         // —— 2. 事件广播到当前活跃状态树 ——
         broadcastPendingEvents();
 
         // —— 3. 推进整棵状态树，并由逻辑机合并最终输入许可 ——
-        logicStateMachine.progress();
+        logicStateMachine.progress(safeDt);
 
         // —— 4. 按最终许可转发输入到 KCC ——
         forwardInputToKCC();
@@ -197,7 +198,7 @@ public class MechaControl {
         // TODO: molangContext.setVariables(variables);
 
         // —— 6. 驱动表现层中央状态机 ——
-        // TODO: centralMachines.forEach((name, machine) -> machine.progress());
+        // TODO: centralMachines.forEach((name, machine) -> machine.progress(dt));
         // 内部：PlayAnimAction → for target in animTargets:
         //   anim = findAnimation(target, stateName)  ← 三级回退（零件 → 素体 → 内置）
         //   instance.group = controller.animGroup

@@ -25,7 +25,7 @@ class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void jumpChargeMirrorsKccChargingState() {
         variables.set(KCC_JUMP_CHARGING, true);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Vertical.JUMP_CHARGE, variables.get(VERTICAL));
         assertSourcePermissions(true, true, false, false);
@@ -35,7 +35,7 @@ class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
         assertEquals(Vertical.JUMP_CHARGE, variables.get(VERTICAL));
 
         variables.set(KCC_JUMP_CHARGING, false);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Vertical.GROUND, variables.get(VERTICAL));
         assertFinalPermissions(true, true);
@@ -66,11 +66,11 @@ class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void postureWithoutVerticalMachineIgnoresStaleVerticalDenial() {
         variables.set(KCC_JUMP_CHARGING, true);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertFinalPermissions(false, false);
 
         setEnvironment(true, true, false);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.WATER, variables.get(io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.POSTURE));
         assertSourcePermissions(true, true, false, false);

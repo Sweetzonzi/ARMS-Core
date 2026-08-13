@@ -31,7 +31,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         variables.set(StateVariableKeys.IS_DEAD, true);
         variables.set(StateVariableKeys.ON_GROUND, false);
         variables.set(IN_WATER, true);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.RAGDOLL, variables.get(POSTURE));
         assertFinalPermissions(false, false);
@@ -43,7 +43,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         enterPosture(Posture.AIR);
 
         setEnvironment(true, true, false);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.WATER, variables.get(POSTURE));
         assertFinalPermissions(true, false);
@@ -55,7 +55,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         enterPosture(source);
 
         setEnvironment(false, false, false);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.AIR, variables.get(POSTURE));
         assertFinalPermissions(true, false);
@@ -67,7 +67,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         enterPosture(source);
 
         setEnvironment(true, true, false);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.WATER, variables.get(POSTURE));
         assertFinalPermissions(true, false);
@@ -78,28 +78,28 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         enterPosture(Posture.WATER);
 
         setEnvironment(true, false, false);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Posture.STAND, variables.get(POSTURE));
 
         setEnvironment(true, true, false);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Posture.WATER, variables.get(POSTURE));
 
         setEnvironment(false, false, false);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Posture.AIR, variables.get(POSTURE));
     }
 
     @Test
     void mountAndDismountUpdatePostureAndPermissions() {
         machine.broadcastEvent("mount");
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.RIDING, variables.get(POSTURE));
         assertFinalPermissions(false, false);
 
         machine.broadcastEvent("dismount");
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.STAND, variables.get(POSTURE));
         assertFinalPermissions(true, true);

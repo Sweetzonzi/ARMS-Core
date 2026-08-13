@@ -29,7 +29,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
     void idleUsesHigherDriftEntryThreshold(float speed, Gait expected) {
         setMovement(false, false, false, speed);
 
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(expected, variables.get(GAIT));
     }
@@ -37,7 +37,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void driftUsesLowerStopThreshold() {
         setMovement(false, false, false, 0.151f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.DRIFT, variables.get(GAIT));
 
         setMovement(false, false, false, 0.051f);
@@ -45,7 +45,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
         assertEquals(Gait.DRIFT, variables.get(GAIT));
 
         setMovement(false, false, false, 0.05f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.IDLE, variables.get(GAIT));
     }
 
@@ -56,11 +56,11 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
     })
     void jogBranchesToIdleOrDriftWhenInputStops(float speed, Gait expected) {
         setMovement(true, false, false, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.JOG, variables.get(GAIT));
 
         setMovement(false, false, false, speed);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(expected, variables.get(GAIT));
     }
@@ -68,15 +68,15 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void walkKeySwitchesBetweenJogAndCreep() {
         setMovement(true, false, false, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.JOG, variables.get(GAIT));
 
         setMovement(true, true, false, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.CREEP, variables.get(GAIT));
 
         setMovement(true, false, false, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertEquals(Gait.JOG, variables.get(GAIT));
     }
 
@@ -92,7 +92,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
         enterSprint();
 
         setMovement(true, true, true, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Gait.CREEP, variables.get(GAIT));
     }
@@ -106,7 +106,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
         enterSprint();
 
         setMovement(false, false, false, speed);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(expected, variables.get(GAIT));
     }
@@ -116,7 +116,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
         enterSprint();
 
         variables.set(ENERGY, 0f);
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Gait.JOG, variables.get(GAIT));
     }

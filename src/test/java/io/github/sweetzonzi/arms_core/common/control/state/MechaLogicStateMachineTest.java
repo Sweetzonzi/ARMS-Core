@@ -18,7 +18,7 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
         setMovement(true, false, false, 1f);
         variables.set(KCC_JUMP_CHARGING, true);
 
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertState(Posture.STAND, Gait.JOG, Vertical.JUMP_CHARGE);
         assertSourcePermissions(true, true, false, false);
@@ -36,7 +36,7 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
     @Test
     void unknownBroadcastDoesNotChangeState() {
         machine.broadcastEvent("unknown");
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertState(Posture.STAND, Gait.IDLE, Vertical.GROUND);
         assertFinalPermissions(true, true);
@@ -72,19 +72,19 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
         assertOneHotConsistency();
 
         setMovement(true, false, false, 1f);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertOneHotConsistency();
 
         setEnvironment(false, false, false);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertOneHotConsistency();
 
         setEnvironment(false, true, false);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertOneHotConsistency();
 
         variables.set(StateVariableKeys.IS_DEAD, true);
-        machine.progress();
+        machine.progress(TEST_DT);
         assertOneHotConsistency();
     }
 
@@ -97,7 +97,7 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
         other.reset();
 
         machine.broadcastEvent("sneak");
-        machine.progress();
+        machine.progress(TEST_DT);
 
         assertEquals(Posture.CROUCH, variables.get(POSTURE));
         assertEquals(Posture.STAND, otherVariables.get(POSTURE));

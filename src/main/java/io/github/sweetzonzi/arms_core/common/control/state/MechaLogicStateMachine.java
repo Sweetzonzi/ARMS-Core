@@ -53,8 +53,8 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  *   if (pendingEvents.contains(DODGE))        logic.broadcastEvent("dodge");
  *   if (pendingEvents.contains(TOGGLE_FLY))   logic.broadcastEvent("fly");
  *
- *   // 5. 驱动状态机
- *   logic.progress();  // 递归驱动子控 + 自身 auto 转移
+ *   // 5. 驱动状态机（dt 为物理步长，驱动 stateTime / controllerTime 累积）
+ *   logic.progress(dt);  // 递归驱动子控 + 自身 auto 转移
  *
  *   // 6. 读取产出变量
  *   Posture posture = logic.getVariables().get(POSTURE);
@@ -88,10 +88,14 @@ public class MechaLogicStateMachine extends StateGraphController {
         ), variables, tags);
     }
 
-    /** 完成所有活跃子机和 posture 推进后，再合并本帧最终输入许可。 */
+    /**
+     * 完成所有活跃子机和 posture 推进后，再合并本帧最终输入许可。
+     *
+     * @param dt 本帧物理步长 (s)，透传给基类用于 stateTime / controllerTime 累积
+     */
     @Override
-    public void progress() {
-        super.progress();
+    public void progress(float dt) {
+        super.progress(dt);
         updateInputPermissions();
     }
 
