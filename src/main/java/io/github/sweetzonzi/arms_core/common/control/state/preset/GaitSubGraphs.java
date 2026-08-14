@@ -1,6 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.state.preset;
 
 import cn.solarmoon.spark_core.state_machine.graph.*;
+import cn.solarmoon.spark_core.state_machine.graph.conditions.StateTimeCondition;
 import cn.solarmoon.spark_core.state_machine.presets.StateVariableKeys;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
@@ -45,6 +46,35 @@ public final class GaitSubGraphs {
 
     /** idle 只有超过此速度（m/s）才进入 drift，形成滞回区间。 */
     public static final float DRIFT_ENTRY_SPEED_THRESHOLD = 0.15f;
+
+    /** stun 硬直持续时间 (s)，到时按输入/速度分支退出。 */
+    public static final float STUN_DURATION = 0.8f;
+
+    /** dodge 闪避持续时间 (s)，到时按输入/速度分支退出。 */
+    public static final float DODGE_DURATION = 0.4f;
+
+    /** hard_land 重落地恢复持续时间 (s)，到时按输入/速度分支退出（可被 dodge 提前取消）。 */
+    public static final float HARD_LAND_DURATION = 1.0f;
+
+    /**
+     * 时长型状态（dodge / stun / hard_land）的退出转移集合：
+     * 驻留达到 {@code duration} 秒后，按输入/残余速度分支到 idle / drift / creep / jog。
+     * <p>
+     * 四种分支全覆盖，避免时长结束后停留在无出口的终态。
+     */
+    private static List<StateTransition> timedExits(float duration) {
+        StateCondition time = new StateTimeCondition(duration);
+        return List.of(
+                new StateTransition(null, Gait.IDLE.molangName(),
+                        new StateCondition.All(List.of(time, COND_STOPPED))),
+                new StateTransition(null, Gait.DRIFT.molangName(),
+                        new StateCondition.All(List.of(time, COND_COASTING))),
+                new StateTransition(null, Gait.CREEP.molangName(),
+                        new StateCondition.All(List.of(time, COND_CREEP))),
+                new StateTransition(null, Gait.JOG.molangName(),
+                        new StateCondition.All(List.of(time, COND_JOG)))
+        );
+    }
 
     // ═══════════════════════════════════════════════
     // 通用条件
@@ -154,6 +184,8 @@ public final class GaitSubGraphs {
         idleTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_IDLE_TO_DRIFT));
         idleTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                 StateCondition.True.INSTANCE));
+        idleTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                StateCondition.True.INSTANCE));
 
         var idleActions = new java.util.ArrayList<StateAction>();
         idleActions.add(setIdle);
@@ -169,6 +201,8 @@ public final class GaitSubGraphs {
         creepTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
         creepTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                 StateCondition.True.INSTANCE));
+        creepTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                StateCondition.True.INSTANCE));
 
         StateNode creepNode = new StateNode(Gait.CREEP.molangName(),
                 creepTransitions, List.of(setCreep), NO_ACTIONS, NO_SUBGRAPHS);
@@ -181,6 +215,8 @@ public final class GaitSubGraphs {
         if (hasSprint)
             jogTransitions.add(new StateTransition(null, Gait.SPRINT.molangName(), COND_SPRINT));
         jogTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
+                StateCondition.True.INSTANCE));
+        jogTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
                 StateCondition.True.INSTANCE));
 
         StateNode jogNode = new StateNode(Gait.JOG.molangName(),
@@ -196,6 +232,8 @@ public final class GaitSubGraphs {
             sprintTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_NOT_SPRINT));
             sprintTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                     StateCondition.True.INSTANCE));
+            sprintTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                    StateCondition.True.INSTANCE));
             sprintNode = new StateNode(Gait.SPRINT.molangName(),
                     sprintTransitions, List.of(setSprint), NO_ACTIONS, NO_SUBGRAPHS);
         }
@@ -209,37 +247,37 @@ public final class GaitSubGraphs {
         driftTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
         driftTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                 StateCondition.True.INSTANCE));
+        driftTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                StateCondition.True.INSTANCE));
 
         StateNode driftNode = new StateNode(Gait.DRIFT.molangName(),
                 driftTransitions, List.of(setDrift), NO_ACTIONS, NO_SUBGRAPHS);
 
         // ═══ dodge — 闪避/翻滚/推进器/空中 dash ═══
+        // 驻留 DODGE_DURATION 后按输入/速度分支退出；可被 stun 中断。
         var dodgeTransitions = new java.util.ArrayList<StateTransition>();
-        dodgeTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_STOPPED));
-        dodgeTransitions.add(new StateTransition(null, Gait.DRIFT.molangName(), COND_COASTING));
-        dodgeTransitions.add(new StateTransition(null, Gait.CREEP.molangName(), COND_CREEP));
-        dodgeTransitions.add(new StateTransition(null, Gait.JOG.molangName(), COND_JOG));
+        dodgeTransitions.addAll(timedExits(DODGE_DURATION));
+        dodgeTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                StateCondition.True.INSTANCE));
 
         StateNode dodgeNode = new StateNode(Gait.DODGE.molangName(),
                 dodgeTransitions, List.of(setDodge), NO_ACTIONS, NO_SUBGRAPHS);
 
-        // ═══ stun — 硬直（禁止水平输入）════
+        // ═══ stun — 硬直（禁止水平输入），驻留 STUN_DURATION 后自动解除 ═══
         StateNode stunNode = new StateNode(Gait.STUN.molangName(),
-                List.of(
-                        new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT)
-                        // TODO: 真实实现需用计时器条件替代 COND_NO_INPUT
-                ),
+                timedExits(STUN_DURATION),
                 List.of(setStun, MechaStateActions.disableGaitInput()),
                 NO_ACTIONS, NO_SUBGRAPHS);
 
-        // ═══ hard_land — 重落地恢复（可被 dodge 取消）════
+        // ═══ hard_land — 重落地恢复（驻留 HARD_LAND_DURATION，可被 dodge 取消）════
         StateNode hardLandNode = null;
         if (hasHardLand) {
             var hardLandTransitions = new java.util.ArrayList<StateTransition>();
-            hardLandTransitions.add(new StateTransition(null, Gait.IDLE.molangName(), COND_NO_INPUT));
-            // TODO: 真实实现需用动画播完条件替代 COND_NO_INPUT
+            hardLandTransitions.addAll(timedExits(HARD_LAND_DURATION));
             hardLandTransitions.add(new StateTransition("dodge", Gait.DODGE.molangName(),
                     StateCondition.True.INSTANCE)); // dodge 提前取消
+            hardLandTransitions.add(new StateTransition("stun", Gait.STUN.molangName(),
+                    StateCondition.True.INSTANCE));
 
             hardLandNode = new StateNode(Gait.HARD_LAND.molangName(),
                     hardLandTransitions,

@@ -43,9 +43,6 @@ public enum MechaEvent {
     /** WALK ⇄ DRIVE 切换，当前实现 */
     TOGGLE_DRIVE,
 
-    /** 站立 ⇄ 蹲伏 切换，当前实现 */
-    TOGGLE_SNEAK,
-
     /** 蹲伏 ⇄ 卧倒 切换，当前实现 */
     TOGGLE_PRONE,
 

@@ -2,7 +2,7 @@
 
 > **状态**：执行清单
 > **创建**：2026-07-16
-> **最近更新**：2026-07-16（逻辑状态机非计时条件与 41 项单元测试完成）
+> **最近更新**：2026-08-14（MechaControl 客户端闭环旁路观测 + 时长条件 + ENERGY 初始化，53 项单元测试通过）
 > **目标**：先完成 `MechaControl` 客户端测试闭环和逻辑状态机验证，再接入动画、MoLang 与正式 `ArmsCore` 生命周期。
 > **关联**：[分层控制器与状态机设计](./分层控制器与状态机设计.md) · [MechaControl 设计文档](./MechaControl设计文档.md) · [角色控制器-行走物理设计](./角色控制器-行走物理设计.md)
 
@@ -35,7 +35,7 @@
 - [x] 在 Spark-Core 为 `StateGraphController` 增加活跃状态树事件 API：`broadcastEvent(eventType)`。
 - [x] 广播在控制器内部遍历私有 `activeChildren`，下游不能直接修改活跃子机集合。
 - [x] 明确父级事件与子级事件的处理顺序。
-  - posture 事件：`sneak`、`prone`、`mount`、`dismount`、`knockdown`。
+  - posture 事件：`prone`、`mount`、`dismount`、`knockdown`。（`sneak` 已改为连续状态，见 §3.2）
   - gait 事件：`dodge`、`stun`、`hard_land`。
   - vertical 事件：`jump_start`、`jump_release`、`glide_activate`、`hover`、`fly`。
 - [x] 当父级事件导致 posture 变化并替换活跃子图时，不再向旧子图投递同一事件；新子图接收当前事件。
@@ -52,6 +52,7 @@
 - [x] 确认 `ragdoll` 的生命周期：作为终态，通过 `reset()` 或 stop/start 回到初始状态，不隐式回到 `stand`。
 - [x] 补齐 `crouch`、`prone` 的环境转移：离地进入 `air`，入水进入 `water`，不能在悬空或水中继续保持地面姿态。
 - [x] 细化 `air` 落水/着地优先级。角色落入浅水且同时 `ON_GROUND = true`、`IN_WATER = true` 时，一次转入 `water`。
+- [x] 蹲伏改为**连续状态**：`IS_SNEAKING` 条件直接映射 `stand ↔ crouch`（蹲下即 crouch、站直即 stand，与 onGround/inWater 同属环境条件），不再使用 `sneak` 事件；环境条件（air/water）优先级高于蹲伏。
 - [ ] 明确 `riding` 下死亡、载具失效、强制下车的转移；骑乘时是否忽略普通 `ON_GROUND`/`IN_WATER` 条件也需固定。
 - [ ] 为 `isSleeping`、`isFallFlying` 等已采集环境状态确定归属：加入现有 posture/vertical，或标注为当前里程碑明确不支持，避免快照字段长期悬空。
 
@@ -61,11 +62,14 @@
   - `idle -> drift`：`!HAS_INPUT && SPEED > stopThreshold`。
   - `drift -> idle`：`!HAS_INPUT && SPEED <= stopThreshold`。
   - 阈值应集中定义并带滞回区间，避免速度在临界点附近抖动。
-- [ ] `stun` 使用持续时间或明确的解除事件退出，不再使用 `!HAS_INPUT`。
-- [ ] `hard_land` 使用落地冲量/落地前垂直速度进入，使用恢复计时器或动画完成条件退出。
-- [ ] 为 `dodge` 定义持续时间、能量消耗、冷却和退出条件，不能根据当前是否有输入立即退出。
-- [ ] 补齐从其他 gait 进入 `stun`、`hard_land` 的事件转移；仅声明节点但没有入口不算已实现。
-- [ ] 初始化并更新 `ENERGY`。当前默认值为 `0`，会导致 sprint 条件永远不成立。
+- [x] `stun` 使用持续时间退出（`STUN_DURATION = 0.8s`，`StateTimeCondition` 到时按输入/速度分支），不再使用 `!HAS_INPUT`；并补齐从所有 gait 进入 stun 的事件转移。
+- [x] `hard_land` 退出改用恢复计时器（`HARD_LAND_DURATION = 1.0s`，可被 dodge 取消）。
+- [ ] `hard_land` 进入条件（落地冲量/落地前垂直速度）待实现，当前无入口。
+- [x] `dodge` 已定义持续时间（`DODGE_DURATION = 0.4s`）与时长退出，不再根据当前输入立即退出。
+- [ ] `dodge` 能量消耗与冷却待实现。
+- [x] 补齐从其他 gait 进入 `stun` 的事件转移（idle/creep/jog/sprint/drift/dodge/hard_land → stun）。
+- [x] `ENERGY` 已初始化为满值（`MechaControl.INITIAL_ENERGY = 100f`，sprint 立即可用）。
+- [ ] `ENERGY` 消耗/恢复系统待实现。
 - [ ] 决定离散事件的唯一表达方式：使用 `triggerEvent` 驱动逻辑转移，`EVENT_*` 变量仅在表现层确实需要读取时保留，避免同一事件必须同时写 flag 和触发事件。
 
 ### 3.3 vertical 子状态
@@ -91,14 +95,14 @@
 ## 4. P0：MechaControl 逻辑层接线
 
 - [x] 让 `MechaControl` 实际持有并初始化共享的 `StateVariableContainer`、`GameplayTagContainer`、`MechaLogicStateMachine`。
-- [ ] 在物理线程内按固定顺序执行：
-  1. 消费最新快照和已 latch 的事件。
+- [x] 在物理线程内按固定顺序执行（`MechaControl.frameLogic`）：
+  1. 消费最新快照和已 latch 的事件（帧首原子取走事件批）。
   2. 采集步进前 KCC 状态，包括 `ON_GROUND`、`SPEED`、`VERTICAL_SPEED`、蓄力状态。
   3. 写入外部输入、环境变量、KCC 变量和事件变量。
   4. 将事件路由到 posture、当前 gait 或当前 vertical 控制器。
   5. 推进逻辑状态机的自动转移。
-  6. 发布只读调试状态。
-  7. 在闭环阶段应用状态机产出，再调用 `kcc.prePhysicsTick(dt)`。
+  6. 发布只读调试状态 — 待实现（当前直接暴露变量容器）。
+  7. 应用状态机产出再调用 `kcc.prePhysicsTick(dt)` — 当前处于旁路观测模式，门控未启用（`setBypassObservation(false)` 可开启）。
 - [x] 修正视角到世界方向的 yaw 符号，使其与当前 `ARMSClient` 已验证的方向一致。
 - [x] 将 `jumpReleased` 真正传给 KCC，并保证蓄力期间释放边沿不被 `CAN_JUMP=false` 吞掉。
 - [ ] 区分以下 KCC 控制量，不能全部复用 `setInputScale()`：
@@ -107,7 +111,7 @@
   - gait 的移动速度或驱动力倍率。
   - 动画脚本对整体能动性的临时缩放。
 - [ ] 增加不可变的逻辑状态查询结果，例如 `LogicStateSnapshot(posture, gait, vertical)`；不要把可变 `StateVariableContainer` 暴露给主线程或调试 UI。
-- [ ] 第一阶段只记录状态变化，不每帧打印；确认状态稳定后再开启反向控制。
+- [x] 第一阶段只记录状态变化（`MechaControl.logStateChanges`），不每帧打印；确认状态稳定后再开启反向控制。
 
 ---
 
@@ -115,10 +119,10 @@
 
 ### 5.1 record 方案
 
-- [ ] 将 `MechaConditionSnapshot` 改为不可变 `record`，构造后通过 `volatile` 字段或 `AtomicReference` 发布给物理线程。
-- [ ] 将连续状态与离散边沿分开：WASD、视角、按键是否按住属于 snapshot；`jumpReleased`、切换姿态、闪避等必须单独 latch，不能依赖“最新快照”恰好被物理线程看到。
-- [ ] `applyConditionSnapshot` 不得保留调用方之后还能修改的对象引用。
-- [ ] `pendingEvents` 改为线程安全且具有明确消费语义的结构，例如锁保护的交换缓冲、原子位集或单生产者/单消费者队列。
+- [x] 将 `MechaConditionSnapshot` 改为不可变 `record`，构造后通过 `volatile` 字段发布给物理线程（record final 字段 + volatile 引用保证安全发布）。
+- [x] 将连续状态与离散边沿分开：WASD、视角、按键是否按住属于 snapshot；`jumpReleased`、切换姿态、闪避等单独 latch（`MechaEvent` + 原子事件缓冲），不依赖“最新快照”恰好被物理线程看到。
+- [x] `applyConditionSnapshot` 不再保留调用方之后还能修改的对象引用（record 不可变）。
+- [x] `pendingEvents` 改为线程安全且具有明确消费语义的结构：`AtomicReference<Set<MechaEvent>>`，postEvent copy-on-write 追加，物理线程帧首 `getAndSet(空集)` 原子取走整批——任意交错下事件不丢失、不重复，只归属本帧或下一帧。
 
 ### 5.2 GC 压力判断
 
@@ -142,13 +146,13 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 
 ## 6. P1：ARMSClient 测试闭环
 
-- [ ] 用测试 `MechaControl` 替换当前直接持有的测试 KCC，KCC 仍由 `MechaControl` 内部持有。
-- [ ] 创建最小测试 `MechaControlHolder`，不要使用尚未完成且会传入 null KCC 的正式 `ArmsCore` 骨架。
-- [ ] 每个客户端 tick 只采集输入和环境快照，不从主线程读取或修改物理状态。
-- [ ] 每个物理步只调用 `MechaControl.onPhysicsStep(dt)`，避免客户端同时绕过编排器直接调用 KCC。
-- [ ] 增加状态变化日志，至少包含 `posture/gait/vertical`、关键输入、`ON_GROUND`、水平/垂直速度和触发事件。
+- [x] 用测试 `MechaControl` 替换当前直接持有的测试 KCC，KCC 仍由 `MechaControl` 内部持有（`ClientMechaTestRig`）。
+- [x] 创建最小测试 `MechaControlHolder`（`ClientMechaTestRig`），不要使用尚未完成且会传入 null KCC 的正式 `ArmsCore` 骨架。
+- [x] 每个客户端 tick 只采集输入和环境快照，不从主线程读取或修改物理状态。
+- [x] 每个物理步只调用 `MechaControl.onPhysicsStep(dt)`，避免客户端同时绕过编排器直接调用 KCC。
+- [x] 增加状态变化日志（`MechaControl.logStateChanges`），包含 `posture/gait/vertical`、关键输入、`ON_GROUND`、水平/垂直速度。
 - [ ] 处理玩家退出、切换世界/维度、死亡重生和客户端重连：从旧 PhysicsSpace 移除 KCC，清空状态机和事件，允许重新初始化。
-- [ ] 保留现有定期 warp 仅作为测试保护，并记录触发原因；正式链路应由宿主/KCC 同步协议替代。
+- [x] 保留现有定期 warp 仅作为测试保护，并记录触发原因；正式链路应由宿主/KCC 同步协议替代。
 
 旁路观测阶段验收标准：
 
@@ -162,11 +166,11 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 
 ## 7. P1：测试与验证
 
-- [x] 为纯逻辑图增加普通单元测试，优先于启动完整 Minecraft 客户端（当前 41 项）。
+- [x] 为纯逻辑图增加普通单元测试，优先于启动完整 Minecraft 客户端（当前 53 项，`test` 全绿）。
 - [ ] 覆盖初始状态、所有合法转移、非法事件、转移优先级、连续多帧稳定性和 one-hot 一致性。
 - [x] 对死亡用例做参数化测试：从每个非 ragdoll posture 设置 `IS_DEAD`，下一次推进必须进入 `ragdoll`。
 - [x] 对 `idle/drift` 使用阈值边界和滞回测试。
-- [ ] 对输入发布增加并发测试，验证 snapshot 字段不会撕裂、离散边沿不会丢失或重复消费。
+- [x] 对输入发布增加并发测试（`MechaControlTest.concurrentEventPostsAreNotLost`），验证离散边沿不丢失、不重复消费；snapshot 字段撕裂由不可变 record 结构性杜绝。
 - [ ] 增加客户端人工验证清单；只有需要真实 PhysicsSpace、碰撞和地形的部分才使用 `runClient`/GameTest。
 - [x] 每个阶段至少执行 `compileJava`；逻辑测试已纳入默认 `check`（当前 `test` / `check` 均通过）。
 

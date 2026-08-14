@@ -210,6 +210,10 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> WALK_KEY_DOWN =
             key("arms_core:walk_key_down", false);
 
+    /** 玩家是否处于蹲伏（连续状态，由快照 sneaking 汇入，驱动 posture stand ↔ crouch） */
+    public static final StateVariableKey<Boolean> IS_SNEAKING =
+            key("arms_core:is_sneaking", false);
+
     /** 是否在水中（眼部位置浸水检测，快照字段） */
     public static final StateVariableKey<Boolean> IN_WATER =
             key("arms_core:in_water", false);
@@ -225,10 +229,6 @@ public final class MechaStateVariableKeys {
     /** 本帧是否有闪避事件 */
     public static final StateVariableKey<Boolean> EVENT_DODGE =
             key("arms_core:event_dodge", false);
-
-    /** 本帧是否有潜行切换事件 */
-    public static final StateVariableKey<Boolean> EVENT_TOGGLE_SNEAK =
-            key("arms_core:event_toggle_sneak", false);
 
     /** 本帧是否有卧倒切换事件 */
     public static final StateVariableKey<Boolean> EVENT_TOGGLE_PRONE =

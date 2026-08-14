@@ -18,7 +18,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  * 状态转移图：
  *     [*] ──▶ stand ──(!onGround && !inWater)──▶ air
  *              │   ├──(inWater)──▶ water
- *              │   ├──(event:sneak)──▶ crouch
+ *              │   ├──(sneaking)──▶ crouch
  *              │   ├──(event:mount)──▶ ride
  *              │   ├──(event:knockdown)──▶ prone
  *              │   └──(isDead)──▶ ragdoll
@@ -34,7 +34,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *              └──(isDead)──▶ ragdoll
  *        crouch ──(!onGround && !inWater)──▶ air
  *              ├──(inWater)──▶ water
- *              ├──(event:sneak)──▶ stand
+ *              ├──(!sneaking)──▶ stand
  *              ├──(event:prone)──▶ prone
  *              ├──(event:mount)──▶ ride
  *              ├──(event:knockdown)──▶ prone
@@ -48,6 +48,13 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *              └──(isDead)──▶ ragdoll
  *       ragdoll 终态，无出口
  * </pre>
+ *
+ * <p>
+ * 蹲伏（crouch）是<b>连续状态</b>：stand ↔ crouch 由玩家蹲伏输入
+ * （快照 {@code sneaking} → {@code IS_SNEAKING}）直接驱动，不是事件切换——
+ * 蹲下即 crouch、站直即 stand，与 onGround / inWater 同属环境条件。
+ * 卧倒（prone）仍为事件切换（{@code event:prone}，蹲伏 ⇄ 卧倒）。
+ * </p>
  *
  * <p>
  * 子图声明（进入对应节点时自动激活，离开时自动关闭）：
@@ -92,6 +99,12 @@ public final class PostureLogicGraphs {
     /** 有击倒事件 */
     private static final StateCondition COND_KNOCKDOWN = isTrue(EVENT_KNOCKDOWN);
 
+    /** 玩家正在蹲伏（连续状态，快照 sneaking → IS_SNEAKING） */
+    private static final StateCondition COND_SNEAKING = isTrue(IS_SNEAKING);
+
+    /** 玩家未蹲伏 */
+    private static final StateCondition COND_NOT_SNEAKING = isFalse(IS_SNEAKING);
+
     // ═══════════════════════════════════════════════
     // 进入/退出动作常量
     // ═══════════════════════════════════════════════
@@ -132,7 +145,8 @@ public final class PostureLogicGraphs {
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
                         new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
                         new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
-                        new StateTransition("sneak", Posture.CROUCH.molangName(), StateCondition.True.INSTANCE),
+                        // 蹲伏是连续状态：玩家蹲下即 crouch（环境条件优先级高于蹲伏）
+                        new StateTransition(null, Posture.CROUCH.molangName(), COND_SNEAKING),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)
                 ),
@@ -185,7 +199,8 @@ public final class PostureLogicGraphs {
                         new StateTransition(null, Posture.RAGDOLL.molangName(), COND_IS_DEAD),
                         new StateTransition(null, Posture.WATER.molangName(), COND_IN_WATER),
                         new StateTransition(null, Posture.AIR.molangName(), COND_TO_AIR),
-                        new StateTransition("sneak", Posture.STAND.molangName(), StateCondition.True.INSTANCE),
+                        // 站直即回 stand（连续状态）
+                        new StateTransition(null, Posture.STAND.molangName(), COND_NOT_SNEAKING),
                         new StateTransition("prone", Posture.PRONE.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("mount", Posture.RIDING.molangName(), StateCondition.True.INSTANCE),
                         new StateTransition("knockdown", Posture.PRONE.molangName(), COND_KNOCKDOWN)

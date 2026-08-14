@@ -4,10 +4,19 @@ import cn.solarmoon.spark_core.gas.GameplayTagContainer;
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import cn.solarmoon.spark_core.state_machine.presets.StateVariableKeys;
 import com.jme3.math.Vector3f;
+import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.state.MechaLogicStateMachine;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
+import lombok.Getter;
 
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+
+import lombok.Getter;
+import lombok.Setter;
 
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.*;
 
@@ -18,34 +27,51 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * <ol>
  *   <li><b>输入消费</b> — 接收 Holder 写入的 {@link MechaConditionSnapshot} 和 {@link MechaEvent}，
  *       连同 KCC 内部采集的物理状态，汇入统一的 {@code StateVariableContainer}</li>
- *   <li><b>状态机驱动</b> — 管理中央 {@code MultiAnimStateMachine}（全局动作）和本地
- *       {@code AnimStateMachine}（零件自主动作），每物理帧推进状态转移</li>
- *   <li><b>动画编排</b> — 从根 SubPart 的 body_root 骨骼提取帧间位移写入 KCC
- *       （animRootDelta），并聚合动画完成状态供状态机条件查询</li>
+ *   <li><b>状态机驱动</b> — 管理逻辑层状态机树（posture + gait/vertical 子机），每物理帧推进状态转移</li>
  *   <li><b>物理桥接</b> — 将玩家输入转发给 {@link MechaCharacter}（KCC 封装），
  *       在 {@link #onPhysicsStep} 中调用 {@code kcc.prePhysicsTick(dt)} 完成行走/跳跃物理积分</li>
- *   <li><b>MoLang 集成</b> — 将 StateVariableContainer 注入 {@code MechaMolangContext}，
- *       使 JSON 动画控制器可通过 {@code ctrl.*} 绑定读取状态</li>
+ *   <li><b>旁路观测</b> — 默认 {@link #bypassObservation} 开启：状态机照常运行并产出变量，
+ *       但暂不应用 CAN_MOVE / CAN_JUMP 门控 KCC，保证旧 KCC 行为无回归；置 false 后启用反向控制</li>
  * </ol>
  * <p>
- * 线程模型：所有公共方法均在物理线程内执行（由 Holder 的物理步回调驱动）。
- * pendingEvents 和 conditionSnapshot 仅被物理线程单线程访问，无需同步。
+ * 线程模型：
+ * <ul>
+ *   <li>主线程（或 Holder 采集线程）：{@link #applyConditionSnapshot} 发布不可变快照（volatile 引用）、
+ *       {@link #postEvent} 追加离散事件（原子 copy-on-write）</li>
+ *   <li>物理线程：{@link #onPhysicsStep} 帧首原子取走整批事件（{@code frameEvents}），
+ *       之后的所有状态机读写均在物理线程内完成，无需再加锁</li>
+ * </ul>
  * <p>
  * 不依赖 Machine-Max 信号总线（ISignalBus）。输入由 Holder 直接传入。
  * 子系统合力叠加（推进器等）通过 {@code addSubsystemForce} 汇聚后施加到 KCC。
  *
  * @author Sweetzonzi
  */
+@Getter
 public class MechaControl {
+
+    // ==========================================
+    // 常量
+    // ==========================================
+
+    /**
+     * 初始能量值。
+     * <p>
+     * sprint 等能量门控条件（{@code ENERGY > 0}）在运行时依赖此值；
+     * 当前阶段仅初始化满值，消耗/恢复系统后续实现。
+     */
+    public static final float INITIAL_ENERGY = 100f;
 
     // ==========================================
     // 持有关系
     // ==========================================
 
     /** 持有者引用，构造时绑定 */
+    @Getter
     private final MechaControlHolder holder;
 
     /** KCC 运动学胶囊控制器（行走物理 + 跳跃 + 碰撞 sweep） */
+    @Getter
     private final MechaCharacter kcc;
 
     /** 逻辑层共享变量容器；父状态机和全部活跃子机共用。 */
@@ -55,20 +81,60 @@ public class MechaControl {
     private final GameplayTagContainer tags;
 
     /** posture + gait/vertical 子机组成的逻辑状态机树。 */
+    @Getter
     private final MechaLogicStateMachine logicStateMachine;
 
     /** 采集 KCC 速度时复用，避免物理帧内分配临时向量。 */
     private final Vector3f stateVelocity = new Vector3f();
 
     // ==========================================
-    // 输入缓冲
+    // 输入缓冲（跨线程发布）
     // ==========================================
 
-    /** 本帧条件快照（每帧由 Holder 覆盖写入） */
-    private MechaConditionSnapshot conditionSnapshot;
+    /**
+     * 本帧条件快照（主线程/采集线程发布，物理线程帧首读取）。
+     * <p>
+     * record 的 final 字段 + volatile 引用保证安全发布，不会撕裂。
+     */
+    private volatile MechaConditionSnapshot conditionSnapshot;
 
-    /** 本帧离散事件队列（latch 到帧末，消费后清除） */
-    private final Set<MechaEvent> pendingEvents = EnumSet.noneOf(MechaEvent.class);
+    /**
+     * 事件投递缓冲（主线程追加，物理线程帧首原子取走整批）。
+     * <p>
+     * postEvent 采用 copy-on-write 的 {@code getAndUpdate}，与帧首
+     * {@code getAndSet(空集)} 交换配合：任意交错下事件既不丢失也不重复，
+     * 只会归属到本帧或下一帧。
+     */
+    private final AtomicReference<Set<MechaEvent>> pendingEventBuffer =
+            new AtomicReference<>(EnumSet.noneOf(MechaEvent.class));
+
+    /** 本帧事件批（物理线程帧内快照，仅物理线程访问）。 */
+    private Set<MechaEvent> frameEvents = EnumSet.noneOf(MechaEvent.class);
+
+    // ==========================================
+    // 模式开关与调试
+    // ==========================================
+
+    /**
+     * 旁路观测模式：状态机照常运行并产出变量，但不应用 CAN_MOVE / CAN_JUMP 门控。
+     * <p>
+     * 默认开启——先保证原 KCC 行走/跳跃无回归，观测稳定后再置 false 逐项启用反向控制。
+     * -- GETTER --
+     * 当前是否处于旁路观测模式。
+     * -- SETTER --
+     *  切换旁路观测模式。
+     *  <p>
+     */
+    @Setter
+    private volatile boolean bypassObservation = true;
+
+    /** 调试日志开关（仅状态变化时打印一行，不每帧打印） */
+    private volatile boolean debugLog = false;
+
+    /** 状态变化日志缓存（物理线程独占） */
+    private Posture lastLoggedPosture;
+    private Gait lastLoggedGait;
+    private Vertical lastLoggedVertical;
 
     // ==========================================
     // 状态机与动画（待 Spark-Core 基础设施）
@@ -105,11 +171,13 @@ public class MechaControl {
     public MechaControl(MechaControlHolder holder, MechaCharacter kcc) {
         this.holder = holder;
         this.kcc = kcc;
-        this.conditionSnapshot = MechaConditionSnapshot.createEmpty();
+        this.conditionSnapshot = MechaConditionSnapshot.EMPTY;
         this.variables = new StateVariableContainer();
         this.tags = new GameplayTagContainer();
         this.logicStateMachine = new MechaLogicStateMachine(variables, tags);
         this.logicStateMachine.reset();
+        // 能量初始化为满值，sprint 等能量门控立即可用（消耗/恢复后续实现）
+        this.variables.set(ENERGY, INITIAL_ENERGY);
     }
 
     // ==========================================
@@ -120,6 +188,7 @@ public class MechaControl {
      * 写入本帧条件快照（每帧覆盖）。
      * <p>
      * 由 {@link MechaControlHolder#writeConditionSnapshot(MechaConditionSnapshot)} 委托调用。
+     * 快照必须为不可变对象（本实现使用 record）；调用方不得在发布后继续修改。
      *
      * @param snapshot 本帧由 Holder 采集的条件快照
      */
@@ -128,15 +197,20 @@ public class MechaControl {
     }
 
     /**
-     * 投递离散事件（latch 到帧末）。
+     * 投递离散事件（latch 到下一物理帧消费）。
      * <p>
      * 由 {@link MechaControlHolder#postEvent(MechaEvent)} 委托调用。
-     * 重复投递同一事件仅保留一个（EnumSet 去重）。
+     * 线程安全：copy-on-write 追加，重复投递同一事件仅保留一个（Set 去重）。
      *
      * @param event 事件类型
      */
     public void postEvent(MechaEvent event) {
-        pendingEvents.add(event);
+        pendingEventBuffer.getAndUpdate(current -> {
+            Set<MechaEvent> next = EnumSet.noneOf(MechaEvent.class);
+            next.addAll(current);
+            next.add(event);
+            return next;
+        });
     }
 
     // ==========================================
@@ -169,18 +243,48 @@ public class MechaControl {
      * <p>
      * 执行顺序：
      * <ol>
+     *   <li>帧首原子取走主线程投递的事件批</li>
      *   <li>汇入快照和 KCC 状态到 StateVariableContainer</li>
      *   <li>广播离散事件并推进逻辑状态机</li>
      *   <li>逻辑状态机在推进完成后合并最终输入许可</li>
-     *   <li>按最终许可转发玩家输入到 KCC</li>
-     *   <li>提取动画根骨骼位移 → kcc.setAnimRootDelta</li>
+     *   <li>按旁路观测/反向控制模式转发玩家输入到 KCC</li>
+     *   <li>提取动画根骨骼位移 → kcc.setAnimRootDelta（当前 TODO 空实现）</li>
      *   <li>KCC 物理积分 ({@code kcc.prePhysicsTick(dt)})</li>
-     *   <li>清除已消费事件</li>
      * </ol>
      *
      * @param dt 物理步长 (s)
      */
     public void onPhysicsStep(float dt) {
+        frameLogic(dt);
+
+        // —— 5. 注入 MoLang ——
+        // TODO: molangContext.setVariables(variables);
+
+        // —— 6. 驱动表现层中央状态机 ——
+        // TODO: centralMachines.forEach((name, machine) -> machine.progress(dt));
+
+        // —— 7. 分发事件到本地动画状态机 ——
+        // TODO: dispatchEventsToLocalMachines();
+
+        // —— 8. 提取动画根骨骼位移 ——
+        extractAnimRootDelta();
+
+        // —— 9. KCC 物理积分（行走力 / 跳跃 / 碰撞 sweep） ——
+        kcc.prePhysicsTick(dt);
+    }
+
+    /**
+     * 帧逻辑推进（不含 KCC 物理积分）。
+     * <p>
+     * 包内可见以便单元测试在不触碰 jme3 native（rayTest 等）的前提下验证接线：
+     * 事件 latch → 变量汇入 → 状态机推进 → 输入转发 → 状态变化日志。
+     *
+     * @param dt 物理步长 (s)
+     */
+    void frameLogic(float dt) {
+        // —— 帧首：原子取走主线程投递的事件批 ——
+        frameEvents = pendingEventBuffer.getAndSet(EnumSet.noneOf(MechaEvent.class));
+
         // —— 1. 汇入快照与步进前 KCC 状态 ——
         float safeDt = Math.max(dt, 1.0e-6f);
         writeStateInputs(safeDt);
@@ -191,45 +295,27 @@ public class MechaControl {
         // —— 3. 推进整棵状态树，并由逻辑机合并最终输入许可 ——
         logicStateMachine.progress(safeDt);
 
-        // —— 4. 按最终许可转发输入到 KCC ——
+        // —— 4. 按旁路/反向模式转发输入到 KCC ——
         forwardInputToKCC();
 
-        // —— 5. 注入 MoLang ——
-        // TODO: molangContext.setVariables(variables);
-
-        // —— 6. 驱动表现层中央状态机 ——
-        // TODO: centralMachines.forEach((name, machine) -> machine.progress(dt));
-        // 内部：PlayAnimAction → for target in animTargets:
-        //   anim = findAnimation(target, stateName)  ← 三级回退（零件 → 素体 → 内置）
-        //   instance.group = controller.animGroup
-        //   target.animController.playAnimation(instance)
-
-        // —— 7. 分发事件到本地动画状态机 ——
-        // TODO: dispatchEventsToLocalMachines();
-
-        // —— 8. 提取动画根骨骼位移 ——
-        extractAnimRootDelta();
-
-        // —— 9. KCC 物理积分（行走力 / 跳跃 / 碰撞 sweep） ——
-        kcc.prePhysicsTick(dt);
-
-        // —— 10. 清除已消费事件 ——
-        pendingEvents.clear();
+        // —— 状态变化日志 ——
+        logStateChanges();
     }
 
     /** 将连续输入、环境状态、事件 latch 和 KCC 状态写入共享变量容器。 */
     private void writeStateInputs(float dt) {
         MechaConditionSnapshot snap = conditionSnapshot;
-        boolean hasInput = snap.inputForward * snap.inputForward
-                + snap.inputStrafe * snap.inputStrafe > 0.001f;
+        boolean hasInput = snap.inputForward() * snap.inputForward()
+                + snap.inputStrafe() * snap.inputStrafe() > 0.001f;
 
-        variables.set(StateVariableKeys.INPUT_FORWARD, snap.inputForward);
-        variables.set(StateVariableKeys.INPUT_STRAFE, snap.inputStrafe);
-        variables.set(StateVariableKeys.IS_SPRINTING, snap.sprintPressed);
-        variables.set(StateVariableKeys.IS_DEAD, snap.isDead);
+        variables.set(StateVariableKeys.INPUT_FORWARD, snap.inputForward());
+        variables.set(StateVariableKeys.INPUT_STRAFE, snap.inputStrafe());
+        variables.set(StateVariableKeys.IS_SPRINTING, snap.sprintPressed());
+        variables.set(StateVariableKeys.IS_DEAD, snap.isDead());
         variables.set(HAS_INPUT, hasInput);
-        variables.set(WALK_KEY_DOWN, snap.walkKeyPressed);
-        variables.set(IN_WATER, snap.inWater);
+        variables.set(WALK_KEY_DOWN, snap.walkKeyPressed());
+        variables.set(IN_WATER, snap.inWater());
+        variables.set(IS_SNEAKING, snap.sneaking());
 
         variables.set(StateVariableKeys.ON_GROUND, kcc.onGround());
         float safeDt = Math.max(dt, 1.0e-6f);
@@ -240,22 +326,20 @@ public class MechaControl {
         variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);
         variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 
-        variables.set(EVENT_DODGE, pendingEvents.contains(MechaEvent.DODGE));
-        variables.set(EVENT_TOGGLE_SNEAK, pendingEvents.contains(MechaEvent.TOGGLE_SNEAK));
-        variables.set(EVENT_TOGGLE_PRONE, pendingEvents.contains(MechaEvent.TOGGLE_PRONE));
-        variables.set(EVENT_TOGGLE_DRIVE, pendingEvents.contains(MechaEvent.TOGGLE_DRIVE));
-        variables.set(EVENT_TOGGLE_FLY, pendingEvents.contains(MechaEvent.TOGGLE_FLY));
+        variables.set(EVENT_DODGE, frameEvents.contains(MechaEvent.DODGE));
+        variables.set(EVENT_TOGGLE_PRONE, frameEvents.contains(MechaEvent.TOGGLE_PRONE));
+        variables.set(EVENT_TOGGLE_DRIVE, frameEvents.contains(MechaEvent.TOGGLE_DRIVE));
+        variables.set(EVENT_TOGGLE_FLY, frameEvents.contains(MechaEvent.TOGGLE_FLY));
     }
 
     /**
      * 广播逻辑层事件。死亡时忽略普通输入事件，让 ragdoll 自动转移拥有绝对优先级。
      */
     private void broadcastPendingEvents() {
-        if (conditionSnapshot.isDead) return;
+        if (conditionSnapshot.isDead()) return;
 
-        for (MechaEvent event : pendingEvents) {
+        for (MechaEvent event : frameEvents) {
             String eventType = switch (event) {
-                case TOGGLE_SNEAK -> "sneak";
                 case TOGGLE_PRONE -> "prone";
                 case TOGGLE_FLY -> "fly";
                 case DODGE -> "dodge";
@@ -277,37 +361,53 @@ public class MechaControl {
     /**
      * 将快照中的移动/跳跃输入转发到 KCC。
      * <p>
-     * 移动方向需要从玩家输入方向 + 视角偏航转换为世界坐标系方向。
-     * 若无移动意图则设置零向量（触发 §3.9 无输入制动）。
+     * 移动方向从玩家输入方向 + 视角偏航转换为世界坐标系方向。
+     * 旁路观测模式（默认）：原样透传，与旧 ARMSClient 直接驱动 KCC 的行为一致；
+     * 反向控制模式：按逻辑层合并许可（CAN_MOVE / CAN_JUMP）门控。
      */
     private void forwardInputToKCC() {
         MechaConditionSnapshot snap = this.conditionSnapshot;
-
-        // 移动输入：将 [-1,1] 输入方向从视角相对坐标系转换为世界坐标系
-        float fwd = snap.inputForward;
-        float str = snap.inputStrafe;
+        float fwd = snap.inputForward();
+        float str = snap.inputStrafe();
         boolean hasInput = (fwd * fwd + str * str) > 0.001f;
 
-        if (hasInput && variables.get(CAN_MOVE)) {
-            // 视角偏航转弧度（Minecraft yaw: 0=南, 90=西）
-            float yawRad = (float) Math.toRadians(snap.viewYaw);
-            float sinYaw = (float) Math.sin(yawRad);
-            float cosYaw = (float) Math.cos(yawRad);
-
-            // 与客户端已验证方向一致：前进 = (-sinYaw, 0, cosYaw)
-            float worldDirX = str * cosYaw - fwd * sinYaw;
-            float worldDirZ = fwd * cosYaw + str * sinYaw;
-
-            kcc.setMoveInput(worldDirX, worldDirZ);
+        if (bypassObservation) {
+            // 旁路观测：原样透传（无输入则置零，触发 KCC §3.9 无输入制动）
+            applyMoveInput(fwd, str, snap.viewYaw(), hasInput);
+            kcc.setJumpInput(snap.jumpPressed(), snap.jumpReleased());
         } else {
-            kcc.setMoveInput(0, 0);
-        }
+            // 反向控制：CAN_MOVE / CAN_JUMP 门控
+            applyMoveInput(fwd, str, snap.viewYaw(), hasInput && variables.get(CAN_MOVE));
 
-        // CAN_JUMP 只限制开始跳跃；已经开始蓄力后仍须透传 held/released 才能正常释放。
-        boolean charging = kcc.isChargingJump();
-        boolean jumpHeld = snap.jumpPressed && (variables.get(CAN_JUMP) || charging);
-        boolean jumpReleased = snap.jumpReleased && charging;
-        kcc.setJumpInput(jumpHeld, jumpReleased);
+            // CAN_JUMP 只限制开始跳跃；已经开始蓄力后仍须透传 held/released 才能正常释放。
+            boolean charging = kcc.isChargingJump();
+            boolean jumpHeld = snap.jumpPressed() && (variables.get(CAN_JUMP) || charging);
+            boolean jumpReleased = snap.jumpReleased() && charging;
+            kcc.setJumpInput(jumpHeld, jumpReleased);
+        }
+    }
+
+    /**
+     * 将 [-1,1] 输入方向从视角相对坐标系转换为世界坐标系后写入 KCC。
+     * <p>
+     * 与 Minecraft 原版 {@code Entity.getInputVector} 完全一致：
+     * <pre>
+     *   worldX = str·cosYaw − fwd·sinYaw
+     *   worldZ = fwd·cosYaw + str·sinYaw
+     * </pre>
+     * 输入约定（与原版 {@code Input.leftImpulse} 一致）：fwd 正=前进，str 正=<b>左移</b>。
+     * 校验：yaw=0（面向南 +Z）按左 → +X（东）；yaw=90（面向西 -X）按左 → +Z（南）。
+     * 禁止移动时置零（触发 KCC 无输入制动）。
+     */
+    private void applyMoveInput(float fwd, float str, float viewYaw, boolean allowed) {
+        if (!allowed) {
+            kcc.setMoveInput(0, 0);
+            return;
+        }
+        float yawRad = (float) Math.toRadians(viewYaw);
+        float sinYaw = (float) Math.sin(yawRad);
+        float cosYaw = (float) Math.cos(yawRad);
+        kcc.setMoveInput(str * cosYaw - fwd * sinYaw, fwd * cosYaw + str * sinYaw);
     }
 
     // ==========================================
@@ -373,7 +473,7 @@ public class MechaControl {
      */
     private void dispatchEventsToLocalMachines() {
         // TODO:
-        // for (MechaEvent event : pendingEvents) {
+        // for (MechaEvent event : frameEvents) {
         //     switch (event) {
         //         case ATTACK_PRIMARY:
         //             // weaponPart.animController.stateMachines["fire"].triggerEvent("fire")
@@ -388,27 +488,40 @@ public class MechaControl {
     }
 
     // ==========================================
+    // 调试日志
+    // ==========================================
+
+    /** 开关状态变化调试日志（仅状态变化时打印一行，非每帧）。 */
+    public void setDebugLog(boolean debugLog) {
+        this.debugLog = debugLog;
+    }
+
+    private void logStateChanges() {
+        if (!debugLog) return;
+        Posture posture = variables.get(POSTURE);
+        Gait gait = variables.get(GAIT);
+        Vertical vertical = variables.get(VERTICAL);
+        if (posture == lastLoggedPosture && gait == lastLoggedGait && vertical == lastLoggedVertical) {
+            return;
+        }
+        lastLoggedPosture = posture;
+        lastLoggedGait = gait;
+        lastLoggedVertical = vertical;
+        MechaConditionSnapshot snap = conditionSnapshot;
+        ARMS.LOGGER.info("[MechaCtrl] posture={} gait={} vertical={} | input=({}, {}) sprint={} jump={} "
+                        + "| ground={} hSpeed={} vSpeed={}",
+                posture.molangName(), gait.molangName(), vertical.molangName(),
+                snap.inputForward(), snap.inputStrafe(), snap.sprintPressed(), snap.jumpPressed(),
+                kcc.onGround(), variables.get(StateVariableKeys.SPEED),
+                variables.get(StateVariableKeys.VERTICAL_SPEED));
+    }
+    // ==========================================
     // 查询 API
     // ==========================================
 
-    /** 获取当前快照（状态机内部可能需要直接查询未被汇入变量的字段） */
+    /** 获取当前快照（不可变 record，可安全跨线程读取） */
     public MechaConditionSnapshot getCurrentSnapshot() {
         return conditionSnapshot;
-    }
-
-    /** 获取 KCC 引用（调试/子系统合力叠加等场景） */
-    public MechaCharacter getKCC() {
-        return kcc;
-    }
-
-    /** 获取持有者引用 */
-    public MechaControlHolder getHolder() {
-        return holder;
-    }
-
-    /** 获取逻辑状态机，供物理线程调试和只读状态查询。 */
-    public MechaLogicStateMachine getLogicStateMachine() {
-        return logicStateMachine;
     }
 
     /** 当前合并后的水平移动许可。 */
@@ -421,13 +534,13 @@ public class MechaControl {
         return logicStateMachine.canJump();
     }
 
-    /** 检查是否有待处理的事件 */
+    /** 本帧是否有待处理事件（物理线程帧内视图）。 */
     public boolean hasPendingEvent(MechaEvent event) {
-        return pendingEvents.contains(event);
+        return frameEvents.contains(event);
     }
 
-    /** 获取当前帧所有待处理事件（只读） */
+    /** 获取本帧待处理事件（物理线程帧内快照，只读；跨帧请勿持有）。 */
     public Set<MechaEvent> getPendingEvents() {
-        return pendingEvents;
+        return frameEvents;
     }
 }

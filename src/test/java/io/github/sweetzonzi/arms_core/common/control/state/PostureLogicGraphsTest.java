@@ -9,6 +9,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.IN_WATER;
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.IS_SNEAKING;
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.POSTURE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -115,5 +116,46 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
 
         assertEquals(Posture.RAGDOLL, variables.get(POSTURE));
         assertFinalPermissions(false, false);
+    }
+
+    @Test
+    void sneakIsContinuousConditionMappingStandToCrouch() {
+        // 蹲下 → crouch
+        variables.set(IS_SNEAKING, true);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.CROUCH, variables.get(POSTURE));
+
+        // 持续蹲伏保持 crouch（不抖动）
+        progress(5);
+        assertEquals(Posture.CROUCH, variables.get(POSTURE));
+
+        // 站直 → stand
+        variables.set(IS_SNEAKING, false);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.STAND, variables.get(POSTURE));
+    }
+
+    @Test
+    void environmentTakesPriorityOverSneaking() {
+        // 蹲伏中入水 → water，而非 crouch
+        variables.set(IS_SNEAKING, true);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.CROUCH, variables.get(POSTURE));
+
+        setEnvironment(true, true, false);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.WATER, variables.get(POSTURE));
+    }
+
+    @Test
+    void airborneTakesPriorityOverSneaking() {
+        // 蹲伏中离地 → air，而非 crouch
+        variables.set(IS_SNEAKING, true);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.CROUCH, variables.get(POSTURE));
+
+        setEnvironment(false, false, false);
+        machine.progress(TEST_DT);
+        assertEquals(Posture.AIR, variables.get(POSTURE));
     }
 }

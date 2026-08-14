@@ -11,6 +11,8 @@ import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
+import lombok.AccessLevel;
+import lombok.Getter;
 
 import java.util.List;
 
@@ -67,12 +69,16 @@ public class MechaCharacter extends PhysicsCharacter {
     // ── 主线程写入、物理线程读取的 volatile 输入 ──
 
     /** 世界坐标 X 方向分量（已归一化） */
+    @Getter(AccessLevel.PACKAGE)
     private volatile float inputDirX;
     /** 世界坐标 Z 方向分量（已归一化） */
+    @Getter(AccessLevel.PACKAGE)
     private volatile float inputDirZ;
     /** 是否有移动意图 */
+    @Getter(AccessLevel.PACKAGE)
     private volatile boolean inputHasMove;
     /** 跳跃键是否按住 */
+    @Getter(AccessLevel.PACKAGE)
     private volatile boolean jumpHeld;
     /** 跳跃键本帧松开（单帧标记，物理线程消费后清零） */
     private volatile boolean jumpReleased;
@@ -105,8 +111,9 @@ public class MechaCharacter extends PhysicsCharacter {
 
     // ── 物理线程独占状态 ──
 
-    /** 是否正在蓄力跳跃 */
-    private boolean charging;
+    /** 是否正在蓄力跳跃（KCC 权威状态，vertical 子机镜像它） */
+    @Getter
+    private boolean chargingJump;
     /** 蓄力计时器 (s) */
     private float chargeTimer;
 
@@ -394,7 +401,7 @@ public class MechaCharacter extends PhysicsCharacter {
             fNet *= inScale;
 
             // ── 蓄力期间行走速度折减 ──
-            if (charging) {
+            if (chargingJump) {
                 float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
                 fNet *= (1.0f - ratio * MechaJumpAttr.CHARGE_WALK_PENALTY);
             }
@@ -463,10 +470,10 @@ public class MechaCharacter extends PhysicsCharacter {
             jumpReleased = false;
         }
 
-        if (!charging) {
+        if (!chargingJump) {
             // 空闲状态：按下开始蓄力（须着地、且 inputScale > 0 允许跳跃）
             if (held && grounded && inputScale > EPSILON) {
-                charging = true;
+                chargingJump = true;
                 chargeTimer = 0f;
             }
         } else {
@@ -481,12 +488,12 @@ public class MechaCharacter extends PhysicsCharacter {
                 setJumpSpeed(vTakeoff);
                 jump();
 
-                charging = false;
+                chargingJump = false;
                 chargeTimer = 0f;
 
             } else if (!held || !grounded) {
                 // 中断：松键后重置、或离地
-                charging = false;
+                chargingJump = false;
                 chargeTimer = 0f;
 
             } else {
@@ -578,10 +585,5 @@ public class MechaCharacter extends PhysicsCharacter {
     public float getHSpeed() {
         Vector3f vel = getLinearVelocity(tmp3);
         return (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z);
-    }
-
-    /** 是否正在蓄力跳跃，调试用 */
-    public boolean isChargingJump() {
-        return charging;
     }
 }

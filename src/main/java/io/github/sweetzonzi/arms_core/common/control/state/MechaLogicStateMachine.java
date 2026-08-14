@@ -44,11 +44,11 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  *
  *   // 3. 每帧：写入快照 + KCC 状态到 variables
  *   logic.getVariables().set(ON_GROUND, kcc.onGround());
- *   logic.getVariables().set(HAS_INPUT, snapshot.inputForward != 0 || ...);
+ *   logic.getVariables().set(HAS_INPUT, snapshot.inputForward() != 0 || ...);
+ *   logic.getVariables().set(IS_SNEAKING, snapshot.sneaking()); // 蹲伏为连续状态，直接映射 crouch posture
  *   // ...
  *
  *   // 4. 注入离散事件（broadcastEvent 沿活跃树递归传播）
- *   if (pendingEvents.contains(TOGGLE_SNEAK)) logic.broadcastEvent("sneak");
  *   if (pendingEvents.contains(TOGGLE_PRONE)) logic.broadcastEvent("prone");
  *   if (pendingEvents.contains(DODGE))        logic.broadcastEvent("dodge");
  *   if (pendingEvents.contains(TOGGLE_FLY))   logic.broadcastEvent("fly");

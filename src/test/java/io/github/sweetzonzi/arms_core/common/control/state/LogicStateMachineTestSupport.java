@@ -76,11 +76,13 @@ abstract class LogicStateMachineTestSupport {
                 machine.progress(TEST_DT);
             }
             case CROUCH -> {
-                machine.broadcastEvent("sneak");
+                // 蹲伏是连续状态：IS_SNEAKING = true → stand → crouch
+                variables.set(IS_SNEAKING, true);
                 machine.progress(TEST_DT);
             }
             case PRONE -> {
-                machine.broadcastEvent("sneak");
+                variables.set(IS_SNEAKING, true);
+                machine.progress(TEST_DT);
                 machine.broadcastEvent("prone");
                 machine.progress(TEST_DT);
             }

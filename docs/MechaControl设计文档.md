@@ -200,14 +200,17 @@ public void onPhysicsStep(float dt):
 
 ### 5.4 移动输入方向转换
 
-Minecraft yaw：0=南，90=西。视角-世界坐标转换：
+Minecraft yaw：0=南(+Z)，90=西(-X)。视角-世界坐标转换（与原版 `Entity.getInputVector` 一致，`MechaControl.applyMoveInput` 实现）：
 
 ```
-worldDirX = forward × sin(yaw) + strafe × cos(yaw)
-worldDirZ = forward × cos(yaw) - strafe × sin(yaw)
+worldDirX = strafe × cos(yaw) - forward × sin(yaw)
+worldDirZ = forward × cos(yaw) + strafe × sin(yaw)
 ```
 
-此转换在 `MechaControl.forwardInputToKCC()` 中完成，Holder 不需要关心坐标转换——它只需提供原始的 `[-1,1]` 前/右输入。
+输入约定与原版 `Input.leftImpulse` 一致：`forward` 正=前进，`strafe` 正=**左移**。
+校验：yaw=0（面向南）按左 → +X（东）；yaw=90（面向西）前进 → -X（西）。
+
+此转换在 `MechaControl.forwardInputToKCC()` 中完成，Holder 不需要关心坐标转换——它只需提供原始的 `[-1,1]` 前/左输入。
 
 ### 5.5 动画根运动（位移 + Y 轴旋转）
 
