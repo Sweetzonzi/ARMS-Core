@@ -817,7 +817,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java:65`（`onPrePhysicsTick`）、`:96`（`syncToClients`）、`:147`（`onPlayerJoinLevel`） |
 | 载荷注册与协议版本 | `network/ARMSNetwork.java:30`（`PROTOCOL_VERSION`）、`:37`/`:41`/`:45`（`playToClient`）、`:52`（`playToServer`） |
 | 客户端输入采集与重发窗口 | `client/ARMSClient.java:50`（`RESEND_WINDOW`）、`:92`（`onClientTick`）、`:222`（`queueEvent`） |
-| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java:64`（`accept`）、`:113`（`lerpPosition`）；`client/MechaAnchorRenderer.java:65`（采样）、`:89`（`onRenderLevelStage`） |
+| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java:64`（`accept`）、`:113`（`lerpPosition`）；`client/MechaAnimatable.java:119`（`clientTick`）、`:219`（`getWorldPositionMatrix`）；`client/MechaModelRenderer.java:90`（`onClientTick` 采样）、`:113`（`onRenderLevelStage` 渲染） |
 | 调试命令 | `common/command/ArmsCoreDebugCommand.java` |
 | `onPhysicsStep` 顺序 | `common/control/MechaControl.java:257-274` |
 | 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java:286` |

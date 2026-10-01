@@ -73,10 +73,12 @@
 | `common/ArmsCoreServerEvents.java` | 两个相位的接线：`PhysicsLevelTickEvent.Pre` 扇出 `prePhysicsTick`，`LevelTickEvent.Post` 写 `syncedData` 并发包；以及补发、断线重置、维度卸载。 |
 | `common/command/ArmsCoreDebugCommand.java` | `/arms` 调试命令（spawn / list / remove / move / jump / stop / event / control）。 |
 | `common/control/attr/MechaBodyPreset.java` | 胶囊几何的唯一来源（半径 / 圆柱段高 / `HALF_TOTAL` / 由脚底算胶囊中心），服务端出生点与客户端锚点共用。 |
+| `common/control/attr/MechaModelPreset.java` | 机体占位模型的唯一来源（模型 `ModelIndex` / 贴图 / 缩放 / 底面偏移），与 `MechaBodyPreset` 同为阶段 4.6 前素体取值的临时权威；外观 1:1 渲染，只与胶囊底面对齐。 |
 | `network/ARMSNetwork.java` | 载荷注册与协议版本串；四个载荷为下行 `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` / `MechaCoreSyncPayload` 与上行 `MechaInputPayload`。 |
 | `client/ARMSClient.java` | 客户端输入采集与上行发送（`ClientTickEvent.Pre`）。客户端不构造 KCC、不跑状态机。 |
 | `client/ClientMechaAnchor.java` | 客户端可视锚点的采样与插值（含传送 / 断流跳变判据）。 |
-| `client/MechaAnchorRenderer.java` | 采样锚点并在 `AFTER_ENTITIES` 阶段画胶囊外接盒与朝向线段。 |
+| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成世界位姿矩阵。装配体之外的对象，`ArmsCore` 不持有它，改为逐 Part 渲染时整体删除。 |
+| `client/MechaModelRenderer.java` | 每客户端 tick 采样位姿并驱动动画体，在 `AFTER_ENTITIES` 阶段渲染机体模型；同时画胶囊外接盒与朝向线段作对位参考（`DRAW_DEBUG_CAPSULE_BOX`）。 |
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveInput` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC 并**钳制稳态速率**（只折减力不够，均衡点仍在同一顶速），进入 dodge 时施加按窗口积分的冲量。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
