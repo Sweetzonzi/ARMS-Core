@@ -6,6 +6,7 @@ import cn.solarmoon.spark_core.physics.PhysicsHelperKt;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
 import com.jme3.math.Vector3f;
@@ -34,11 +35,6 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
  */
 @EventBusSubscriber(modid = ARMS.MOD_ID, value = Dist.CLIENT)
 public class ARMSClient {
-
-    /** 胶囊半径 (m) */
-    private static final float CAPSULE_RADIUS = 0.4f;
-    /** 胶囊圆柱段高度 (m)，不含两端半球 */
-    private static final float CAPSULE_HEIGHT = 1.6f;
 
     /** 测试夹具（MechaControl + KCC） */
     private static volatile ClientMechaTestRig rig;
@@ -130,17 +126,14 @@ public class ARMSClient {
     // ═══════════════════════════════════════════════
 
     private static void initRig(LocalPlayer player) {
-        CapsuleCollisionShape shape = new CapsuleCollisionShape(CAPSULE_RADIUS, CAPSULE_HEIGHT);
+        CapsuleCollisionShape shape = MechaBodyPreset.newCapsuleShape();
         PhysicsSpace space = SparkLevel.getPhysicsLevel(player.level()).getWorld();
         ClientMechaTestRig rigLocal = new ClientMechaTestRig(shape, space);
 
-        // 初始位置设为玩家位置（胶囊中心在玩家脚底上方 capsuleHalfTotal 处）
-        float halfTotal = shape.getHeight() / 2f + shape.getRadius();
-        Vector3f startPos = new Vector3f(
-                (float) player.getX(),
-                (float) player.getY() + halfTotal,
-                (float) player.getZ()
-        );
+        // 初始位置设为玩家位置（胶囊中心在玩家脚底上方 HALF_TOTAL 处）
+        float[] center = MechaBodyPreset.capsuleCenterFromFeet(
+                (float) player.getX(), (float) player.getY(), (float) player.getZ());
+        Vector3f startPos = new Vector3f(center[0], center[1], center[2]);
 
         // 在物理线程设置位置并加入物理世界
         SparkLevel.submitImmediateTask(player.level(),

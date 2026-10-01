@@ -123,8 +123,14 @@ public class MechaCharacter extends PhysicsCharacter {
     /** 地面法向量（世界坐标，Y 上），射线检测获取 */
     private final Vector3f groundNormal = new Vector3f(0, 1, 0);
 
-    /** 控制器当前 Y 轴朝向（弧度），由 {@link #applyAnimRootYaw} 累积动画根骨骼 Y 旋转增量 */
-    private float currentYaw;
+    /**
+     * 控制器当前 Y 轴朝向（弧度），由 {@link #applyAnimRootYaw} 累积动画根骨骼 Y 旋转增量。
+     * <p>
+     * 物理线程写入、主线程读取（同步通道要用它填 `DATA_YAW`），因此声明为 {@code volatile}。
+     * 该字段单向累积、不归一化，任其无限增长；需要作为朝向使用时的归一化见
+     * `docs/ArmsCore双端权威与网络同步实现计划.md` §7 Q2。
+     */
+    private volatile float currentYaw;
 
     // ── 临时向量，减少物理线程分配 ──
     private final Vector3f tmp1 = new Vector3f();
@@ -244,6 +250,21 @@ public class MechaCharacter extends PhysicsCharacter {
      */
     public void setAnimRootYawDelta(float deltaYaw) {
         this.animRootYawDelta = deltaYaw;
+    }
+
+    /**
+     * 读取控制器当前 Y 轴朝向（弧度）。
+     * <p>
+     * 字段由物理线程累积、主线程读取，声明为 {@code volatile} 保证可见性；读取到的值对应
+     * 某一次完整物理步结束后的结果，不需要额外加锁。
+     * <p>
+     * 返回值是**未归一化**的累积量：动画根骨骼持续正转时会超出 ±π 范围。使用者若需要
+     * 有界朝向，自行归一化（同步通道侧由 `Rotations` 的 `% 360` 覆盖线上格式）。
+     *
+     * @return 控制器当前 Y 轴朝向（弧度）
+     */
+    public float getCurrentYaw() {
+        return currentYaw;
     }
 
     /**
