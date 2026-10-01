@@ -9,6 +9,7 @@ import cn.solarmoon.spark_core.animation.model.origin.OModel;
 import cn.solarmoon.spark_core.molang.SparkMolangContext;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaModelPreset;
+import lombok.Getter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.NotNull;
@@ -57,14 +58,25 @@ import java.util.Map;
  */
 public final class MechaAnimatable implements IAnimatable<ArmsCore> {
 
-    /** 本动画体所代表的装配体，同时是 MoLang 的求值对象 */
-    private final ArmsCore core;
+    /**
+     * 本动画体所代表的装配体，同时是 MoLang 的求值对象：{@code q.*} 一类查询经
+     * {@code getAnimatable()} 落到它身上（{@code IAnimatable.kt:21}）。
+     */
+    @Getter
+    @NotNull
+    private final ArmsCore animatable;
 
     /** 占位模型标识；构造期即被 {@link ModelController} 读取，必须先于它就位 */
+    @Getter
+    @NotNull
     private final ModelIndex defaultModelIndex;
 
+    @Getter
+    @NotNull
     private final ModelController modelController;
 
+    @Getter
+    @NotNull
     private final AnimController animController;
 
     /**
@@ -74,9 +86,13 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * {@code controllerAllAnimationsFinished} 的 setter 都会写入这里
      * （{@code IAnimatable.kt:43}、{@code :94}）。
      */
+    @Getter
+    @NotNull
     private final Map<String, Object> variables = new HashMap<>();
 
     /** 一次性缓存的 MoLang 上下文（接口默认实现每次调用都新建，类注释见 {@code IAnimatable.kt:85}） */
+    @Getter
+    @NotNull
     private final SparkMolangContext<MechaAnimatable> molangContext;
 
     /** 同步位姿的采样与插值状态 */
@@ -95,7 +111,7 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * @param core 客户端侧的装配体实例（{@code ArmsCore.newClientInstance} 构造）
      */
     public MechaAnimatable(ArmsCore core) {
-        this.core = core;
+        this.animatable = core;
         this.defaultModelIndex = MechaModelPreset.FRAME_MODEL;
         this.modelController = new ModelController(this);
         this.animController = new AnimController(this);
@@ -117,7 +133,7 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * @param clientTick 当前客户端 tick（{@code Level.getGameTime()}）
      */
     public void clientTick(long clientTick) {
-        anchor.acceptFromSyncedData(core, clientTick);
+        anchor.acceptFromSyncedData(animatable, clientTick);
         refreshModelIfNeeded();
         animController.tick();
     }
@@ -168,41 +184,10 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     // IAnimatable<ArmsCore>
     // ==========================================
 
-    /** {@inheritDoc} —— 持有者是装配体本身，MoLang 查询落在 {@link ArmsCore} 上。 */
-    @Override
-    public @NotNull ArmsCore getAnimatable() {
-        return core;
-    }
-
     /** 客户端世界；本对象只在客户端构造。 */
     @Override
     public @Nullable Level getAnimLevel() {
-        return core.getLevel();
-    }
-
-    @Override
-    public @NotNull ModelIndex getDefaultModelIndex() {
-        return defaultModelIndex;
-    }
-
-    @Override
-    public @NotNull AnimController getAnimController() {
-        return animController;
-    }
-
-    @Override
-    public @NotNull ModelController getModelController() {
-        return modelController;
-    }
-
-    @Override
-    public @NotNull Map<String, Object> getVariables() {
-        return variables;
-    }
-
-    @Override
-    public @NotNull SparkMolangContext<?> getMolangContext() {
-        return molangContext;
+        return animatable.getLevel();
     }
 
     /**
@@ -218,7 +203,7 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     @Override
     public @NotNull Matrix4f getWorldPositionMatrix(@NotNull Number partialTicks) {
         float partial = partialTicks.floatValue();
-        long clientTick = core.getLevel().getGameTime();
+        long clientTick = animatable.getLevel().getGameTime();
         anchor.lerpPosition(clientTick, partial, scratchPos);
         float yaw = anchor.lerpYaw(clientTick, partial);
         return new Matrix4f()

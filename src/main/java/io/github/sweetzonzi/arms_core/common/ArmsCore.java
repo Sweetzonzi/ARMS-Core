@@ -13,6 +13,7 @@ import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.Part;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.connector.AbstractConnector;
+import lombok.Getter;
 import net.minecraft.core.Rotations;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -125,12 +126,15 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // ═══════════════════════════════════════════════
 
     /** 装配体网络身份，构造时注入，不可变 */
+    @Getter
     private final UUID assemblyId;
 
     /** 所在世界，构造时注入 */
+    @Getter
     private final Level level;
 
     /** 是否持有 KCC 与状态机（服务端为 true，客户端为 false） */
+    @Getter
     private final boolean authoritative;
 
     /**
@@ -138,29 +142,22 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <p>
      * 服务端路径持有完整的 KCC 与状态机；客户端路径为 {@code null}
      * （客户端不运行 KCC 与状态机，见 D1）。读取入口是
-     * {@link #getMechaControl()}，它同时满足 {@link MechaControlHolder} 的契约。
+     * {@link MechaControlHolder#getMechaControl()}，本字段生成的 getter 满足该契约。
      */
+    @Getter
     private final @Nullable MechaControl mechaControl;
 
     /** 同步数据容器（服务端为唯一写入方，客户端只读） */
+    @Getter
     private final SynchedEntityData syncedData;
-
-    /**
-     * {@inheritDoc}
-     * <p>
-     * 服务端实例返回完整的控制器；客户端实例返回 {@code null}——客户端不运行 KCC 与状态机
-     * （D1），因此没有控制器可返回。
-     */
-    @Override
-    public @Nullable MechaControl getMechaControl() {
-        return mechaControl;
-    }
 
     /**
      * 逻辑层状态的不可变快照，物理线程每步发布、主线程读取。
      * <p>
-     * 客户端路径恒为 {@code null}。
+     * 主线程安全：该引用指向不可变 record，物理线程只会替换引用、不会修改已发布对象。
+     * 客户端路径、以及物理线程尚未步进过时恒为 {@code null}。
      */
+    @Getter
     private volatile MechaControl.@Nullable LogicStateSnapshot logicState;
 
     /** 入世时记录的胶囊中心位置，兜底 warp 的目标点 */
@@ -257,16 +254,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // 同步
     // ==========================================
 
-    /** 返回同步数据容器；服务端写入、客户端读取。 */
-    public SynchedEntityData getSyncedData() {
-        return syncedData;
-    }
-
-    /** 本实例是否持有 KCC 与状态机（服务端为 true，客户端为 false）。 */
-    public boolean isAuthoritative() {
-        return authoritative;
-    }
-
     /**
      * 服务端处理同步数据变化。
      * <p>
@@ -314,17 +301,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
         // ③ 发布逻辑状态到主线程（位姿由主线程直接读 KCC，见计划 §3.5）
         this.logicState = control.snapshotLogicState();
-    }
-
-    /**
-     * 返回最近一次物理步发布的逻辑层状态快照。
-     * <p>
-     * 主线程安全：该引用指向不可变 record，物理线程只会替换引用、不会修改已发布对象。
-     *
-     * @return 最近一次快照；物理线程尚未步进过时为 {@code null}
-     */
-    public MechaControl.@Nullable LogicStateSnapshot getLogicState() {
-        return logicState;
     }
 
     /**
@@ -385,16 +361,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // ==========================================
     // IPartAssembly
     // ==========================================
-
-    @Override
-    public UUID getAssemblyId() {
-        return assemblyId;
-    }
-
-    @Override
-    public Level getLevel() {
-        return level;
-    }
 
     @Override
     public boolean isInLevel() {

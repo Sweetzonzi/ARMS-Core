@@ -5,6 +5,7 @@ import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.network.payload.MechaInputPayload;
+import lombok.Getter;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.level.Level;
@@ -53,6 +54,7 @@ public final class ARMSClient {
     private static final long HEARTBEAT_MS = 1000L;
 
     /** 本客户端当前控制的装配体；{@code null} 表示尚未认领 */
+    @Getter
     private static volatile UUID targetCoreId;
 
     /** 上帧跳跃键状态，用于检测松开边沿 */
@@ -220,11 +222,6 @@ public final class ARMSClient {
         pendingJumpReleased |= jumpReleased;
         eventSeq++;
         resendRemaining = RESEND_WINDOW;
-    }
-
-    /** 当前被认领的装配体；未认领时为 {@code null}。 */
-    public static UUID getTargetCoreId() {
-        return targetCoreId;
     }
 
     /** 待上行事件位集的只读视图数量，用于调试显示。 */

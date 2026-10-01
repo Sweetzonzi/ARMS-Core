@@ -7,6 +7,7 @@ import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
+import lombok.Getter;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,7 +56,7 @@ class MechaControlTest {
         kcc = new MechaCharacter(new CapsuleCollisionShape(0.4f, 1.6f), physicsSpace);
         DummyHolder holder = new DummyHolder();
         control = new MechaControl(holder, kcc);
-        holder.control = control;
+        holder.mechaControl = control;
     }
 
     private void applyInput(float forward, float strafe) {
@@ -239,12 +240,8 @@ class MechaControlTest {
     // ═══════════════════════════════════════════════
 
     private static final class DummyHolder implements MechaControlHolder {
-        private MechaControl control;
-
-        @Override
-        public MechaControl getMechaControl() {
-            return control;
-        }
+        @Getter
+        private MechaControl mechaControl;
 
         @Override
         public SubPart getRootSubPart() {

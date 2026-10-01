@@ -38,7 +38,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * <ul>
  *   <li>主线程（或 Holder 采集线程）：{@link #applyConditionSnapshot} 发布不可变快照（volatile 引用）、
  *       {@link #postEvent} 追加离散事件（原子 copy-on-write）</li>
- *   <li>物理线程：{@link #onPhysicsStep} 帧首原子取走整批事件（{@code frameEvents}），
+ *   <li>物理线程：{@link #onPhysicsStep} 帧首原子取走整批事件（{@code pendingEvents}），
  *       之后的所有状态机读写均在物理线程内完成，无需再加锁</li>
  * </ul>
  * <p>
@@ -108,6 +108,9 @@ public class MechaControl {
      * 本帧条件快照（主线程/采集线程发布，物理线程帧首读取）。
      * <p>
      * record 的 final 字段 + volatile 引用保证安全发布，不会撕裂。
+     * <p>
+     * -- GETTER --
+     * 当前快照（不可变 record，可安全跨线程读取）。
      */
     private volatile MechaConditionSnapshot conditionSnapshot;
 
@@ -121,8 +124,13 @@ public class MechaControl {
     private final AtomicReference<Set<MechaEvent>> pendingEventBuffer =
             new AtomicReference<>(EnumSet.noneOf(MechaEvent.class));
 
-    /** 本帧事件批（物理线程帧内快照，仅物理线程访问）。 */
-    private Set<MechaEvent> frameEvents = EnumSet.noneOf(MechaEvent.class);
+    /**
+     * 本帧事件批（物理线程帧内快照，仅物理线程访问）。
+     * <p>
+     * -- GETTER --
+     * 本帧待处理事件（帧内快照，只读；跨帧请勿持有）。
+     */
+    private Set<MechaEvent> pendingEvents = EnumSet.noneOf(MechaEvent.class);
 
     /** 上一帧是否处于 dodge，用于检出「刚进入 dodge」的那一帧（物理线程独占）。 */
     private boolean dodgingLastFrame;
@@ -145,6 +153,7 @@ public class MechaControl {
     private volatile boolean bypassObservation = true;
 
     /** 调试日志开关（仅状态变化时打印一行，不每帧打印） */
+    @Setter
     private volatile boolean debugLog = false;
 
     /** 状态变化日志缓存（物理线程独占） */
@@ -299,7 +308,7 @@ public class MechaControl {
      */
     void frameLogic(float dt) {
         // —— 帧首：原子取走主线程投递的事件批 ——
-        frameEvents = pendingEventBuffer.getAndSet(EnumSet.noneOf(MechaEvent.class));
+        pendingEvents = pendingEventBuffer.getAndSet(EnumSet.noneOf(MechaEvent.class));
 
         // —— 1. 汇入快照与步进前 KCC 状态 ——
         float safeDt = Math.max(dt, 1.0e-6f);
@@ -415,10 +424,10 @@ public class MechaControl {
         variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);
         variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 
-        variables.set(EVENT_DODGE, frameEvents.contains(MechaEvent.DODGE));
-        variables.set(EVENT_TOGGLE_PRONE, frameEvents.contains(MechaEvent.TOGGLE_PRONE));
-        variables.set(EVENT_TOGGLE_DRIVE, frameEvents.contains(MechaEvent.TOGGLE_DRIVE));
-        variables.set(EVENT_TOGGLE_FLY, frameEvents.contains(MechaEvent.TOGGLE_FLY));
+        variables.set(EVENT_DODGE, pendingEvents.contains(MechaEvent.DODGE));
+        variables.set(EVENT_TOGGLE_PRONE, pendingEvents.contains(MechaEvent.TOGGLE_PRONE));
+        variables.set(EVENT_TOGGLE_DRIVE, pendingEvents.contains(MechaEvent.TOGGLE_DRIVE));
+        variables.set(EVENT_TOGGLE_FLY, pendingEvents.contains(MechaEvent.TOGGLE_FLY));
     }
 
     /**
@@ -427,7 +436,7 @@ public class MechaControl {
     private void broadcastPendingEvents() {
         if (conditionSnapshot.isDead()) return;
 
-        for (MechaEvent event : frameEvents) {
+        for (MechaEvent event : pendingEvents) {
             String eventType = switch (event) {
                 case TOGGLE_PRONE -> "prone";
                 case TOGGLE_FLY -> "fly";
@@ -562,7 +571,7 @@ public class MechaControl {
      */
     private void dispatchEventsToLocalMachines() {
         // TODO:
-        // for (MechaEvent event : frameEvents) {
+        // for (MechaEvent event : pendingEvents) {
         //     switch (event) {
         //         case ATTACK_PRIMARY:
         //             // weaponPart.animController.stateMachines["fire"].triggerEvent("fire")
@@ -579,11 +588,6 @@ public class MechaControl {
     // ==========================================
     // 调试日志
     // ==========================================
-
-    /** 开关状态变化调试日志（仅状态变化时打印一行，非每帧）。 */
-    public void setDebugLog(boolean debugLog) {
-        this.debugLog = debugLog;
-    }
 
     private void logStateChanges() {
         if (!debugLog) return;
@@ -608,11 +612,6 @@ public class MechaControl {
     // 查询 API
     // ==========================================
 
-    /** 获取当前快照（不可变 record，可安全跨线程读取） */
-    public MechaConditionSnapshot getCurrentSnapshot() {
-        return conditionSnapshot;
-    }
-
     /** 当前合并后的水平移动许可。 */
     public boolean canMove() {
         return logicStateMachine.canMove();
@@ -625,7 +624,7 @@ public class MechaControl {
 
     /** 本帧是否有待处理事件（物理线程帧内视图）。 */
     public boolean hasPendingEvent(MechaEvent event) {
-        return frameEvents.contains(event);
+        return pendingEvents.contains(event);
     }
 
     /**
@@ -652,11 +651,6 @@ public class MechaControl {
     /** 逻辑层本帧产出的水平移动模式。同 {@link #getMoveSpeedModifier()} 的读取注意。 */
     public Gait getCurrentGait() {
         return variables.get(GAIT);
-    }
-
-    /** 获取本帧待处理事件（物理线程帧内快照，只读；跨帧请勿持有）。 */
-    public Set<MechaEvent> getPendingEvents() {
-        return frameEvents;
     }
 
     /**

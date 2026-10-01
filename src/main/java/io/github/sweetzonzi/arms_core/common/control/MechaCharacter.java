@@ -15,6 +15,7 @@ import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import lombok.AccessLevel;
 import lombok.Getter;
+import lombok.Setter;
 
 import java.util.List;
 
@@ -95,9 +96,11 @@ public class MechaCharacter extends PhysicsCharacter {
     // ── 动画与参数调制（外部写入，物理线程读取）──
 
     /** 重力缩放系数，1.0 = 正常重力，0.0 = 浮空。由 MoLang ctrl.set_gravity_scale 改写 */
+    @Setter
     private volatile float gravityScale = 1.0f;
 
     /** 玩家能动性缩放，同时作用于行走净力与跳跃冲量。1.0 = 正常，0.0 = 全锁。由 MoLang ctrl.set_input_scale 改写 */
+    @Setter
     private volatile float inputScale = 1.0f;
 
     /** 动画根骨骼帧间位移 X 分量（世界坐标，m/tick），由 MechaControl 每物理步写入 */
@@ -109,13 +112,24 @@ public class MechaCharacter extends PhysicsCharacter {
 
     /**
      * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）。
-     * 由 MechaControl 每物理步写入，用于转身斩/回旋踢等动画驱动的面向变化。
-     * 正值 = 逆时针旋转（面向左转，对应 Minecraft yaw 增大方向）。
-     * 在 prePhysicsTick 中叠加到 KCC 的 Y 轴旋转。
+     * <p>
+     * 由 MechaControl 每物理步从 body_root 骨骼的帧间旋转差提取并写入，用于转身斩、
+     * 回旋踢、动画 idle 微晃等动画驱动的面向变化。
+     * 正值 = 逆时针旋转（面向左转，对应 Minecraft yaw 增大方向）。在 prePhysicsTick 中
+     * 叠加到 KCC 的 Y 轴旋转。
+     * <p>
+     * KCC 的 angularFactor 为 (0,1,0) —— 只接收 Y 轴旋转，X/Z 被冻结。
      */
+    @Setter
     private volatile float animRootYawDelta;
 
-    /** 控制器与躯干刚体的分离距离 (m)，用于行走力折减，超过 SEP_MAX 则触发 RAGDOLL */
+    /**
+     * 控制器与躯干刚体的分离距离 (m)，用于行走力折减。
+     * <p>
+     * 由上层控制编排（MechaControl）每物理步更新。分离超过
+     * {@link MechaWalkingAttr#SEP_MAX} 时行走力归零，并触发 RAGDOLL 状态切换。
+     */
+    @Setter
     private volatile float separationDistance;
 
     /**
@@ -126,7 +140,9 @@ public class MechaCharacter extends PhysicsCharacter {
      * 蹲伏、卧倒、闪避、硬直都会通过它改变实际速度。
      * <p>
      * 默认 1.0 表示「逻辑层尚未写入时的中性值」，与完全不接逻辑层时的行为一致。
+     * 写入侧只接受非负值，钳制规则见 {@link #setMoveSpeedModifier(float)}。
      */
+    @Getter
     private volatile float moveSpeedModifier = 1.0f;
 
     // ── 闪避冲量 ──
@@ -145,8 +161,14 @@ public class MechaCharacter extends PhysicsCharacter {
     /** 闪避无敌剩余时长 (s)，物理线程递减 */
     private float dodgeInvulnerableTimer;
 
-    /** 当前是否处于闪避无敌窗口 */
-    private boolean dodgeInvulnerable;
+    /**
+     * 当前是否处于闪避无敌窗口。
+     * <p>
+     * 伤害系统尚未接入（`docs/总体设计文档.md:27-59` 的伤害转发在阶段 4），因此本标志
+     * 目前只被查询、没有消费方；它在伤害路径就位后直接可用。
+     */
+    @Getter
+    private boolean invulnerable;
 
     // ── 物理线程独占状态 ──
 
@@ -165,10 +187,14 @@ public class MechaCharacter extends PhysicsCharacter {
     /**
      * 控制器当前 Y 轴朝向（弧度），由 {@link #applyAnimRootYaw} 累积动画根骨骼 Y 旋转增量。
      * <p>
-     * 物理线程写入、主线程读取（同步通道要用它填 `DATA_YAW`），因此声明为 {@code volatile}。
-     * 该字段单向累积、不归一化，任其无限增长；需要作为朝向使用时的归一化见
-     * `docs/ArmsCore双端权威与网络同步实现计划.md` §7 Q2。
+     * 物理线程写入、主线程读取（同步通道要用它填 `DATA_YAW`），因此声明为 {@code volatile}；
+     * 读到的值对应某一次完整物理步结束后的结果，不需要额外加锁。
+     * <p>
+     * 该字段单向累积、不归一化：动画根骨骼持续正转时会超出 ±π 范围，任其无限增长。使用者
+     * 若需要有界朝向，自行归一化（同步通道侧由 `Rotations` 的 `% 360` 覆盖线上格式）；
+     * 归一化约定的讨论见 `docs/ArmsCore双端权威与网络同步实现计划.md` §7 Q2。
      */
+    @Getter
     private volatile float currentYaw;
 
     // ── 临时向量，减少物理线程分配 ──
@@ -243,26 +269,6 @@ public class MechaCharacter extends PhysicsCharacter {
     }
 
     /**
-     * 设置重力缩放系数。
-     * <p>
-     * 由 MoLang {@code ctrl.set_gravity_scale(s)} 在动画关键帧脚本中调用。
-     * 0.0 = 浮空（KCC 重力关闭），1.0 = 正常重力。
-     */
-    public void setGravityScale(float s) {
-        this.gravityScale = s;
-    }
-
-    /**
-     * 设置玩家能动性缩放。
-     * <p>
-     * 由 MoLang {@code ctrl.set_input_scale(s)} 在动画关键帧脚本中调用。
-     * 同时调制行走净力与跳跃冲量。0.0 = 全锁（移动+跳跃），1.0 = 正常。
-     */
-    public void setInputScale(float s) {
-        this.inputScale = s;
-    }
-
-    /**
      * 设置动画根骨骼帧间位移。
      * <p>
      * 由上层控制编排（MechaControl）每物理步调用，写入当前帧与上帧根骨骼世界坐标差。
@@ -279,61 +285,18 @@ public class MechaCharacter extends PhysicsCharacter {
     }
 
     /**
-     * 设置动画根骨骼帧间 Y 轴旋转增量。
-     * <p>
-     * 由 MechaControl 从 body_root 骨骼的帧间旋转差提取。
-     * 用于转身斩、回旋踢、动画 idle 微晃等动画驱动面向变化。
-     * <p>
-     * KCC 的 angularFactor 为 (0,1,0) —— 只接收 Y 轴旋转，X/Z 被冻结。
-     * 因此只需传入 deltaYaw，在 prePhysicsTick 中直接叠加到 KCC 当前 Y 旋转。
-     *
-     * @param deltaYaw Y 轴旋转增量 (rad/tick)，正值 = 逆时针（yaw 增大方向）
-     */
-    public void setAnimRootYawDelta(float deltaYaw) {
-        this.animRootYawDelta = deltaYaw;
-    }
-
-    /**
-     * 读取控制器当前 Y 轴朝向（弧度）。
-     * <p>
-     * 字段由物理线程累积、主线程读取，声明为 {@code volatile} 保证可见性；读取到的值对应
-     * 某一次完整物理步结束后的结果，不需要额外加锁。
-     * <p>
-     * 返回值是**未归一化**的累积量：动画根骨骼持续正转时会超出 ±π 范围。使用者若需要
-     * 有界朝向，自行归一化（同步通道侧由 `Rotations` 的 `% 360` 覆盖线上格式）。
-     *
-     * @return 控制器当前 Y 轴朝向（弧度）
-     */
-    public float getCurrentYaw() {
-        return currentYaw;
-    }
-
-    /**
-     * 设置控制器与躯干刚体的当前分离距离。
-     * <p>
-     * 由上层控制编排（MechaControl）每物理步更新，用于行走力折减。
-     * 分离超过 {@link MechaWalkingAttr#SEP_MAX} 时行走力归零，并触发 RAGDOLL 状态切换。
-     */
-    public void setSeparationDistance(float sep) {
-        this.separationDistance = sep;
-    }
-
-    /**
      * 设置逻辑层给出的移动速度修正系数。
      * <p>
      * 由上层控制编排（MechaControl）每物理步从状态变量 {@code MOVE_SPEED_MODIFIER} 读入。
      * 它乘在行走净力上，因此蹲伏 / 卧倒 / 闪避 / 硬直都会真正改变实际速度，而不只是
      * 改变逻辑状态。
+     * <p>
+     * 负数会被钳到 0：本方法只接受「折减或不变」，放大速率由调用方在变量层决定。
      *
      * @param modifier 修正系数，0.0 = 完全无法自主移动，1.0 = 无修正
      */
     public void setMoveSpeedModifier(float modifier) {
         this.moveSpeedModifier = Math.max(0f, modifier);
-    }
-
-    /** 当前生效的移动速度修正系数。 */
-    public float getMoveSpeedModifier() {
-        return moveSpeedModifier;
     }
 
     /**
@@ -428,16 +391,6 @@ public class MechaCharacter extends PhysicsCharacter {
         return current;
     }
 
-    /**
-     * 当前是否处于闪避无敌窗口。
-     * <p>
-     * 伤害系统尚未接入（`docs/总体设计文档.md:27-59` 的伤害转发在阶段 4），因此本标志
-     * 目前只被查询、没有消费方；它在伤害路径就位后直接可用。
-     */
-    public boolean isInvulnerable() {
-        return dodgeInvulnerable;
-    }
-
     // ═══════════════════════════════════════════════
     // 物理步回调（物理线程调用）
     // ═══════════════════════════════════════════════
@@ -473,13 +426,13 @@ public class MechaCharacter extends PhysicsCharacter {
     private void updateInvulnerability(float dt) {
         if (dodgeInvulnerableTimer > 0f) {
             dodgeInvulnerableTimer -= dt;
-            dodgeInvulnerable = true;
+            invulnerable = true;
             if (dodgeInvulnerableTimer <= 0f) {
                 dodgeInvulnerableTimer = 0f;
-                dodgeInvulnerable = false;
+                invulnerable = false;
             }
         } else {
-            dodgeInvulnerable = false;
+            invulnerable = false;
         }
     }
 

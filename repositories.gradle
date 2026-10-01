@@ -124,9 +124,13 @@ dependencies {
 
     // ---- 编译/运行时辅助工具 ----
 
-    // Lombok
+    // Lombok：主源码集与测试源码集各声明一次。Gradle 的 testCompileOnly /
+    // testAnnotationProcessor 不从 compileOnly / annotationProcessor 继承，
+    // 因此 src/test 下引用 lombok 注解必须补上后两行。
     compileOnly 'org.projectlombok:lombok:1.18.34'
     annotationProcessor 'org.projectlombok:lombok:1.18.34'
+    testCompileOnly 'org.projectlombok:lombok:1.18.34'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.34'
 }
 
 // ==========================================

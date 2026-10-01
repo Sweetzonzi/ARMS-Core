@@ -201,7 +201,7 @@ public final class ArmsCoreDebugCommand {
         for (ArmsCore core : cores) {
             MechaConditionSnapshot current = core.getMechaControl() == null
                     ? MechaConditionSnapshot.EMPTY
-                    : core.getMechaControl().getCurrentSnapshot();
+                    : core.getMechaControl().getConditionSnapshot();
             writeSnapshot(core, current.inputForward(), current.inputStrafe(),
                     current.viewYaw(), held, released);
         }
@@ -272,7 +272,7 @@ public final class ArmsCoreDebugCommand {
                                       boolean jumpHeld, boolean jumpEdge) {
         MechaConditionSnapshot current = core.getMechaControl() == null
                 ? MechaConditionSnapshot.EMPTY
-                : core.getMechaControl().getCurrentSnapshot();
+                : core.getMechaControl().getConditionSnapshot();
         core.writeConditionSnapshot(MechaConditionSnapshot.builder()
                 .inputForward(forward)
                 .inputStrafe(strafe)

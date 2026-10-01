@@ -88,7 +88,7 @@
 
 ## 代码风格与依赖
 
-- 使用 **Lombok**：`@Getter` 等注解已启用（`repositories.gradle:114-115`）。
+- 使用 **Lombok**：`@Getter` / `@Setter` 注解已启用，主源码集与测试源码集各声明一次（`repositories.gradle:127-133`）。字段上的 `@NotNull` / `@Nullable`（JetBrains）会被 Lombok 拷到生成的 getter 上，因此接口的返回值可空性靠字段注解维持。
 - 使用 **Mixin**（`arms_core.mixins.json`），但当前 `mixins` / `client` 数组为空；新增 Mixin 需同步写入该文件。
 - 编码统一为 UTF-8（`build.gradle:18`）。
 - 包结构：`io.github.sweetzonzi.arms_core.*`，与 `mod_group_id` 一致。
