@@ -84,6 +84,20 @@ repositories {
 
 dependencies {
     // ---- 核心依赖 ----
+    //
+    // 三个同级项目经 settings.gradle 的复合构建接入。复合构建会把被依赖项目的
+    // dependencies 原样带进本项目的 runtimeClasspath：那些项目为自己的 runClient
+    // 声明的开发期集成模组（第三方 mod 及其前置）会一并出现在本模组的 run 环境里。
+    //
+    // 这一传递有两条实测后果：
+    //   1) 部分被带入的 mod 针对不同的 Minecraft 内部结构编译，启动时 Mixin 注入失败
+    //      并 FATAL，使 runClient 无法进入主菜单；
+    //   2) 这些 jar 位于同级项目的 build/ 下。本项目的 run 环境一旦打开它们，
+    //      Windows 上会持续占用文件，使那些项目的 jar / createMinecraftArtifacts
+    //      任务报 "Unable to delete file"，必须关掉 run 才能再次构建。
+    //
+    // 因此对三个同级项目的依赖逐个排除已知会破坏本模组 run 环境的条目（见下方
+    // 排除清单）。本项目不在编译期引用这些 mod 的任何类，排除只影响运行环境。
 
     // 1) Spark-Core：物理引擎 + 实体注册框架
     try {
@@ -113,4 +127,30 @@ dependencies {
     // Lombok
     compileOnly 'org.projectlombok:lombok:1.18.34'
     annotationProcessor 'org.projectlombok:lombok:1.18.34'
+}
+
+// ==========================================
+// 隔离同级项目带来的开发期模组
+// ==========================================
+//
+// Machine-Max 把下面这个 mod 声明为 implementation，于是它随复合构建进入本项目的
+// runtimeClasspath。它与本模组无关，且会让 runClient 直接启动失败：
+//
+//   accelerated-rendering（curse.maven:accelerated-rendering-1314021）
+//   它的 features.text.mixins.json:FormattedText$2Mixin 声明
+//   `@Shadow field val$text`，而当前 Minecraft 的 net.minecraft.network.chat.FormattedText$2
+//   里没有该字段，且该 mixin 配置不加载 refMap，于是注入失败并 FATAL：
+//     InvalidMixinException: @Shadow field val$text was not located in the target class
+//     net.minecraft.network.chat.FormattedText$2. No refMap loaded.
+//
+// 排除写在 dependency 声明上对复合构建不生效（被依赖项目的依赖不经过本项目的
+// 依赖声明），因此直接写在运行期配置上。本项目不在编译期引用它的任何类。
+//
+// 若将来还需要排除别的同级项目传递依赖，在这里追加；排除只影响运行环境，
+// 不影响编译期可见性。
+
+configurations.configureEach { configuration ->
+    if (configuration.canBeResolved) {
+        configuration.exclude group: 'curse.maven', module: 'accelerated-rendering-1314021'
+    }
 }

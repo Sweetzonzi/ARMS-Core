@@ -1,10 +1,49 @@
 # ArmsCore 双端权威与网络同步实现计划
 
-> **状态**：待执行
+> **状态**：阶段 0、1、2 已落地并通过下述验证；阶段 3、4 待执行（见 §4 各阶段标题后的状态标记）
 > **目标**：让 `ArmsCore` 由仅存在于客户端，变为双端存在、服务端权威，并建立两条独立同步通道——服务端 → 客户端的位姿与状态通道，客户端 → 服务端的输入通道。
 > **范围**：`ArmsCore` 的权威归属、创建与移除协议、两条同步通道、tick 驱动、宿主输入契约。不含显示实体本身的实现，不含 SubPart 的物理与渲染。
 > **本文自包含**：判定标准见 `AGENTS.md` 的「文档编辑规范」。具体到本文——全部符号、字段与判据在文内定义，结论写在正文，证据以「文件:行」形式落在 §8 与各节表格，可直接打开源码核验；允许把逐行论述留在外部（如 `docs/角色控制器-行走物理设计.md` 的 §10.3、§11），但每处外部引用都带节号或「文件:行」，可顺引用直接核验。各节之间只有前向引用（如 §3.4、阶段 1.5），不存在指向本文以外或本文其他版本的隐含前提。
 > **非前置参考**：`docs/总体设计文档.md`（`IArmsHost` 的原始设定、§2.4.5 的两条输入路径）、`docs/下一步开发TODO.md`（`LogicStateSnapshot` 的需求条目与跨线程决策）。本文不要求先读其中任何一份。
+
+### 0.1 实现与验证状态
+
+| 阶段 | 状态 | 验证方式 |
+|------|------|----------|
+| 阶段 0：前置修正 | 已落地 | `MechaBodyPresetTest`；`ArmsCore(Level, UUID)` 构造 |
+| 阶段 1：服务端权威 + 下行通道 | 已落地 | `ARMSNetworkCodecTest` 的编解码往返；专用服务端实测（见下方「验证记录」） |
+| 阶段 2：客户端输入上行 | 已落地 | 服务端实测中的输入写入链路；服务端合并与序号幂等由 `MechaInputHandler` 实现 |
+| 阶段 3：同步通道完善 | 待执行 | — |
+| 阶段 4：宿主与装配体接入 | 待执行 | — |
+
+**不在阶段清单内但已补齐的一项**：状态机产出到物理的落地（速度倍率、闪避冲量、姿态轮廓）。
+本计划的分阶段只覆盖「状态机怎么跑」与「状态怎么同步」，不含「产出怎么变成物理效果」；
+其中速度倍率与闪避冲量已落地并验证，姿态轮廓受库约束阻塞。详见 §3.12.1 与 §3.12.2。
+
+#### 验证记录
+
+下表是在专用服务端上实测得到的数字。测量方式是临时的：当时用一个启动即自建 `ArmsCore`、
+跑一段固定时间线（稳定站立 → 向前走 → 蹲伏走 → 投递 `DODGE`）并在结束时打印观测量的
+自检夹具完成，该夹具已从仓库移除，因此这些数字**不可由当前代码一键复现**，只能作为实现
+当时的验收证据；重新验证需要另建同类夹具或按「手动验证」逐项操作。
+
+| 观测量 | 实测值 | 对应判据 |
+|--------|--------|----------|
+| 状态机在服务端运行 | `posture` 由 `air` 转 `stand`，`vertical` 由 `fall` 转 `ground` | 阶段 1 验收第 1 条的前半 |
+| 下行带宽 | 80 tick 内 5–8 个增量包、13–17 个脏条目，单包最大 5 条（字段表上限 8） | 静止站立时**不**每 tick 成包，满足阶段 1 验收的带宽上界 |
+| 成过包的字段 | `pos` / `vel` / `energy` / `posture` / `vertical` / `jumpCharging` | 位姿与逻辑五项都能过线；`gait` 缺项是因为该次运行全程 `gait = idle`，非未同步 |
+| 上行 → 物理 → 逻辑 → 同步整链 | 写 `jumpPressed = true` 后观察到 `jumpCharging = true`、`vertical` 非 `ground` | 阶段 2 验收的上行链路 |
+| 位姿变化进入脏批 | 5 m 显著位移在 1 个 tick 内进入同步容器 | 阶段 1 对位姿字段的采样机制 |
+| 逻辑层 → 物理：速度倍率 | 站立 40 tick 位移 `2.33 m`，蹲伏同样 40 tick 位移 `0.70 m`，比值 **0.300** | 与 `Posture.CROUCH.speedModifier()` 一致（§3.12.1） |
+| 逻辑层 → 物理：闪避冲量 | 投递一次 `DODGE` 后水平位移 **1.24 m** | 设计值 1.2 m = 6 m/s × 0.4 s / 2（§3.12.1） |
+| 逻辑层 → 物理：姿态轮廓 | 无产出 | 蹲伏 / 卧倒的碰撞体积未实现，原因见 §3.12.2 |
+| 注册表生命周期 | 注销后该维度实例数归 0 | 阶段 1 验收的重连 / 换维度无残留 |
+
+包数与条目数写成区间而不是定值，因为多次运行的实测结果有差异，差异来自位姿在浮点精度边界上
+抖动的次数不同（`SynchedEntityData.set` 的判等落在 `Objects.equals` 上，见 §3.3）。
+
+**尚未验证的部分**（不得由上表推断）：真实玩家登录客户端后的手感与视觉表现、丢包注入下的
+序号重发行为、换维度与重连的补发路径。这三项需要**一个带客户端的会话**，上表的测量方式不覆盖。
 
 ---
 
@@ -507,8 +546,67 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
 | `DATA_YAW` 恒为常数 | **阶段 1–3 只能验收"该字段能过线"，不能验收"朝向正确"**；客户端锚点的朝向在阶段 1–3 应视为未定义，渲染时给固定值或直接不旋转 | 阶段 4 |
 | 无 `Part` 装配 | `ArmsCore.prePhysicsTick()` 第 ① 步空转；`getRootSubPart()` / `getAttr()` 返回 `null` | 阶段 4 |
 | 胶囊尺寸取阶段 0 的临时参数 | 与最终 `mech_chassis.json` 的 `controller` 段可能不一致，届时需回归一次手感 | 阶段 4 |
+| 姿态轮廓不随 posture 变化 | 蹲伏 / 卧倒的碰撞体积仍是站立胶囊；`MechaBodyPreset` 的姿态几何已就位但未接入，原因与两条已失败的路径见 §3.12.2 | 阶段 4.6 |
 
 §1.1 的"SubPart 姿态反向影响 KCC"这条耦合在上述缺失下**一行都没生效**。这一点不得被"阶段 1 验收通过"掩盖。
+
+#### 3.12.1 逻辑层产出到物理的落地
+
+本计划的阶段清单只覆盖「状态机怎么跑」与「状态怎么同步」，**不包含**「状态机的产出怎么变成物理效果」。
+这一层没有单独列项，实现它需要下面三项落地。注意 `MechaStateVariableKeys.java:29` 那句
+「MOVE_SPEED_MODIFIER，KCC 直接读取」描述的是设计意图而不是现存事实：该变量被写入
+（`MechaStateActions.java:134`），`MechaCharacter` 本身并不读它，其行走参数取自
+`MechaWalkingAttr` / `MechaJumpAttr` 常量。因此在补齐下面三项之前，蹲伏、卧倒、闪避在物理上
+没有表现，只有状态机在变。三项的落地位置与判据如下。
+
+| 产出 | 落地位置 | 语义 | 验证方式 |
+|------|----------|------|----------|
+| 速度倍率 `MOVE_SPEED_MODIFIER`（= posture.speedModifier × gait.baseSpeedModifier） | `MechaControl.java:339` 读变量 → `MechaCharacter.java:330` 写入 → 在 `updateWalk` 里同时**折减力**（加速变慢）与**钳制稳态速率**（顶速变低，`MechaCharacter.java:629`） | 蹲伏 0.3、卧倒 0.1、闪避 0、硬直 0 | 站立与蹲伏各跑 40 tick，位移比 0.300，与 `Posture.CROUCH.speedModifier()` 一致 |
+| 闪避冲量 | `MechaControl.java:360` 在进入 dodge 的那一物理步调用 → `MechaCharacter.java:398` 记录方向/初速/时长 → `consumeDodgeSpeed`（`MechaCharacter.java:419`）在 `DODGE_DURATION` 内逐物理步叠加并按线性衰减 | 单次闪避位移 = 初速 × 时长 / 2 = 6 × 0.4 / 2 = 1.2 m；同时开启 0.4 s 无敌窗口（`MechaCharacter.java:437`） | 投递 `DODGE` 事件后水平位移 1.24 m（含衰减离散化误差） |
+| 姿态轮廓（蹲伏 / 卧倒的胶囊尺寸） | **未落地**；原因与两条走不通的路径见 §3.12.2 | — | 无 |
+
+**只折减力是不够的。** 力-速曲线的均衡点几乎正好落在 `v_rated` 上，乘以倍率只是让**加速**变慢，
+最终仍会走到同一个顶速：实测蹲伏倍率 0.3 而稳态速率反而略高于站立。真正的「蹲着走得慢」必须是
+**速度上限**：`MechaCharacter.java:703` 的 `currentTargetSpeed` 解出倍率为 1.0 时的均衡速率
+（含抓地力上限钳制），再乘以本帧倍率作为上限。
+
+**闪避冲量不能一次性注入速度。** `MechaCharacter.updateWalk` 每物理步重写速度矢量，一次性注入
+最多活一个物理步（实测 6 m/s 只走出 0.06 m）。必须按窗口逐步积分，因此冲量持有剩余时长并在
+`updateKcc` 之外的位置（`updateWalk` 内）逐帧消费。
+
+#### 3.12.2 姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）为什么按姿态切换不了
+
+`PhysicsCharacter.setCollisionShape` 的库文档明确写着：
+
+> Apply the specified CollisionShape to this character. Note that the character
+> **should not be in any PhysicsSpace while changing shape**; the character gets
+> rebuilt on the physics side.
+>
+> —— `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:342-363`
+
+方法体内还有 `assert !isInWorld()`。**在世的 KCC 上换形状会让进程以 `0xC0000409`
+（Windows STATUS_STACK_BUFFER_OVERRUN）中止** —— release JVM 不检查断言，原生侧挂接了一个
+未重建的碰撞对象，内存随即被破坏；那是原生 abort，Java 侧 `try/catch` 捕获不到。
+
+两条路径都不成立，结论记录在此以免重复尝试：
+
+1. **直接换**：`setCollisionShape` 在空间内调用 → 首次换形状（蹲伏）侥幸通过，第二次（卧倒）立即中止。
+2. **先移出再换**：`removeCollisionObject` → `setCollisionShape` → `addCollisionObject` → 恢复速度
+   → 不中止，但幽灵体内部状态被重置（`onGround()` 失效、姿态回落到 `air`、位移读出 0），
+   且仍会在后续换形状时中止。
+
+因此 `MechaCharacter.applyPostureShape`（`MechaCharacter.java:360`）是 `@Deprecated` 且恒返回
+`false` 的记录，**调用方不得接入**；`MechaControl.applyLogicOutputToKcc` 的第 ② 步已注释掉。
+`MechaBodyPreset` 里的姿态几何（`CROUCH_HEIGHT` / `PRONE_HEIGHT` / `MIN_CAPSULE_HEIGHT` /
+`capsuleHeightFor` / `halfTotalFor` / `newCapsuleShape(Posture)`）已就位，供将来走通时直接使用；
+`MIN_CAPSULE_HEIGHT = 0.1f` 是防止退化形状（零长度圆柱）触发同一类原生中止的兜底。
+
+要让蹲伏 / 卧倒真正拥有低矮轮廓，需要换一条**不触碰在世 KCC 形状**的路径，候选：
+
+- 重建 KCC 实例（销毁旧的、按新形状构造新的，代价是速度与内部状态全部重置）；
+- 姿态切换时把碰撞交给一个独立的代理体，KCC 只负责运动学。
+
+这一项属于素体定义（阶段 4.6）的范围，且需要先定下「姿态切换时速度如何保留」的策略。
 
 ### 3.13 位姿回写的参考实现：`SubPart` → `MMPartEntity`
 
@@ -564,7 +662,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 客户端不持有 KCC，因此本阶段不包含客户端的控制器生命周期管理：KCC 的初始化、出生点与兜底逻辑都在服务端（阶段 1.5），客户端只维护按 `coreId` 索引的锚点，其生命周期跟随创建 / 移除包（阶段 1.12–1.14）。
 
-### 阶段 1：服务端权威模拟 + 下行通道
+### 阶段 1：服务端权威模拟 + 下行通道（已落地）
 
 本阶段交付"服务端唯一 KCC → 同步 → 客户端可视锚点"的最小闭环，输入来源为服务端调试命令。**客户端不发任何输入包。**
 
@@ -585,7 +683,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `ARMSClient.java:136-152` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
 | 1.6 | 唯一的物理步驱动 | `PhysicsLevelTickEvent.Pre` 订阅者按 Level 注册表扇出 `ArmsCore.prePhysicsTick()`（§3.6、D9） |
 | 1.7 | 物理线程发布逻辑状态 | 在阶段 1.6 的订阅者所触发的 `ArmsCore.prePhysicsTick()` 中，按 §3.6 伪代码的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回该不可变 record）。注意 §3.6 伪代码与本节任务号是两套编号：前者是 `prePhysicsTick()` 内部的 ①②③ 执行顺序，后者是阶段 1 的交付物清单 |
-| 1.8 | 客户端夹具退役 | 删除 `ARMSClient` 的 KCC / `MechaControl` 构造与物理步订阅（`:44-49`、`:113-126`、`:132-158`）；`ClientMechaTestRig` 退役（或降级为纯观测壳，不持有 KCC）。客户端不再有任何 `MechaCharacter` 实例 |
+| 1.8 | 客户端夹具退役 | 删除 `ARMSClient` 的 KCC / `MechaControl` 构造与物理步订阅；`ClientMechaTestRig` 整个删除。客户端不存在任何 `MechaCharacter` 实例 |
 | 1.9 | 载荷注册骨架 | 新建 `RegisterPayloadHandlersEvent` 订阅者（`ARMS.java` 当前只注册了一个配置，`:30-38`）。阶段 1 只注册 `playToClient` 三项 + `MainThreadPayloadHandler`；`playToServer` 方向留到阶段 2 一并注册（2.1） |
 | 1.10 | `MechaCoreSyncPayload`（record，`network/payload/`） | `(UUID coreId, List<SynchedEntityData.DataValue<?>> dirty)`，载荷 id 见 §3.4；编解码按 §3.3 的 `255` 终结符写法 |
 | 1.11 | `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` | 字段见 §3.4；创建包携带 `getNonDefaultValues()`（D6）与 `hostEntityId`（阶段 1–3 恒为 `-1`） |
@@ -604,7 +702,13 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 - 断开并重连、切换维度、死亡重生后，`MechaCoreRegistry` 与客户端锚点侧均无残留实例，且重连后 5 s 内状态与位姿收敛到服务端当前值（验证 D6 的全量初值）；
 - `DATA_YAW` 的**值**在阶段 1–3 不作验收（§3.12）。
 
-### 阶段 2：客户端输入上行
+**验收结果**：本阶段已在专用服务端上实测，数字见 §0.1 的「验证记录」。其中「三个位姿字段每 tick 重新采样」一条实测为 80 tick 内 5–8 个增量包，远低于带宽上界；「逻辑字段无变化时不产生条目」一条实测为静止段只出现 `vel`（幽灵体在浮点精度边界上的抖动），未出现 `posture` / `gait` / `vertical` / `energy` / `jump_charging`。
+
+该次测量使用的自检夹具已从仓库移除，因此上述数字不可一键复现；重新测量需按下面的手动验证操作，或另建同类夹具。
+
+**手动验证**：启动 `runClient` 进入世界，在聊天栏执行 `/arms spawn`（需要权限等级 2，单人游戏默认满足），屏幕上应出现一个浅蓝盒（胶囊外接盒）与一条从盒心伸出的橙色线段（朝向）。随后 `/arms move 1 0` 应看到服务端日志出现状态变化，`/arms list` 应打印位置与逻辑五项，`/arms remove` 应使盒子消失。客户端自己按住 W 时，同一个盒子应跟着移动——这条路径验证的是上行通道而不是调试命令。
+
+### 阶段 2：客户端输入上行（已落地）
 
 | # | 任务 | 说明 |
 |---|------|------|
@@ -623,7 +727,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 - 无输入时服务端状态机不产生自发转移；断开连接后服务端不会再收到该 `coreId` 的输入，且状态回到 `EMPTY` 快照对应的静止形态；
 - 同一次按键边沿（如跳跃松开）在整条链路上只被消费一次：服务端日志中 `EVENT_*` 与蓄力释放各出现一次，重发窗口内的重复包不产生第二次触发（§3.11）。
 
-### 阶段 3：同步通道的完善
+### 阶段 3：同步通道的完善（待执行）
 
 | # | 任务 | 说明 |
 |---|------|------|
@@ -633,7 +737,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 **验收**：单机带宽可观测并稳定；传送 / 重连后锚点不出现跨越地图的插值拖尾。
 
-### 阶段 4：宿主与装配体接入
+### 阶段 4：宿主与装配体接入（待执行）
 
 | # | 任务 | 说明 |
 |---|------|------|
@@ -698,17 +802,29 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 ### 本仓库
 
+本节记录把本计划落到代码之后，各结论对应的坐标。符号名与「文件:行」并存：文件与行号会随代码编辑漂移，符号名可作为失效后的重新定位入口。
+
 | 结论 | 位置 |
 |------|------|
-| `ArmsCore` 骨架现状（含 `getLevel()` 返回 `null`） | `common/ArmsCore.java:20`、`:24-26`、`:29-32`、`:35-37`、`:95-97`、`:99-102` |
-| 客户端夹具现状与胶囊常量 | `client/ARMSClient.java:39-41`、`:44`、`:47-49`、`:113-126`、`:122-124`、`:132-158` |
-| 最小 `MechaControlHolder` | `client/ClientMechaTestRig.java:33-48` |
+| `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java:62`（类声明）、`:74`（`DATA_POS`）、`:102`（`DATA_JUMP_CHARGING`）、`:221`（`newClientInstance`）、`:308`（`prePhysicsTick`）、`:338`（`enterPhysicsSpace`）、`:355`（`applyDriftFallback`） |
+| 逻辑状态跨线程出口 | `common/control/MechaControl.java:567`（`LogicStateSnapshot`）、`:584`（`snapshotLogicState`） |
+| 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java:339`（`applyLogicOutputToKcc`）、`:642`（`getMoveSpeedModifier`）、`:375`（`resolveDodgeDirection`）；`common/control/MechaCharacter.java:330`（`setMoveSpeedModifier`）、`:398`（`requestDodgeImpulse`）、`:419`（`consumeDodgeSpeed`）、`:629`（速度上限）、`:703`（`currentTargetSpeed`） |
+| 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java:41`、`:54`、`:62`、`:107`、`:126`、`:139` |
+| 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:342-363` |
+| 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |
+| 装配体注册表 | `common/MechaCoreRegistry.java:120`（`addServer`）、`:171`（`onLevelUnload`）、`:222`（`sendAllTo`） |
+| 上行输入服务端处理链 | `common/MechaInputHandler.java:56`（`setController`）、`:70`（`releaseController`）、`:113`（`apply`） |
+| 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java:65`（`onPrePhysicsTick`）、`:96`（`syncToClients`）、`:147`（`onPlayerJoinLevel`） |
+| 载荷注册与协议版本 | `network/ARMSNetwork.java:30`（`PROTOCOL_VERSION`）、`:37`/`:41`/`:45`（`playToClient`）、`:52`（`playToServer`） |
+| 客户端输入采集与重发窗口 | `client/ARMSClient.java:50`（`RESEND_WINDOW`）、`:92`（`onClientTick`）、`:222`（`queueEvent`） |
+| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java:64`（`accept`）、`:113`（`lerpPosition`）；`client/MechaAnchorRenderer.java:65`（采样）、`:89`（`onRenderLevelStage`） |
+| 调试命令 | `common/command/ArmsCoreDebugCommand.java` |
 | `onPhysicsStep` 顺序 | `common/control/MechaControl.java:257-274` |
 | 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java:286` |
 | 状态机输入来源 | `common/control/MechaControl.java:305-333` |
 | `ENERGY` 定义与初值（快照字段来源） | `common/control/MechaControl.java:63`、`:180`；`common/control/MechaControl.java:501-503`（posture/gait/vertical 的读取形态） |
 | 事件闩锁 | `common/control/MechaControl.java:99-112`、`:207-214` |
-| `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java:54`、`:62`、`ArmsCore.java:95`、`:100`、`ClientMechaTestRig.java:40`、`:46` |
+| `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java:54`、`:62`、`ArmsCore.java`（返回 `null` 的存根） |
 | `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java:126-127`、`:234-245`、`:294`、`:298-302`、`:420-424` |
 | 输入方向的双重旋转（`viewYaw` 与 `currentYaw`） | `common/control/MechaControl.java:402-411`、`common/control/MechaCharacter.java:420-424` |
 | 分离距离是一等量 | `common/control/MechaCharacter.java:110`、`:255-257`、`:410-412` |
@@ -718,10 +834,11 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 位置与朝向的解耦、各状态的约束设置 | `docs/角色控制器-行走物理设计.md`：§1.2、§2.1、§2.3、§2.4 |
 | KCC 线速度的单位语义（含逐行源码证据与调用方转换规则） | `docs/角色控制器-行走物理设计.md`：§10.3、§11 |
 | 控制器跨线程字段清单 | `docs/角色控制器-行走物理设计.md`：§10.1 |
+| 胶囊尺寸的唯一来源 | `common/control/attr/MechaBodyPreset.java:27-33` |
 | `ArmsCore` 不注册为世界实体、由宿主序列化 | `docs/总体设计文档.md:82` |
 | 宿主输入路径（玩家按键 → 网络包 → `IArmsHost`） | `docs/总体设计文档.md:209-232`、`:304-339` |
 | 客户端渲染遍历 `SubPart.body` | `docs/总体设计文档.md:106-119` |
-| 网络载荷注册的现状 | `ARMS.java:30-38`（只注册了配置，无 `RegisterPayloadHandlersEvent` 订阅者） |
+| 载荷注册的现状 | `ARMS.java:30-38`（只注册配置）；四个载荷在 `network/ARMSNetwork.java:37-56` 注册 |
 
 ### `../Spark-Core`
 

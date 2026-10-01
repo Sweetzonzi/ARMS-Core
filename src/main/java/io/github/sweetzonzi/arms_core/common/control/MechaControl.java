@@ -9,13 +9,13 @@ import io.github.sweetzonzi.arms_core.common.control.state.MechaLogicStateMachin
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
+import io.github.sweetzonzi.arms_core.common.control.state.preset.GaitSubGraphs;
 import lombok.Getter;
 
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
-import lombok.Getter;
 import lombok.Setter;
 
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.*;
@@ -61,6 +61,19 @@ public class MechaControl {
      * 当前阶段仅初始化满值，消耗/恢复系统后续实现。
      */
     public static final float INITIAL_ENERGY = 100f;
+
+    /**
+     * 闪避冲量的初速度 (m/s)。
+     * <p>
+     * 与 {@link MechaWalkingAttr} 的量级配套：素体额定速度约 4 m/s、力上限 800 N、
+     * 质量 80 kg。冲量在 {@code GaitSubGraphs.DODGE_DURATION} 内线性衰减到 0，
+     * 因此单次闪避的位移是 {@code 速度 × 时长 / 2} = 6 × 0.4 / 2 = 1.2 m。
+     * 取值集中在这里，待素体定义（阶段 4.6）落地后移交。
+     */
+    public static final float DODGE_IMPULSE_SPEED = 6f;
+
+    /** 闪避无敌时长 (s) */
+    public static final float DODGE_INVULNERABLE_SECONDS = 0.4f;
 
     // ==========================================
     // 持有关系
@@ -110,6 +123,9 @@ public class MechaControl {
 
     /** 本帧事件批（物理线程帧内快照，仅物理线程访问）。 */
     private Set<MechaEvent> frameEvents = EnumSet.noneOf(MechaEvent.class);
+
+    /** 上一帧是否处于 dodge，用于检出「刚进入 dodge」的那一帧（物理线程独占）。 */
+    private boolean dodgingLastFrame;
 
     // ==========================================
     // 模式开关与调试
@@ -295,11 +311,84 @@ public class MechaControl {
         // —— 3. 推进整棵状态树，并由逻辑机合并最终输入许可 ——
         logicStateMachine.progress(safeDt);
 
+        // —— 3b. 逻辑层产出回写到 KCC（速度倍率、胶囊尺寸、闪避冲量）——
+        // 必须在 progress 之后：本步产出的 gait / posture 才是本帧要生效的值
+        applyLogicOutputToKcc(safeDt);
+
         // —— 4. 按旁路/反向模式转发输入到 KCC ——
         forwardInputToKCC();
 
         // —— 状态变化日志 ——
         logStateChanges();
+    }
+
+    /**
+     * 把逻辑层本帧的产出落到 KCC 上。
+     * <p>
+     * 在此之前，状态机产出的 {@code POSTURE} / {@code GAIT} / {@code MOVE_SPEED_MODIFIER}
+     * 只是变量容器里的值，KCC 完全不看它们，因此蹲伏、卧倒、闪避在物理上没有任何效果。
+     * 本方法承担那条缺失的链路，共三项：
+     * <ol>
+     *   <li><b>速度倍率</b> —— {@code MOVE_SPEED_MODIFIER}（= posture.speedModifier ×
+     *       gait.baseSpeedModifier）写进 KCC，乘在行走净力上</li>
+     *   <li><b>胶囊尺寸</b> —— 按 posture 换碰撞形状；蹲伏 / 卧倒压低轮廓</li>
+     *   <li><b>闪避冲量</b> —— 进入 dodge 状态的那一帧施加一次性冲量并开启无敌窗口</li>
+     * </ol>
+     * 全部在物理线程执行，符合「只允许物理线程触碰 Bullet 对象」的约定。
+     */
+    private void applyLogicOutputToKcc(float dt) {
+        // —— ① 速度倍率 ——
+        Float speedMod = variables.get(MOVE_SPEED_MODIFIER);
+        kcc.setMoveSpeedModifier(speedMod == null ? 1.0f : speedMod);
+
+        // —— ② 胶囊尺寸 ——
+        // 未接入。Libbulletjme 的 PhysicsCharacter.setCollisionShape 要求
+        // 「the character should not be in any PhysicsSpace while changing shape; the character
+        // gets rebuilt on the physics side」（../Libbulletjme/.../objects/PhysicsCharacter.java:342-363，
+        // 方法体含 assert !isInWorld()）。在物理空间内直接换形状会让原生侧挂接一个未重建的
+        // 碰撞对象：release JVM 不检查断言，原生内存随即损坏，进程以 0xC0000409 中止。
+        // 先 removeCollisionObject → setCollisionShape → addCollisionObject 也不行：实测
+        // 幽灵体状态被重置（着地检测失效、姿态回落到 air），且仍会在下一次换形状时中止。
+        // 因此轮廓姿态（crouch / prone）的碰撞体积目前**没有**实现，见计划文档 §3.12 的登记。
+        // Posture posture = variables.get(POSTURE);
+        // if (posture != null) kcc.applyPostureShape(posture);
+
+        // —— ③ 闪避冲量 ——
+        Gait gait = variables.get(GAIT);
+        boolean dodgingNow = gait == Gait.DODGE;
+        if (dodgingNow && !dodgingLastFrame) {
+            float[] dir = resolveDodgeDirection();
+            kcc.requestDodgeImpulse(dir[0], dir[1], DODGE_IMPULSE_SPEED,
+                    DODGE_INVULNERABLE_SECONDS, GaitSubGraphs.DODGE_DURATION);
+        }
+        dodgingLastFrame = dodgingNow;
+    }
+
+    /**
+     * 解析闪避方向（世界坐标水平单位向量）。
+     * <p>
+     * 有移动输入时沿输入方向；无输入时沿控制器当前朝向（{@link MechaCharacter#getCurrentYaw()}）。
+     * 后者保证按住闪避键不放方向键时也能倒地翻滚，而不是原地不动。
+     *
+     * @return {@code [dirX, dirZ]}，已归一化
+     */
+    private float[] resolveDodgeDirection() {
+        MechaConditionSnapshot snap = conditionSnapshot;
+        float fwd = snap.inputForward();
+        float str = snap.inputStrafe();
+        if (fwd * fwd + str * str > 0.001f) {
+            float yawRad = (float) Math.toRadians(snap.viewYaw());
+            float sinYaw = (float) Math.sin(yawRad);
+            float cosYaw = (float) Math.cos(yawRad);
+            float dirX = str * cosYaw - fwd * sinYaw;
+            float dirZ = fwd * cosYaw + str * sinYaw;
+            float len = (float) Math.sqrt(dirX * dirX + dirZ * dirZ);
+            if (len > 0.001f) {
+                return new float[]{dirX / len, dirZ / len};
+            }
+        }
+        float yaw = kcc.getCurrentYaw();
+        return new float[]{-(float) Math.sin(yaw), (float) Math.cos(yaw)};
     }
 
     /** 将连续输入、环境状态、事件 latch 和 KCC 状态写入共享变量容器。 */
@@ -539,8 +628,81 @@ public class MechaControl {
         return frameEvents.contains(event);
     }
 
+    /**
+     * 逻辑层本帧产出的移动速度修正系数。
+     * <p>
+     * 等于 {@code posture.speedModifier() × gait.baseSpeedModifier()}，由 gait 子机在进入
+     * 各状态时写入变量容器，并在同一步被推到 KCC 上（{@link #applyLogicOutputToKcc}）。
+     * <p>
+     * 读取注意：变量容器由物理线程写、本方法可能被主线程调用（调试与自检），因此读到的是
+     * 最近一次物理步的结果。这是只读诊断用途，不要在物理决策中依赖它。
+     *
+     * @return 修正系数；变量容器尚无该键时返回 1.0（中性值）
+     */
+    public float getMoveSpeedModifier() {
+        Float value = variables.get(MOVE_SPEED_MODIFIER);
+        return value == null ? 1.0f : value;
+    }
+
+    /** 逻辑层本帧产出的姿态。同 {@link #getMoveSpeedModifier()} 的读取注意。 */
+    public Posture getCurrentPosture() {
+        return variables.get(POSTURE);
+    }
+
+    /** 逻辑层本帧产出的水平移动模式。同 {@link #getMoveSpeedModifier()} 的读取注意。 */
+    public Gait getCurrentGait() {
+        return variables.get(GAIT);
+    }
+
     /** 获取本帧待处理事件（物理线程帧内快照，只读；跨帧请勿持有）。 */
     public Set<MechaEvent> getPendingEvents() {
         return frameEvents;
+    }
+
+    /**
+     * 逻辑层状态的不可变快照 —— 物理线程 → 主线程的跨线程出口。
+     * <p>
+     * 这五项住在 {@link StateVariableContainer}（物理线程独占），主线程不得读写该容器
+     * （`docs/下一步开发TODO.md:113`）。本 record 与 {@link MechaConditionSnapshot} 是同一模式
+     * （不可变 record + volatile 引用），方向相反：本类是物理线程发布、主线程读取。
+     * <p>
+     * 唯一的消费者是同步写包路径——主线程据它填 `DATA_POSTURE` / `DATA_GAIT` /
+     * `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`
+     * （`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.5）。
+     * 客户端读的是同步后的 {@code SynchedEntityData} 字段，不读本快照。
+     * <p>
+     * 它不属于网络协议类型，因此与 {@code MechaConditionSnapshot} 同放在
+     * {@code common/control/} 下，作为 {@link MechaControl} 的嵌套类型。
+     *
+     * @param posture      当前姿态
+     * @param gait         当前水平移动模式
+     * @param vertical     当前垂直模式
+     * @param energy       当前能量值
+     * @param jumpCharging KCC 是否正在蓄力跳跃
+     */
+    public record LogicStateSnapshot(
+            Posture posture,
+            Gait gait,
+            Vertical vertical,
+            float energy,
+            boolean jumpCharging
+    ) {
+    }
+
+    /**
+     * 在物理线程读取状态变量容器，构造一份不可变的 {@link LogicStateSnapshot}。
+     * <p>
+     * 只允许在物理线程（即 {@code onPhysicsStep} / {@link #frameLogic(float)} 的调用线程）内调用：
+     * 读取的 {@code variables} 是物理线程独占的可变容器。
+     *
+     * @return 本时刻的逻辑层状态副本
+     */
+    public LogicStateSnapshot snapshotLogicState() {
+        return new LogicStateSnapshot(
+                variables.get(POSTURE),
+                variables.get(GAIT),
+                variables.get(VERTICAL),
+                variables.get(ENERGY),
+                kcc.isChargingJump());
     }
 }

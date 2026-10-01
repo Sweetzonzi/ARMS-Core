@@ -1,5 +1,8 @@
 {
   "itemGroup.arms_core": "Example Mod Tab",
   "block.arms_core.example_block": "Example Block",
-  "item.arms_core.example_item": "Example Item"
+  "item.arms_core.example_item": "Example Item",
+  "key.categories.arms_core.gameplay": "ARMS Core",
+  "key.arms_core.dodge": "Dodge",
+  "key.arms_core.toggle_prone": "Toggle Prone"
 }

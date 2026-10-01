@@ -1,73 +1,148 @@
 package io.github.sweetzonzi.arms_core.client;
 
-import cn.solarmoon.spark_core.api.SparkLevel;
-import cn.solarmoon.spark_core.event.PhysicsLevelTickEvent;
-import cn.solarmoon.spark_core.physics.PhysicsHelperKt;
 import io.github.sweetzonzi.arms_core.ARMS;
-import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
+import io.github.sweetzonzi.arms_core.common.ArmsCore;
+import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
-import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
-import com.jme3.bullet.PhysicsSpace;
-import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
-import com.jme3.math.Vector3f;
+import io.github.sweetzonzi.arms_core.network.payload.MechaInputPayload;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.Level;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
+
+import java.util.EnumSet;
+import java.util.Set;
+import java.util.UUID;
 
 /**
- * ARMS-Core 客户端入口（单玩家测试闭环）。
+ * ARMS-Core 客户端输入采集与上行发送。
  * <p>
- * 链路：主线程采集 WASD/跳跃/冲刺/潜行边沿 → 写入 {@link ClientMechaTestRig} 的
- * {@link MechaConditionSnapshot} 与 {@link MechaEvent}；物理线程每步调用
- * {@code MechaControl.onPhysicsStep(dt)} 完成状态机推进与 KCC 物理积分。
+ * 客户端不构造 {@code MechaCharacter}、不运行 {@link io.github.sweetzonzi.arms_core.common.control.MechaControl}、
+ * 不推进状态机，只做两件事：
+ * <ol>
+ *   <li>每客户端 tick 采集 WASD / 跳跃 / 冲刺 / 慢走 / 蹲伏 / 视角，打包上行；</li>
+ *   <li>维护事件序号与重发窗口，保证单帧边沿跨网络不丢。</li>
+ * </ol>
  * <p>
- * 当前处于<b>旁路观测模式</b>（MechaControl 默认）：状态机照常运行并输出调试状态，
- * 但 CAN_MOVE / CAN_JUMP 暂不门控 KCC，保证原 KCC 行走/跳跃无回归。
+ * <b>发送条件</b>（计划 §3.11）：连续量只在值变化时发包；另有两条强制发包条件——
+ * 重发窗口未清空（有待确认事件），以及距上次发包超过 {@link #HEARTBEAT_MS}。
+ * 心跳的目的不是补齐延迟，而是让服务端能区分「玩家没动」与「这个客户端的包断了」。
  * <p>
- * 线程模型：主线程只做输入采集与 volatile/原子发布，物理线程只读物理状态；
- * 两端不直接共享可变物理数据。
+ * <b>为什么离散边沿要带序号。</b> {@code jumpReleased} 与 {@link MechaEvent} 是单帧标记，
+ * 服务端控制器在下一个物理步帧首就会整批取走。只发一帧则丢一个包就永久丢失。
+ * 因此客户端把「一个事件」编码为自增序号 + 事件位集，并在接下来
+ * {@link #RESEND_WINDOW} 个上行包里重复携带同一对；服务端只接受序号更大的包，
+ * 因此重复包不会重复触发（幂等），而丢 1–2 个包也不会丢事件。
  *
  * @author Sweetzonzi
  */
 @EventBusSubscriber(modid = ARMS.MOD_ID, value = Dist.CLIENT)
-public class ARMSClient {
+public final class ARMSClient {
 
-    /** 测试夹具（MechaControl + KCC） */
-    private static volatile ClientMechaTestRig rig;
+    private ARMSClient() {
+    }
 
-    /** 上帧跳跃键状态（用于检测松开边沿） */
+    /** 重发窗口：同一对 {@code (eventSeq, eventBits)} 连续携带的包数 */
+    private static final int RESEND_WINDOW = 3;
+
+    /** 心跳间隔 (ms)：无输入变化时也发一包，便于服务端判断上行是否断了 */
+    private static final long HEARTBEAT_MS = 1000L;
+
+    /** 本客户端当前控制的装配体；{@code null} 表示尚未认领 */
+    private static volatile UUID targetCoreId;
+
+    /** 上帧跳跃键状态，用于检测松开边沿 */
     private static boolean wasJumpDown;
-    /** 是否已初始化 */
-    private static boolean initialized;
 
-    // ═══════════════════════════════════════════════
-    // 主线程输入读取
-    // ═══════════════════════════════════════════════
+    /** 上帧是否已随目标切换重置过跟踪状态 */
+    private static Level trackedLevel;
+
+    // ── 连续量：用于「仅在值变化时发包」 ──
+
+    private static float lastForward;
+    private static float lastStrafe;
+    private static float lastViewYaw;
+    private static float lastViewPitch;
+    private static int lastKeyFlags;
+    private static boolean hasSentOnce;
+
+    // ── 离散事件：序号 + 重发窗口 ──
+
+    /** 事件序号，每次「产生一个事件」自增一次，而不是每 tick 自增 */
+    private static int eventSeq;
+
+    /** 待重发的本批事件位集与跳跃松开标记 */
+    private static int pendingEventBits;
+    private static boolean pendingJumpReleased;
+
+    /** 重发窗口剩余包数；为 0 表示窗口已关闭 */
+    private static int resendRemaining;
+
+    private static long lastSendMs;
+
+    // ==========================================
+    // 主线程 tick：采集 + 发送
+    // ==========================================
 
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Pre event) {
         Minecraft mc = Minecraft.getInstance();
         LocalPlayer player = mc.player;
         if (player == null) return;
+        Level level = player.level();
+        if (level == null) return;
 
-        // 懒初始化控制器（等待玩家和物理世界就绪）
-        if (!initialized) {
-            if (mc.level != null && player.isAlive()) {
-                initRig(player);
-                initialized = true;
-            }
-            return;
+        // 换维度 / 重连后本地注册表随旧 ClientLevel 一并失效，这里补一次清理并重新认领
+        if (level != trackedLevel) {
+            trackedLevel = level;
+            targetCoreId = null;
+            hasSentOnce = false;
+            pendingEventBits = 0;
+            pendingJumpReleased = false;
+            resendRemaining = 0;
         }
 
-        ClientMechaTestRig rigLocal = rig;
-        if (rigLocal == null) return;
+        UUID coreId = resolveTargetCore(level);
+        if (coreId == null) return;
 
-        // ── 连续输入 → 条件快照（不可变 record，volatile 发布） ──
-        // strafe 约定与原版 Input.leftImpulse 一致：正 = 左移（A），负 = 右移（D）
+        collectAndSend(player, coreId);
+    }
+
+    /**
+     * 选取要控制的装配体。
+     * <p>
+     * 当前维度内恰好有一个装配体时自动认领；多个时不做选择（阶段 4 会由宿主骑乘关系
+     * 给出唯一答案）。认领结果由服务端在控制权校验时确认，客户端认领失败的表现是输入被丢弃。
+     */
+    private static UUID resolveTargetCore(Level level) {
+        UUID current = targetCoreId;
+        if (current != null && MechaCoreRegistry.get(level, current) != null) {
+            return current;
+        }
+        UUID only = null;
+        int count = 0;
+        for (ArmsCore core : MechaCoreRegistry.all(level)) {
+            only = core.getAssemblyId();
+            count++;
+            if (count > 1) break;
+        }
+        if (count != 1) {
+            targetCoreId = null;
+            return null;
+        }
+        targetCoreId = only;
+        ARMS.LOGGER.info("[ARMS-Core] 客户端认领装配体 {}", only);
+        return only;
+    }
+
+    private static void collectAndSend(LocalPlayer player, UUID coreId) {
+        Minecraft mc = Minecraft.getInstance();
+
+        // ── 连续输入 ──
         float forward = 0f;
         float strafe = 0f;
         if (mc.options.keyUp.isDown()) forward += 1f;
@@ -78,75 +153,86 @@ public class ARMSClient {
         boolean jumpDown = mc.options.keyJump.isDown();
         boolean jumpReleased = wasJumpDown && !jumpDown;
         wasJumpDown = jumpDown;
-        MechaConditionSnapshot snapshot = MechaConditionSnapshot.builder()
-                .inputForward(forward)
-                .inputStrafe(strafe)
-                .jumpPressed(jumpDown)
-                .jumpReleased(jumpReleased)
-                .sprintPressed(mc.options.keySprint.isDown())
-                // 慢走键：测试夹具暂未绑定独立按键，保持 false（creep 由单元测试覆盖）
-                .walkKeyPressed(false)
-                // 蹲伏：连续状态，直接映射 posture stand ↔ crouch（蹲下即 crouch、站直即 stand）
-                .sneaking(player.isCrouching())
-                .viewYaw(player.getYRot())
-                .viewPitch(player.getXRot())
-                .inWater(player.isInFluidType()) // 任何流体
-                .inLava(player.isInLava())
-                .isDead(!player.isAlive())
-                .isSleeping(player.isSleeping())
-                .isFallFlying(player.isFallFlying())
-                .isInWall(player.isInWall())
-                .isOnFire(player.isOnFire())
-                .build();
 
-        rigLocal.writeConditionSnapshot(snapshot);
-    }
+        int keyFlags = 0;
+        if (jumpDown) keyFlags |= MechaInputPayload.BIT_JUMP;
+        if (mc.options.keySprint.isDown()) keyFlags |= MechaInputPayload.BIT_SPRINT;
+        if (player.isCrouching()) keyFlags |= MechaInputPayload.BIT_SNEAK;
+        // 慢走键：暂未绑定独立按键，保持 false（creep 由单元测试与 /arms 命令覆盖）
 
-    // ═══════════════════════════════════════════════
-    // 物理线程回调
-    // ═══════════════════════════════════════════════
+        float viewYaw = player.getYRot();
+        float viewPitch = player.getXRot();
 
-    @SubscribeEvent
-    public static void onPrePhysicsTick(PhysicsLevelTickEvent.Pre event) {
-        ClientMechaTestRig rigLocal = rig;
-        if (rigLocal == null) return;
-        // 仅处理本客户端的物理世界
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null) return;
-        if (event.getLevel().getMcLevel() != mc.player.level()) return;
+        boolean changed = !hasSentOnce
+                || forward != lastForward
+                || strafe != lastStrafe
+                || viewYaw != lastViewYaw
+                || viewPitch != lastViewPitch
+                || keyFlags != lastKeyFlags;
 
-        if (event.getLevel().getTickCount() % 600 == 0) {
-            rigLocal.getKcc().warp(PhysicsHelperKt.toBVector3f(mc.player.position()));
+        if (changed) {
+            lastForward = forward;
+            lastStrafe = strafe;
+            lastViewYaw = viewYaw;
+            lastViewPitch = viewPitch;
+            lastKeyFlags = keyFlags;
         }
-        rigLocal.getMechaControl().onPhysicsStep(1f / event.getLevel().getTps());
+
+        // 重发窗口已结束：清空本批事件位，本批事件不会出现在后续任何包里
+        if (resendRemaining <= 0) {
+            pendingEventBits = 0;
+            pendingJumpReleased = false;
+        }
+
+        int eventBits = pendingEventBits;
+        boolean sendJumpReleased = pendingJumpReleased;
+
+        boolean heartbeat = System.currentTimeMillis() - lastSendMs >= HEARTBEAT_MS;
+        boolean forced = eventBits != 0 || sendJumpReleased;
+        if (!changed && !forced && !heartbeat) return;
+
+        PacketDistributor.sendToServer(new MechaInputPayload(
+                coreId, forward, strafe, viewYaw, viewPitch,
+                keyFlags, eventSeq, eventBits, sendJumpReleased));
+
+        hasSentOnce = true;
+        lastSendMs = System.currentTimeMillis();
+        if (resendRemaining > 0) {
+            resendRemaining--;
+        }
     }
 
-    // ═══════════════════════════════════════════════
-    // 初始化
-    // ═══════════════════════════════════════════════
+    // ==========================================
+    // 事件产生入口
+    // ==========================================
 
-    private static void initRig(LocalPlayer player) {
-        CapsuleCollisionShape shape = MechaBodyPreset.newCapsuleShape();
-        PhysicsSpace space = SparkLevel.getPhysicsLevel(player.level()).getWorld();
-        ClientMechaTestRig rigLocal = new ClientMechaTestRig(shape, space);
+    /**
+     * 记录一个待上行事件并开启重发窗口。
+     * <p>
+     * 供按键绑定与将来的游戏内输入路径调用。事件停在客户端不会自行消失：
+     * 窗口未清空前，每 tick 的发送条件都会因 {@code eventBits != 0} 而强制成包。
+     *
+     * @param event         事件类型
+     * @param jumpReleased  是否同时携带跳跃松开边沿
+     */
+    public static void queueEvent(MechaEvent event, boolean jumpReleased) {
+        pendingEventBits |= 1 << event.ordinal();
+        pendingJumpReleased |= jumpReleased;
+        eventSeq++;
+        resendRemaining = RESEND_WINDOW;
+    }
 
-        // 初始位置设为玩家位置（胶囊中心在玩家脚底上方 HALF_TOTAL 处）
-        float[] center = MechaBodyPreset.capsuleCenterFromFeet(
-                (float) player.getX(), (float) player.getY(), (float) player.getZ());
-        Vector3f startPos = new Vector3f(center[0], center[1], center[2]);
+    /** 当前被认领的装配体；未认领时为 {@code null}。 */
+    public static UUID getTargetCoreId() {
+        return targetCoreId;
+    }
 
-        // 在物理线程设置位置并加入物理世界
-        SparkLevel.submitImmediateTask(player.level(),
-                cn.solarmoon.spark_core.util.PPhase.ALL,
-                () -> {
-                    rigLocal.getKcc().setPhysicsLocation(startPos);
-                    space.addCollisionObject(rigLocal.getKcc());
-                }
-        );
-
-        // 测试闭环：开启状态变化日志（posture/gait/vertical 变化时打印一行）
-        rigLocal.getMechaControl().setDebugLog(true);
-
-        rig = rigLocal;
+    /** 待上行事件位集的只读视图数量，用于调试显示。 */
+    public static int pendingEventCount() {
+        Set<MechaEvent> set = EnumSet.noneOf(MechaEvent.class);
+        for (MechaEvent value : MechaEvent.values()) {
+            if ((pendingEventBits & (1 << value.ordinal())) != 0) set.add(value);
+        }
+        return set.size();
     }
 }
