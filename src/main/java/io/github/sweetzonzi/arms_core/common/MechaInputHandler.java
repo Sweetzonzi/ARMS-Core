@@ -131,7 +131,6 @@ public final class MechaInputHandler {
                 .inputForward(payload.forward())
                 .inputStrafe(payload.strafe())
                 .jumpPressed((payload.keyFlags() & MechaInputPayload.BIT_JUMP) != 0)
-                .jumpReleased(payload.jumpReleased())
                 .sprintPressed((payload.keyFlags() & MechaInputPayload.BIT_SPRINT) != 0)
                 .walkKeyPressed((payload.keyFlags() & MechaInputPayload.BIT_WALK) != 0)
                 .viewYaw(payload.viewYaw())
@@ -158,9 +157,8 @@ public final class MechaInputHandler {
      * 客户端在若干个连续包里重复携带同一 {@code (eventSeq, eventBits)}，这里只接受比记录更大的
      * 序号，因此重复包不会重复触发；而序号更大的包即使跳号也照样投递，不依赖连续性。
      * <p>
-     * {@code jumpReleased} 是独立的单帧边沿，与 {@code eventBits} 同在重发窗口内，
-     * 但它的投递由快照（{@link #merge}）而非序号表达——跳跃释放必须在下一物理步被消费一次，
-     * 而快照是覆盖式的，因此它与事件分开处理。
+     * 跳跃松开是 {@link MechaEvent#JUMP_RELEASE}，与 {@code DODGE} 等走同一对
+     * {@code (eventSeq, eventBits)}，因此同样只被物理线程消费一次。
      */
     private static void dispatchEvents(MechaInputPayload payload, ArmsCore core) {
         UUID coreId = core.getAssemblyId();

@@ -16,6 +16,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
+import net.neoforged.neoforge.network.connection.ConnectionType;
 import org.joml.Vector3f;
 import org.junit.jupiter.api.Test;
 
@@ -41,16 +42,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ARMSNetworkCodecTest {
 
+    /**
+     * 造一个只用于编解码往返的缓冲。
+     * <p>
+     * 连接类型取 {@link ConnectionType#OTHER}：本测试不经过真实连接，也不涉及任何按对端平台分支的
+     * 编解码路径，只验证字段顺序与取值。这里用带连接上下文的三参数重载，因为不带上下文的那条
+     * 在 NeoForge 里标了 {@code @Deprecated}（`net.minecraft.network.RegistryFriendlyByteBuf`，
+     * 见 `build/moddev/artifacts` 下的 neoforge sources jar）。
+     */
     private static RegistryFriendlyByteBuf newBuffer() {
-        return new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY);
+        return new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryAccess.EMPTY, ConnectionType.OTHER);
     }
 
     @Test
-    void inputPayloadRoundTripsAllNineFields() {
+    void inputPayloadRoundTripsAllEightFields() {
         MechaInputPayload original = new MechaInputPayload(
                 UUID.randomUUID(), 0.75f, -0.25f, 123.5f, -42.5f,
                 MechaInputPayload.BIT_JUMP | MechaInputPayload.BIT_SPRINT,
-                7, 1 << MechaEvent.DODGE.ordinal(), true);
+                7, 1 << MechaEvent.DODGE.ordinal());
 
         RegistryFriendlyByteBuf buffer = newBuffer();
         MechaInputPayload.STREAM_CODEC.encode(buffer, original);
@@ -64,19 +73,49 @@ class ARMSNetworkCodecTest {
         assertEquals(original.keyFlags(), decoded.keyFlags());
         assertEquals(original.eventSeq(), decoded.eventSeq());
         assertEquals(original.eventBits(), decoded.eventBits());
-        assertEquals(original.jumpReleased(), decoded.jumpReleased());
     }
 
     @Test
     void inputPayloadEventBitsMapToTheRightEnum() {
         MechaInputPayload payload = new MechaInputPayload(
                 UUID.randomUUID(), 0f, 0f, 0f, 0f, 0, 1,
-                (1 << MechaEvent.DODGE.ordinal()) | (1 << MechaEvent.TOGGLE_PRONE.ordinal()),
-                false);
+                (1 << MechaEvent.DODGE.ordinal()) | (1 << MechaEvent.JUMP_RELEASE.ordinal()));
 
         assertTrue(payload.hasEvent(MechaEvent.DODGE));
-        assertTrue(payload.hasEvent(MechaEvent.TOGGLE_PRONE));
+        assertTrue(payload.hasEvent(MechaEvent.JUMP_RELEASE));
         assertFalse(payload.hasEvent(MechaEvent.STUN));
+    }
+
+    /**
+     * 事件位序即 {@link MechaEvent#ordinal()}，因此枚举只能追加。
+     * <p>
+     * 中间插入会让该位置之后的位全部平移：老客户端发来的 {@code DODGE} 位会在新服务端解成别的
+     * 事件，而两端都看不出错。这份清单把顺序钉死，改动它必须同时提升
+     * {@link ARMSNetwork#PROTOCOL_VERSION}。
+     */
+    @Test
+    void eventOrdinalsAreAppendOnly() {
+        MechaEvent[] expected = {
+                MechaEvent.ATTACK_PRIMARY,
+                MechaEvent.ATTACK_SECONDARY,
+                MechaEvent.USE_ITEM,
+                MechaEvent.INTERACT,
+                MechaEvent.TOGGLE_DRIVE,
+                MechaEvent.TOGGLE_PRONE,
+                MechaEvent.TOGGLE_FLY,
+                MechaEvent.DODGE,
+                MechaEvent.HURT,
+                MechaEvent.STUN,
+                MechaEvent.MOUNT,
+                MechaEvent.DISMOUNT,
+                MechaEvent.JUMP_RELEASE,
+        };
+        assertEquals(expected.length, MechaEvent.values().length,
+                "事件枚举的数量变了；新事件只能追加在末尾");
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(i, expected[i].ordinal(),
+                    "事件 " + expected[i] + " 的 ordinal 变了；说明在中间插入或删除过常量");
+        }
     }
 
     @Test

@@ -15,7 +15,7 @@ import lombok.Builder;
  * 引用保证安全发布，不会出现字段撕裂。
  * <p>
  * 连续状态（WASD、视角、按键按住与否）放在快照里；离散边沿
- * （jumpReleased、TOGGLE_*、DODGE 等）由 {@link MechaEvent} 单独 latch，
+ * （跳跃松开、TOGGLE_*、DODGE 等）由 {@link MechaEvent} 单独 latch，
  * 不能依赖“最新快照恰好被物理线程看到”。
  *
  * @author Sweetzonzi
@@ -28,8 +28,6 @@ public record MechaConditionSnapshot(
         float inputStrafe,
         /** 跳跃键是否按住（持续状态，用于蓄力） */
         boolean jumpPressed,
-        /** 跳跃键本帧松开（单帧标记，用于 jump_charge → jump 触发） */
-        boolean jumpReleased,
         /** 冲刺键是否按住 */
         boolean sprintPressed,
         /** 慢走键是否按住（精细移动，触发 creep gait） */

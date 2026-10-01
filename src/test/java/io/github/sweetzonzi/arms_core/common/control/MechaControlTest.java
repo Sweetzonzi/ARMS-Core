@@ -41,7 +41,7 @@ class MechaControlTest {
     /** 测试共享物理空间（frameLogic 不实际使用，仅满足 KCC 构造） */
     private static PhysicsSpace physicsSpace;
 
-    private MechaCharacter kcc;
+    private RecordingMechaCharacter kcc;
     private MechaControl control;
 
     @BeforeAll
@@ -53,7 +53,7 @@ class MechaControlTest {
 
     @BeforeEach
     void setUp() {
-        kcc = new MechaCharacter(new CapsuleCollisionShape(0.4f, 1.6f), physicsSpace);
+        kcc = new RecordingMechaCharacter(new CapsuleCollisionShape(0.4f, 1.6f), physicsSpace);
         DummyHolder holder = new DummyHolder();
         control = new MechaControl(holder, kcc);
         holder.mechaControl = control;
@@ -145,11 +145,61 @@ class MechaControlTest {
     void bypassObservationPassesJumpRawThrough() {
         control.applyConditionSnapshot(MechaConditionSnapshot.builder()
                 .jumpPressed(true)
-                .jumpReleased(false)
                 .build());
         control.frameLogic(DT);
 
         assertTrue(kcc.isJumpHeld());
+    }
+
+    // ═══════════════════════════════════════════════
+    // 跳跃松开边沿：只走事件 latch，且恰好消费一次
+    // ═══════════════════════════════════════════════
+
+    /** 快照只表达"按住"：没有任何 JUMP_RELEASE 事件时，KCC 收不到松开边沿。 */
+    @Test
+    void jumpHeldAloneDoesNotProduceAReleaseEdge() {
+        control.applyConditionSnapshot(MechaConditionSnapshot.builder()
+                .jumpPressed(true)
+                .build());
+
+        control.frameLogic(DT);
+        control.frameLogic(DT);
+
+        assertTrue(kcc.isJumpHeld());
+        assertEquals(0, kcc.releaseCount);
+    }
+
+    /**
+     * 一次 {@link MechaEvent#JUMP_RELEASE} 只 latch 一帧。
+     * <p>
+     * 这条边沿若跨帧重复送达，就会在"松键后很快再按"时把刚开始的蓄力提前放掉
+     * （蓄力比接近 0 的弱跳），因此必须钉住"恰好一次"。
+     */
+    @Test
+    void jumpReleaseEventLatchesExactlyOnce() {
+        control.applyConditionSnapshot(MechaConditionSnapshot.builder()
+                .jumpPressed(false)
+                .build());
+        control.postEvent(MechaEvent.JUMP_RELEASE);
+
+        control.frameLogic(DT);
+        assertTrue(kcc.lastReleased, "收到事件的物理帧应把松开边沿转发给 KCC");
+
+        control.frameLogic(DT);
+        assertFalse(kcc.lastReleased, "边沿不得跨帧重复 latch");
+        assertEquals(1, kcc.releaseCount);
+    }
+
+    /** 反向控制模式下 CAN_JUMP=false 只拦"开始蓄力"，不能吞掉已经开始蓄力的释放边沿。 */
+    @Test
+    void gatedModeStillForwardsReleaseWhileCharging() {
+        control.setBypassObservation(false);
+        kcc.chargingForTest = true;
+
+        control.postEvent(MechaEvent.JUMP_RELEASE);
+        control.frameLogic(DT);
+
+        assertTrue(kcc.lastReleased);
     }
 
     @Test
@@ -238,6 +288,40 @@ class MechaControlTest {
     // ═══════════════════════════════════════════════
     // 测试 Holder
     // ═══════════════════════════════════════════════
+
+    /**
+     * 记录 {@code setJumpInput} 收到了什么的 KCC。
+     * <p>
+     * 只覆写输入入口与蓄力镜像，不触发物理积分，因此本类不需要在物理空间里真实步进
+     * （地面射线检测属 {@code MechaCharacter} 自身的测试范围）。
+     */
+    private static final class RecordingMechaCharacter extends MechaCharacter {
+
+        /** 最近一次 {@code setJumpInput} 收到的松开标记 */
+        private boolean lastReleased;
+        /** 收到松开标记的次数 */
+        private int releaseCount;
+        /** 覆写 {@code isChargingJump()} 的返回值，用于构造"已经在蓄力"的门控场景 */
+        private boolean chargingForTest;
+
+        RecordingMechaCharacter(CapsuleCollisionShape shape, PhysicsSpace space) {
+            super(shape, space);
+        }
+
+        @Override
+        public void setJumpInput(boolean held, boolean released) {
+            this.lastReleased = released;
+            if (released) {
+                this.releaseCount++;
+            }
+            super.setJumpInput(held, released);
+        }
+
+        @Override
+        public boolean isChargingJump() {
+            return chargingForTest;
+        }
+    }
 
     private static final class DummyHolder implements MechaControlHolder {
         @Getter

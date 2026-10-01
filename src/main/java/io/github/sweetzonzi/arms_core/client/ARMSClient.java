@@ -33,7 +33,7 @@ import java.util.UUID;
  * 重发窗口未清空（有待确认事件），以及距上次发包超过 {@link #HEARTBEAT_MS}。
  * 心跳的目的不是补齐延迟，而是让服务端能区分「玩家没动」与「这个客户端的包断了」。
  * <p>
- * <b>为什么离散边沿要带序号。</b> {@code jumpReleased} 与 {@link MechaEvent} 是单帧标记，
+ * <b>为什么离散边沿要带序号。</b> 跳跃松开与 {@link MechaEvent} 的其余项都是单帧标记，
  * 服务端控制器在下一个物理步帧首就会整批取走。只发一帧则丢一个包就永久丢失。
  * 因此客户端把「一个事件」编码为自增序号 + 事件位集，并在接下来
  * {@link #RESEND_WINDOW} 个上行包里重复携带同一对；服务端只接受序号更大的包，
@@ -77,9 +77,8 @@ public final class ARMSClient {
     /** 事件序号，每次「产生一个事件」自增一次，而不是每 tick 自增 */
     private static int eventSeq;
 
-    /** 待重发的本批事件位集与跳跃松开标记 */
+    /** 待重发的本批事件位集 */
     private static int pendingEventBits;
-    private static boolean pendingJumpReleased;
 
     /** 重发窗口剩余包数；为 0 表示窗口已关闭 */
     private static int resendRemaining;
@@ -104,7 +103,6 @@ public final class ARMSClient {
             targetCoreId = null;
             hasSentOnce = false;
             pendingEventBits = 0;
-            pendingJumpReleased = false;
             resendRemaining = 0;
         }
 
@@ -183,19 +181,23 @@ public final class ARMSClient {
         // 重发窗口已结束：清空本批事件位，本批事件不会出现在后续任何包里
         if (resendRemaining <= 0) {
             pendingEventBits = 0;
-            pendingJumpReleased = false;
+        }
+
+        // 跳跃松开边沿：与 DODGE 等一样进事件通道，由服务端按序号幂等地投递一次
+        // （必须在上面清空之后入队，否则本 tick 刚产生的事件会被窗口清空吞掉）
+        if (jumpReleased) {
+            queueEvent(MechaEvent.JUMP_RELEASE);
         }
 
         int eventBits = pendingEventBits;
-        boolean sendJumpReleased = pendingJumpReleased;
 
         boolean heartbeat = System.currentTimeMillis() - lastSendMs >= HEARTBEAT_MS;
-        boolean forced = eventBits != 0 || sendJumpReleased;
+        boolean forced = eventBits != 0;
         if (!changed && !forced && !heartbeat) return;
 
         PacketDistributor.sendToServer(new MechaInputPayload(
                 coreId, forward, strafe, viewYaw, viewPitch,
-                keyFlags, eventSeq, eventBits, sendJumpReleased));
+                keyFlags, eventSeq, eventBits));
 
         hasSentOnce = true;
         lastSendMs = System.currentTimeMillis();
@@ -211,15 +213,16 @@ public final class ARMSClient {
     /**
      * 记录一个待上行事件并开启重发窗口。
      * <p>
-     * 供按键绑定与将来的游戏内输入路径调用。事件停在客户端不会自行消失：
+     * 供按键绑定、跳跃松开边沿与将来的游戏内输入路径调用。事件停在客户端不会自行消失：
      * 窗口未清空前，每 tick 的发送条件都会因 {@code eventBits != 0} 而强制成包。
+     * <p>
+     * 同一 tick 内多次调用（例如同一帧里既松开跳跃又按下闪避）会各自自增序号并把位并进位集：
+     * 服务端只判断序号是否变大，因此这一批事件整批投递一次。
      *
-     * @param event         事件类型
-     * @param jumpReleased  是否同时携带跳跃松开边沿
+     * @param event 事件类型
      */
-    public static void queueEvent(MechaEvent event, boolean jumpReleased) {
+    public static void queueEvent(MechaEvent event) {
         pendingEventBits |= 1 << event.ordinal();
-        pendingJumpReleased |= jumpReleased;
         eventSeq++;
         resendRemaining = RESEND_WINDOW;
     }

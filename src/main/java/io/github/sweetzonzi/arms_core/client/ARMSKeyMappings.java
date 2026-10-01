@@ -70,13 +70,13 @@ public final class ARMSKeyMappings {
     public static void onClientTick(ClientTickEvent.Pre event) {
         boolean dodgeDown = DODGE.isDown();
         if (dodgeDown && !dodgeWasDown) {
-            ARMSClient.queueEvent(MechaEvent.DODGE, false);
+            ARMSClient.queueEvent(MechaEvent.DODGE);
         }
         dodgeWasDown = dodgeDown;
 
         boolean proneDown = TOGGLE_PRONE.isDown();
         if (proneDown && !proneWasDown) {
-            ARMSClient.queueEvent(MechaEvent.TOGGLE_PRONE, false);
+            ARMSClient.queueEvent(MechaEvent.TOGGLE_PRONE);
         }
         proneWasDown = proneDown;
     }

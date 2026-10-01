@@ -39,7 +39,8 @@ import java.util.UUID;
  *   <li>{@code /arms list} —— 列出当前维度的装配体</li>
  *   <li>{@code /arms remove [uuid]} —— 注销装配体（省略 uuid 时注销全部）</li>
  *   <li>{@code /arms move <forward> <strafe> [yaw]} —— 写移动输入快照</li>
- *   <li>{@code /arms jump <held> <released>} —— 写跳跃输入</li>
+ *   <li>{@code /arms jump <held> <released>} —— 写跳跃按住状态；{@code released=true} 时另投递
+ *       {@link MechaEvent#JUMP_RELEASE} 松开边沿</li>
  *   <li>{@code /arms stop} —— 恢复空快照</li>
  *   <li>{@code /arms event <name>} —— 投递一个离散事件</li>
  *   <li>{@code /arms control <uuid>} —— 把控制权交给命令执行者</li>
@@ -185,7 +186,7 @@ public final class ArmsCoreDebugCommand {
         var cores = MechaCoreRegistry.snapshot(source.getLevel());
         if (cores.isEmpty()) throw NO_CORE.create();
         for (ArmsCore core : cores) {
-            writeSnapshot(core, forward, strafe, viewYaw, false, false);
+            writeSnapshot(core, forward, strafe, viewYaw, false);
         }
         source.sendSuccess(() -> Component.literal(
                 String.format(Locale.ROOT, "输入已写入：forward=%.2f strafe=%.2f yaw=%.1f", forward, strafe, viewYaw)), false);
@@ -203,7 +204,11 @@ public final class ArmsCoreDebugCommand {
                     ? MechaConditionSnapshot.EMPTY
                     : core.getMechaControl().getConditionSnapshot();
             writeSnapshot(core, current.inputForward(), current.inputStrafe(),
-                    current.viewYaw(), held, released);
+                    current.viewYaw(), held);
+            // 松开边沿与按键按住分开表达：按住写快照，松开投递一次性事件
+            if (released) {
+                core.postEvent(MechaEvent.JUMP_RELEASE);
+            }
         }
         source.sendSuccess(() -> Component.literal("跳跃输入：held=" + held + " released=" + released), false);
         return 1;
@@ -266,10 +271,9 @@ public final class ArmsCoreDebugCommand {
      * @param strafe    新的左右输入
      * @param viewYaw   新的视角偏航（度）
      * @param jumpHeld  跳跃键是否按住
-     * @param jumpEdge  是否携带跳跃松开边沿
      */
     private static void writeSnapshot(ArmsCore core, float forward, float strafe, float viewYaw,
-                                      boolean jumpHeld, boolean jumpEdge) {
+                                      boolean jumpHeld) {
         MechaConditionSnapshot current = core.getMechaControl() == null
                 ? MechaConditionSnapshot.EMPTY
                 : core.getMechaControl().getConditionSnapshot();
@@ -277,7 +281,6 @@ public final class ArmsCoreDebugCommand {
                 .inputForward(forward)
                 .inputStrafe(strafe)
                 .jumpPressed(jumpHeld)
-                .jumpReleased(jumpEdge)
                 .sprintPressed(current.sprintPressed())
                 .walkKeyPressed(current.walkKeyPressed())
                 .sneaking(current.sneaking())

@@ -13,8 +13,14 @@ package io.github.sweetzonzi.arms_core.common.control;
  * {@link MechaControlHolder#postEvent(MechaEvent)} 写入，
  * MechaControl 在每物理帧驱动状态机前消费，消费后自动清除。
  * <p>
- * 当前实现：ATTACK_PRIMARY、USE_ITEM、INTERACT、TOGGLE_DRIVE、HURT、MOUNT/DISMOUNT。
- * 战术动作（潜行/卧倒/飞扑/滑铲等）留给未来扩展。
+ * 当前实现：ATTACK_PRIMARY、ATTACK_SECONDARY、USE_ITEM、INTERACT、TOGGLE_DRIVE、
+ * TOGGLE_PRONE、TOGGLE_FLY、DODGE、HURT、STUN、MOUNT、DISMOUNT、JUMP_RELEASE。
+ * 其余战术动作（飞扑/战术冲刺/滑铲等）留给未来扩展。
+ * <p>
+ * <b>线上身份</b>：{@code MechaInputPayload.eventBits} 的位序取 {@link #ordinal()}，
+ * 因此新常量只能追加在末尾；在中间插入会让该位置之后的位全部平移，双端事件错配。
+ * `src/test/java/io/github/sweetzonzi/arms_core/network/ARMSNetworkCodecTest.java#eventOrdinalsAreAppendOnly`
+ * 钉住这份顺序。
  *
  * @author Sweetzonzi
  */
@@ -75,6 +81,23 @@ public enum MechaEvent {
 
     /** 从载具下来 */
     DISMOUNT,
+
+    // ==========================================
+    // 跳跃
+    // ==========================================
+
+    /**
+     * 跳跃键松开（单帧边沿），蓄力跳跃的释放信号。
+     * <p>
+     * 与"按住"分开表达：{@code MechaInputPayload.keyFlags} 的 {@code BIT_JUMP} 只表示当前是否按住，
+     * 它随每次上行覆盖，被物理线程读到几次不确定；而"松开了"是发生过一次的事实，
+     * 必须恰好被 KCC 的跳跃蓄力更新（`MechaCharacter.java#updateJump`）消费一次，
+     * 因此走事件闩锁（`MechaControl.java#pendingEventBuffer`）。
+     * <p>
+     * 追加在枚举末尾而不是与跳跃相关的分组里：{@code eventBits} 的位序取 {@link #ordinal()}，
+     * 在中间插入会让 HURT / STUN / MOUNT / DISMOUNT 的位平移（类注释「线上身份」）。
+     */
+    JUMP_RELEASE,
 
     // ==========================================
     // 未来扩展（暂不实现）

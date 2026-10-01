@@ -21,9 +21,9 @@ import java.util.UUID;
  * <p>
  * <b>连续量可以丢，离散边沿不能丢。</b> {@code forward} / {@code strafe} / {@code viewYaw} /
  * {@code viewPitch} / {@code keyFlags} 是「最新值覆盖」语义，丢包只造成短暂迟滞；
- * 而 {@code MechaEvent} 与跳跃松开是单帧标记，被控制器在下一个物理步帧首一次性取走，
- * 只发一帧则丢包即永久丢失。因此这两类载荷带单调递增的 {@link #eventSeq()}，
- * 由客户端在接下来若干个包里重复携带同一对 {@code (eventSeq, eventBits)}，
+ * 而 {@link MechaEvent}（含 {@link MechaEvent#JUMP_RELEASE} 跳跃松开）是单帧标记，
+ * 被控制器在下一个物理步帧首一次性取走，只发一帧则丢包即永久丢失。因此事件载荷带单调递增的
+ * {@link #eventSeq()}，由客户端在接下来若干个包里重复携带同一对 {@code (eventSeq, eventBits)}，
  * 服务端只在该序号大于自己记录的序号时投递一次。
  * <p>
  * 载荷方向不同于下行三个包：本包是唯一的 {@code playToServer} 载荷。
@@ -36,7 +36,6 @@ import java.util.UUID;
  * @param keyFlags     {@link #BIT_JUMP} / {@link #BIT_SPRINT} / {@link #BIT_WALK} / {@link #BIT_SNEAK} 组成的位集
  * @param eventSeq     单调递增的事件序号；每次「产生一个事件」自增一次，而非每 tick 自增
  * @param eventBits    本包携带的事件类型集合，位序 = {@link MechaEvent#ordinal()}
- * @param jumpReleased 跳跃键松开边沿，与 {@code eventBits} 同属「发生过」语义
  * @author Sweetzonzi
  */
 public record MechaInputPayload(
@@ -47,8 +46,7 @@ public record MechaInputPayload(
         float viewPitch,
         int keyFlags,
         int eventSeq,
-        int eventBits,
-        boolean jumpReleased
+        int eventBits
 ) implements CustomPacketPayload {
 
     /** 载荷 id */
@@ -67,7 +65,7 @@ public record MechaInputPayload(
     /**
      * 手写编解码器。
      * <p>
-     * 不用 {@code StreamCodec.composite}：它的重载只到 6 个字段，而本载荷有 9 个。
+     * 不用 {@code StreamCodec.composite}：它的重载只到 6 个字段，而本载荷有 8 个。
      * 字段顺序即线上顺序，改动它必须同时提升 {@code ARMSNetwork.PROTOCOL_VERSION}。
      */
     public static final StreamCodec<RegistryFriendlyByteBuf, MechaInputPayload> STREAM_CODEC =
@@ -82,9 +80,8 @@ public record MechaInputPayload(
                     int keyFlags = buffer.readVarInt();
                     int eventSeq = buffer.readVarInt();
                     int eventBits = buffer.readVarInt();
-                    boolean jumpReleased = buffer.readBoolean();
                     return new MechaInputPayload(coreId, forward, strafe, viewYaw, viewPitch,
-                            keyFlags, eventSeq, eventBits, jumpReleased);
+                            keyFlags, eventSeq, eventBits);
                 }
 
                 @Override
@@ -97,7 +94,6 @@ public record MechaInputPayload(
                     buffer.writeVarInt(value.keyFlags());
                     buffer.writeVarInt(value.eventSeq());
                     buffer.writeVarInt(value.eventBits());
-                    buffer.writeBoolean(value.jumpReleased());
                 }
             };
 

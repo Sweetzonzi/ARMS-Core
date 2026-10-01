@@ -460,7 +460,9 @@ public class MechaControl {
      * 将快照中的移动/跳跃输入转发到 KCC。
      * <p>
      * 移动方向从玩家输入方向 + 视角偏航转换为世界坐标系方向。
-     * 旁路观测模式（默认）：原样透传，与旧 ARMSClient 直接驱动 KCC 的行为一致；
+     * 跳跃的"按住"取自快照（连续量），"松开"取自本帧事件批（{@link MechaEvent#JUMP_RELEASE}
+     * 的单帧边沿），因此同一次松键只被 latch 一次，不随快照被反复读取。
+     * 旁路观测模式（默认）：原样透传，等价于逻辑层完全不存在时的 KCC 行为；
      * 反向控制模式：按逻辑层合并许可（CAN_MOVE / CAN_JUMP）门控。
      */
     private void forwardInputToKCC() {
@@ -468,11 +470,12 @@ public class MechaControl {
         float fwd = snap.inputForward();
         float str = snap.inputStrafe();
         boolean hasInput = (fwd * fwd + str * str) > 0.001f;
+        boolean jumpRelease = pendingEvents.contains(MechaEvent.JUMP_RELEASE);
 
         if (bypassObservation) {
             // 旁路观测：原样透传（无输入则置零，触发 KCC §3.9 无输入制动）
             applyMoveInput(fwd, str, snap.viewYaw(), hasInput);
-            kcc.setJumpInput(snap.jumpPressed(), snap.jumpReleased());
+            kcc.setJumpInput(snap.jumpPressed(), jumpRelease);
         } else {
             // 反向控制：CAN_MOVE / CAN_JUMP 门控
             applyMoveInput(fwd, str, snap.viewYaw(), hasInput && variables.get(CAN_MOVE));
@@ -480,7 +483,7 @@ public class MechaControl {
             // CAN_JUMP 只限制开始跳跃；已经开始蓄力后仍须透传 held/released 才能正常释放。
             boolean charging = kcc.isChargingJump();
             boolean jumpHeld = snap.jumpPressed() && (variables.get(CAN_JUMP) || charging);
-            boolean jumpReleased = snap.jumpReleased() && charging;
+            boolean jumpReleased = jumpRelease && charging;
             kcc.setJumpInput(jumpHeld, jumpReleased);
         }
     }
