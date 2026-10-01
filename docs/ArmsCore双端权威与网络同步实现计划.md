@@ -69,7 +69,7 @@ kcc.prePhysicsTick(dt)    // 行走力 / 跳跃 / 碰撞 sweep
 | 位置 | 内容 |
 |------|------|
 | `:47` | `class MechaCharacter extends PhysicsCharacter`（Bullet `btKinematicCharacterController`，非刚体） |
-| `:126-127` | 字段及其注释：「控制器当前 Y 轴朝向（弧度），由 `applyAnimRootYaw` 累积动画根骨骼 Y 旋转增量」，**无 getter、无 `volatile`** |
+| `:126-135` | 字段及其注释：「控制器当前 Y 轴朝向（弧度），由 `applyAnimRootYaw` 累积动画根骨骼 Y 旋转增量」；该字段为 `volatile`，并有 `getCurrentYaw()` 供主线程读取（阶段 0.1） |
 | `:234-245` | `setAnimRootYawDelta` 的方法与其 javadoc：「在 `prePhysicsTick` 中直接叠加到 KCC 当前 Y 旋转」 |
 | `:294` | 类注释：「KCC 本身没有旋转概念，我们在 `MechaCharacter` 内自行维护一个 `currentYaw` 字段」 |
 | `:298-302` | `applyAnimRootYaw()` 中 `currentYaw += animRootYawDelta` |
@@ -304,7 +304,7 @@ setLinearVelocity(body.getLinearVelocity(null));
 
 KCC 的幽灵体世界变换由 `playerStep` 在末尾一次性写入（`btKinematicCharacterController.cpp:836-837`），因此并发读取拿到的是某一次完整步进的结果，与 `DestroyableRigidObject` 已接受的竞态同类。KCC 侧对应调用是 `getPhysicsLocation(null)`（`PhysicsCollisionObject.java:563`，传 `null` 返回新向量）与 `getLinearVelocity(tmp)`。
 
-`MechaCharacter.currentYaw` 目前是物理线程写入、无 `volatile` 修饰的普通字段，被主线程读取之前需要加 `volatile`（阶段 0.1）；同时需要一个 getter（§7 Q4）。
+`MechaCharacter.currentYaw` 由物理线程累积、主线程读取，因此已声明为 `volatile` 并提供 `getCurrentYaw()`（阶段 0.1）。读到的值是某一次完整物理步结束后的结果，无需加锁；归一化问题见 §7 Q2。
 
 **逻辑状态：需要不可变快照。** `posture` / `gait` / `vertical` / `energy` / `jumpCharging` 的来源是 `MechaControl` 的 `StateVariableContainer`——物理线程写入的可变容器。主线程不得读取它，因此需要一个物理线程 → 主线程的不可变载体 `LogicStateSnapshot`：
 
@@ -338,7 +338,13 @@ public void prePhysicsTick() {
 }
 ```
 
-`ArmsCore` 是独立装配体，不在 `ObjectManager.levelVehicles` 中，因此 `ObjectManager` 不会替它驱动 `Part.onPrePhysicsTick()`；`ArmsCore.prePhysicsTick()` 需要自己做第 ① 步。`SubPart` 层的刚体 `prePhysicsTick` 则**无需** `ArmsCore` 处理：`SubPart extends DestroyableRigidObject extends DestroyableObject`，其 `addToLevel()` 会调用 `ObjectManager.addDestroyableObject(...)`，于是自动进入 `levelDestroyableObjects`，由 `ObjectManager.onPrePhysicsTick`（`ObjectManager.java:241-255`）扇出。
+**构造前置的成立依据**：`ArmsCore` 构造时直接读物理空间
+（`SparkLevel.getPhysicsLevel(level).getWorld()`，`SparkLevel.java:45-46`）。`PhysicsLevel.world`
+是 `lateinit var`，在默认（多线程）路径下由协程在物理线程上赋值
+（`PhysicsLevel.kt:114`、`:318-329`），而 Spark-Core 在 `LevelEvent.Load` 中 `setPhysicsLevel(...)`
+后立即 `start()`（`PhysicsLevelApplier.kt:24-36`）。因此这条读取成立的前提是**构造发生在
+Level 加载完成之后**——宿主登录、装配体创建包、调试命令都满足该顺序。需要显式确认初始化
+完成时，订阅 Spark-Core 的 `PhysicsLevelInitEvent`（`PhysicsLevelApplier.kt:35`）作为构造时机。
 
 `ArmsCore.prePhysicsTick()` 因此为：
 
@@ -542,7 +548,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 阶段 0–1 只依赖本仓库；阶段 2 起引入网络；阶段 3 引入上行输入；阶段 4 接入宿主与装配体。四段各自可独立验收。
 
-### 阶段 0：前置修正
+### 阶段 0：前置修正（已完成）
 
 **先定一组临时胶囊参数并写在共享位置。** 当前仓库唯一的胶囊尺寸来源是 `ARMSClient.java:39-41` 的两个客户端常量（半径 `0.4f`、圆柱段高 `1.6f`，全高 = 圆柱段 + 2×半径 = `2.4f`）；`docs/角色控制器-行走物理设计.md` 的 §5.1「素体级参数表」不含胶囊尺寸与质量，也没有 `mech_chassis.json` 落地，因此这组值就是本阶段的**临时权威取值**，阶段 4.6 再由素体定义替换。取值集中到一处（`MechaCharacter` 或新的素体预设常量类），服务端出生点与客户端锚点共用同一组值与 `halfTotal = 全高/2`（§3.14）。
 
@@ -550,7 +556,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |---|------|------|----------|
 | 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java:127` | 该字段由物理线程写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
 | 0.2 | 胶囊常量提到共享位置 | `ARMSClient.java:39-41` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
-| 0.3 | 为 `ArmsCore` 增加最小构造参数与查询 API | `ArmsCore.java:24-26`、`:35-37` | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
+| 0.3 | 为 `ArmsCore` 增加最小构造参数、查询 API 与 KCC | `ArmsCore.java` 整体 | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；构造时以 `MechaBodyPreset` 的胶囊几何 + `SparkLevel.getPhysicsLevel(level).getWorld()` 创建 `MechaCharacter` 并交给 `MechaControl`；暴露 `getKcc()`；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
 
 客户端不持有 KCC，因此本阶段不包含客户端的控制器生命周期管理：KCC 的初始化、出生点与兜底逻辑都在服务端（阶段 1.5），客户端只维护按 `coreId` 索引的锚点，其生命周期跟随创建 / 移除包（阶段 1.12–1.14）。
 
@@ -563,7 +569,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 1.1 | `LogicStateSnapshot`（record，`common/net/`） | 不可变，物理线程 → 主线程的唯一载体（§3.5）。字段：`posture, gait, vertical, energy, jumpCharging`。提供 `EMPTY` 常量。对应 `docs/下一步开发TODO.md:113` 的条目 |
 | 1.2 | `MechaCharacter` 的只读出口 | `currentYaw` getter；`getPhysicsLocation` / `getLinearVelocity` 的使用约定（§3.5，注意 `getLinearVelocity(Vector3f)` 需传复用缓冲） |
 | 1.3 | `ArmsCore` 实现 `SyncedDataHolder` | 声明 §2.2 的 8 个 `private static final EntityDataAccessor`；构造器内 `new SynchedEntityData.Builder(this)` 并 `build()`（服务端与客户端共用同一构造路径，§3.2）；提供 `getSyncedData()` 供包处理器调用；实现两个 `onSyncedDataUpdated` 重载 |
-| 1.4 | `ArmsCore` 构造真实 KCC | 以阶段 0 的临时胶囊参数与服务端 `PhysicsSpace`（`SparkLevel.getPhysicsLevel(serverLevel).getWorld()`）构造 `MechaCharacter`，替换 `ArmsCore.java:25` 的 `null`。装配体成员（`partMap` / `getRootSubPart` / `getAttr`）按 D20 留空 |
+| 1.4 | `ArmsCore` 的 KCC 接线 | 阶段 0.3 已让 `ArmsCore(Level, UUID)` 构造 `MechaCharacter`（胶囊几何取自 `MechaBodyPreset`，物理空间取自 `SparkLevel.getPhysicsLevel(level).getWorld()`），无需再补构造；本项剩余的是把 `prePhysicsTick()` 接上 `mechaControl.onPhysicsStep(dt)` 与逻辑状态发布（1.7）。装配体成员（`partMap` / `getRootSubPart` / `getAttr`）按 D20 留空 |
 | 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `ARMSClient.java:136-152` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
 | 1.6 | 唯一的物理步驱动 | `PhysicsLevelTickEvent.Pre` 订阅者按 Level 注册表扇出 `ArmsCore.prePhysicsTick()`（§3.6、D9） |
 | 1.7 | 物理线程发布逻辑状态 | 在 1.6 的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回不可变 record） |
@@ -712,6 +718,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 双端物理世界与速率 | `physics/level/PhysicsLevelApplier.kt:30`、`ClientPhysicsLevelApplier.kt:21`、`PhysicsLevel.kt:62` |
 | 步数负载自适应 | `physics/level/PhysicsLevel.kt:146-209` |
 | 服务端物理步请求点（`LevelTickEvent.Pre`，`HIGH`） | `physics/level/PhysicsLevelApplier.kt:60-66` |
+| 物理世界初始化时机与完成事件（构造前置依据） | `physics/level/PhysicsLevelApplier.kt:30-36`、`PhysicsLevel.kt:114`、`:312-329`；`api/SparkLevel.java:45-46` |
 | 物理线程发布点 | `physics/level/PhysicsLevel.kt:391-412` |
 | 两端实体集合差异 | `physics/level/ServerPhysicsLevel.kt:12-14`、`ClientPhysicsLevel.kt:14-23` |
 | 每个实体自动获得运动学盒体 | `mixin/extension/EntityMixin.java`、`EntityPatch.java:21`、`physics/body/CollisionFuncApplier.kt:20-59`、`physics/PhysicsHost.kt:60` |

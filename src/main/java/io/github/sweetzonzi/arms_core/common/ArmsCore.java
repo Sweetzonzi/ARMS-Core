@@ -1,9 +1,11 @@
 package io.github.sweetzonzi.arms_core.common;
 
+import cn.solarmoon.spark_core.api.SparkLevel;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.Part;
@@ -23,12 +25,19 @@ import java.util.UUID;
  * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
  * （见 `docs/总体设计文档.md:82`）。
  * <p>
- * <b>当前完成度</b>：身份（{@link #getAssemblyId()}）与所在世界（{@link #getLevel()}）已接入；
- * 装配体图（{@link #addPart} / {@link #getRootSubPart()} / {@link #getAttr()}）与
- * {@link #prePhysicsTick()} 仍为待实现成员。
+ * <b>构造前置</b>：构造器会直接从所在 Level 取物理空间
+ * （{@code SparkLevel.getPhysicsLevel(level).getWorld()}）并创建 KCC。该前置在正常流程下由
+ * Spark-Core 的初始化顺序保证——`PhysicsLevelApplier.kt:24-36` 在 {@code LevelEvent.Load}
+ * 中设置 `PhysicsLevel` 并 `start()`，而 `ArmsCore` 总是由更晚的创建路径（宿主登录、
+ * 装配体创建包、调试命令）构造。
  * <p>
- * <b>线程模型</b>：{@link #mechaControl} 的输入发布（快照与事件）可在主线程调用，
- * 物理推进 {@link #prePhysicsTick()} 只允许在物理线程调用。
+ * <b>当前完成度</b>：身份、所在世界与 KCC 已接入；装配体图
+ * （{@link #addPart} / {@link #getRootSubPart()} / {@link #getAttr()}）与
+ * {@link #prePhysicsTick(float)} 仍为待实现成员。
+ * <p>
+ * <b>线程模型</b>：构造与输入发布（快照、事件）在主线程；{@link #prePhysicsTick(float)}
+ * 只允许在物理线程调用，KCC 入世（`setPhysicsLocation` + `addCollisionObject`）须经
+ * `SparkLevel.submitImmediateTask` 投递。
  *
  * @author Sweetzonzi
  */
@@ -45,31 +54,25 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder {
     public final MechaControl mechaControl;
 
     /**
-     * 构造一个未接入物理世界的机娘核心。
+     * 构造一个机娘核心，并创建其 KCC。
      * <p>
-     * {@link #mechaControl} 内部的 KCC 为 {@code null}，因此本实例<b>不可被驱动</b>：
-     * 调用 {@link #prePhysicsTick()} 会在 {@code MechaControl.writeStateInputs} 读取 KCC 状态时
-     * 抛 {@code NullPointerException}。可安全使用的部分只有身份与本类自身的成员。
+     * KCC 的胶囊几何取自 {@link MechaBodyPreset}，用于地面射线检测的物理空间直接取自
+     * 所在 Level（见类注释的构造前置）。
+     * <p>
+     * KCC 只被构造、尚未加入物理空间：入世需要调用方另经
+     * {@code SparkLevel.submitImmediateTask} 执行 `setPhysicsLocation` 与
+     * `addCollisionObject`，见 `docs/ArmsCore双端权威与网络同步实现计划.md` 阶段 1.5。
      *
-     * @param level      所在世界
+     * @param level      所在世界；其物理空间必须已初始化（见类注释的构造前置）
      * @param assemblyId 装配体 UUID
      */
     public ArmsCore(Level level, UUID assemblyId) {
-        this(level, assemblyId, null);
-    }
-
-    /**
-     * 构造一个机娘核心。
-     *
-     * @param level        所在世界
-     * @param assemblyId   装配体 UUID
-     * @param mechaCharacter 已初始化并加入物理世界的 KCC；传 {@code null} 时本实例不可被驱动
-     *                       （见 {@link #ArmsCore(Level, UUID)}）
-     */
-    public ArmsCore(Level level, UUID assemblyId, @Nullable MechaCharacter mechaCharacter) {
         this.level = level;
         this.assemblyId = assemblyId;
-        this.mechaControl = new MechaControl(this, mechaCharacter);
+        MechaCharacter kcc = new MechaCharacter(
+                MechaBodyPreset.newCapsuleShape(),
+                SparkLevel.getPhysicsLevel(level).getWorld());
+        this.mechaControl = new MechaControl(this, kcc);
     }
 
     // ==========================================
@@ -82,7 +85,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder {
      * 执行顺序（硬约束）：
      * <ol>
      *   <li>Part 层动画混合 —— 必须早于 {@code extractAnimRootDelta()}，后者读取
-     *       {@code body_root} 骨骼位姿，而该位姿由 Part 的物理步产出</li>
+     *       {@code body_root} 骨骼位姿，而该位姿由 Part 的物理步产出（装配体图接入后生效）</li>
      *   <li>状态机推进 → 动画根位移提取 → KCC 积分（顺序由 {@link MechaControl} 内部保证）</li>
      *   <li>发布逻辑状态快照供主线程读取</li>
      * </ol>
@@ -92,6 +95,18 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder {
     public void prePhysicsTick(float dt) {
         // TODO(阶段 1.4)：① Part 层动画混合；② mechaControl.onPhysicsStep(dt)；③ 发布 LogicStateSnapshot
         throw new UnsupportedOperationException("ArmsCore.prePhysicsTick 尚未实现（计划阶段 1.4）");
+    }
+
+    /**
+     * 返回本核心的 KCC。
+     * <p>
+     * KCC 由 {@link MechaControl} 持有（构造本类时创建），此处只是转发，便于外部在
+     * 创建路径中直接拿到它做入世与出生点设置。
+     *
+     * @return 本核心的运动学角色控制器，非 {@code null}
+     */
+    public MechaCharacter getKcc() {
+        return mechaControl.getKcc();
     }
 
     // ==========================================

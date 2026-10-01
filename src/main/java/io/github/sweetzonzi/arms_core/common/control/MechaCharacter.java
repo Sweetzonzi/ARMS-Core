@@ -9,6 +9,7 @@ import com.jme3.bullet.objects.PhysicsCharacter;
 import com.jme3.math.FastMath;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import lombok.AccessLevel;
@@ -142,13 +143,15 @@ public class MechaCharacter extends PhysicsCharacter {
     // ═══════════════════════════════════════════════
 
     /**
-     * @param shape        胶囊碰撞形状
+     * @param shape        胶囊碰撞形状，尺寸应与 {@link MechaBodyPreset} 一致
      * @param physicsSpace 物理空间（用于地面射线检测）
      */
     public MechaCharacter(CapsuleCollisionShape shape, PhysicsSpace physicsSpace) {
         super(shape, MechaWalkingAttr.STEP_HEIGHT_BASE);
         this.physicsSpace = physicsSpace;
-        this.capsuleHalfTotal = shape.getHeight() / 2f + shape.getRadius();
+        // 半高取共享常量而非从 shape 推导：胶囊几何的唯一来源是 MechaBodyPreset，
+        // 服务端出生点与客户端锚点也用同一组值，避免两处各算一遍
+        this.capsuleHalfTotal = MechaBodyPreset.HALF_TOTAL;
 
         // KCC 配置
         setGravity(MechaWalkingAttr.GRAVITY);         // 重力加速度
