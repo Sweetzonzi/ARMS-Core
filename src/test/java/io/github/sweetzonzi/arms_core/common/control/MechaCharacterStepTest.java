@@ -74,7 +74,8 @@ class MechaCharacterStepTest {
 
         float maxFeetY = Float.NEGATIVE_INFINITY;
         for (int i = 0; i < STEPS; i++) {
-            kcc.setMoveInput(0f, 1f); // 世界 +Z（朝台阶）
+            // 体系前进步；初始朝向 yaw=0（面向南 +Z），因此世界方向就是朝台阶的 +Z
+            kcc.setMoveIntent(1f, 0f);
             kcc.prePhysicsTick(DT);
             space.update(DT, 0, 0x0);
             maxFeetY = Math.max(maxFeetY, kcc.getPhysicsLocation(null).y - MechaBodyPreset.HALF_TOTAL);
@@ -124,5 +125,37 @@ class MechaCharacterStepTest {
                         + "（步高 = " + MechaWalkingAttr.STEP_HEIGHT_BASE + " m）");
         assertTrue(result.finalPosition().z < 2.0f,
                 "应被挡在台阶前沿 z=2.0 之外，实际 z=" + result.finalPosition().z);
+    }
+
+    /**
+     * 行走方向跟随控制器朝向：朝向 yaw=90（面向西 −X）时，同样的前进意图应产生 −X 位移。
+     * <p>
+     * 这是「WASD 是当前朝向下的前后左右」在真实物理步里的判据。用平地以避免台阶干扰位移方向；
+     * 意图只在起步前下发一次，因为 {@link MechaCharacter#setMoveIntent} 在写入时就把意图解成
+     * 世界方向，朝向不变则结果不变（编排层每物理步重发一次，见
+     * {@code MechaControl.forwardInputToKCC}）。
+     */
+    @Test
+    void walkDirectionFollowsFacing() {
+        PhysicsSpace space = new PhysicsSpace(
+                new Vector3f(-50f, -50f, -50f), new Vector3f(50f, 50f, 50f));
+        space.addCollisionObject(staticBox(new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f)));
+
+        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
+        kcc.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
+        space.addCollisionObject(kcc);
+
+        kcc.setViewYaw(90f);
+        kcc.setMoveIntent(1f, 0f);
+        for (int i = 0; i < STEPS; i++) {
+            kcc.prePhysicsTick(DT);
+            space.update(DT, 0, 0x0);
+        }
+
+        Vector3f pos = kcc.getPhysicsLocation(null);
+        assertTrue(pos.x < -1.5f,
+                "面向西（yaw=90）前进应产生 −X 位移，实际 x=" + pos.x);
+        assertTrue(Math.abs(pos.z) < 0.5f,
+                "前进不应产生 Z 轴位移，实际 z=" + pos.z);
     }
 }

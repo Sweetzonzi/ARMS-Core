@@ -31,7 +31,8 @@ import java.util.UUID;
  * @param coreId       目标装配体 UUID
  * @param forward      前后输入，[-1, 1]，正 = 前进
  * @param strafe       左右输入，[-1, 1]，正 = 左移
- * @param viewYaw      玩家水平朝向（度），用于把输入转到世界系
+ * @param viewYaw      玩家水平朝向（度）。服务端用它绝对赋值控制器朝向（`MechaControl.applyFacing` →
+ *                     `MechaCharacter.setViewYaw`），行走方向再由该朝向解出
  * @param viewPitch    玩家俯仰角（度）
  * @param keyFlags     {@link #BIT_JUMP} / {@link #BIT_SPRINT} / {@link #BIT_WALK} / {@link #BIT_SNEAK} 组成的位集
  * @param eventSeq     单调递增的事件序号；每次「产生一个事件」自增一次，而非每 tick 自增

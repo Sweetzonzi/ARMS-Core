@@ -47,8 +47,10 @@ import java.util.UUID;
  * 注销或换维度后回收）。{@link ArmsCore} 不持有它，也没有任何动画状态——将来改为逐 Part 渲染时，
  * 删除本类与 {@link MechaAnimatable} 即可。
  * <p>
- * <b>朝向在阶段 1–3 不代表正确</b>：{@code DATA_YAW} 目前恒为初值（无动画根旋转输入，
- * 见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12），这里画出的朝向只证明该字段能过线。
+ * <b>朝向</b>：{@code DATA_YAW} 承载控制器侧朝向，由服务端按视野偏航驱动
+ * （{@code MechaControl.applyFacing} → {@code MechaCharacter.setViewYaw}），客户端在相邻采样间按
+ * 最短角路径插值。躯干朝向与它解耦、仍由 SubPart 通道承载，见
+ * `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12。
  * <p>
  * <b>调试用胶囊外接盒</b>：{@link #DRAW_DEBUG_CAPSULE_BOX} 打开时额外画出控制器胶囊的外接盒与
  * 朝向线段。模型保持 1:1 尺寸而不与胶囊等比（{@code MechaModelPreset} 只对齐底面），
@@ -197,7 +199,7 @@ public final class MechaModelRenderer {
         DebugRenderer.renderFilledBox(poseStack, buffers, capsuleBox, 0.2f, 0.8f, 1f, 0.35f);
 
         // 朝向线段：把单位朝向按 YAW_LINE_LENGTH 缩放后画成一个扁平盒。
-        // 阶段 1–3 该值恒为常量（§3.12），此处只验证字段能过线，不代表朝向正确
+        // 与机体模型共用同一份朝向（DATA_YAW，MC 约定：0=南 +Z，90=西 −X），是对位参考物
         float yawDeg = animatable.lerpYaw(tick, partialTick);
         double yawRad = Math.toRadians(yawDeg);
         double dirX = -Math.sin(yawRad) * YAW_LINE_LENGTH;

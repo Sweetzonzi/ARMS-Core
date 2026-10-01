@@ -269,7 +269,8 @@ public class MechaControl {
      * 执行顺序：
      * <ol>
      *   <li>帧首原子取走主线程投递的事件批</li>
-     *   <li>汇入快照和 KCC 状态到 StateVariableContainer</li>
+     *   <li>汇入快照和 KCC 状态到 StateVariableContainer，并把视野偏航写进 KCC 作为朝向权威
+     *       （{@link #applyFacing}，早于一切按朝向解算的量）</li>
      *   <li>广播离散事件并推进逻辑状态机</li>
      *   <li>逻辑状态机在推进完成后合并最终输入许可</li>
      *   <li>按旁路观测/反向控制模式转发玩家输入到 KCC</li>
@@ -302,7 +303,7 @@ public class MechaControl {
      * 帧逻辑推进（不含 KCC 物理积分）。
      * <p>
      * 包内可见以便单元测试在不触碰 jme3 native（rayTest 等）的前提下验证接线：
-     * 事件 latch → 变量汇入 → 状态机推进 → 输入转发 → 状态变化日志。
+     * 事件 latch → 变量汇入 → 朝向写入 → 状态机推进 → 输入转发 → 状态变化日志。
      *
      * @param dt 物理步长 (s)
      */
@@ -313,6 +314,11 @@ public class MechaControl {
         // —— 1. 汇入快照与步进前 KCC 状态 ——
         float safeDt = Math.max(dt, 1.0e-6f);
         writeStateInputs(safeDt);
+
+        // —— 1b. 朝向：把视野偏航绝对赋值到 KCC ——
+        // 必须早于 applyLogicOutputToKcc（闪避方向）与 forwardInputToKCC（行走方向）：
+        // 这两处都按 KCC 本步朝向解算，晚一步就会用上一物理步的角
+        applyFacing();
 
         // —— 2. 事件广播到当前活跃状态树 ——
         broadcastPendingEvents();
@@ -376,7 +382,9 @@ public class MechaControl {
     /**
      * 解析闪避方向（世界坐标水平单位向量）。
      * <p>
-     * 有移动输入时沿输入方向；无输入时沿控制器当前朝向（{@link MechaCharacter#getCurrentYaw()}）。
+     * 有移动输入时沿输入方向，无输入时沿控制器当前朝向（{@link MechaCharacter#getCurrentYaw()}）。
+     * 两种情形的朝向都取 KCC 本步的朝向（{@link #applyFacing} 先于本方法执行），
+     * 与 {@link MechaCharacter#setMoveIntent} 解行走方向用的是同一个角。
      * 后者保证按住闪避键不放方向键时也能倒地翻滚，而不是原地不动。
      *
      * @return {@code [dirX, dirZ]}，已归一化
@@ -385,10 +393,10 @@ public class MechaControl {
         MechaConditionSnapshot snap = conditionSnapshot;
         float fwd = snap.inputForward();
         float str = snap.inputStrafe();
+        float yaw = kcc.getCurrentYaw();
+        float sinYaw = (float) Math.sin(yaw);
+        float cosYaw = (float) Math.cos(yaw);
         if (fwd * fwd + str * str > 0.001f) {
-            float yawRad = (float) Math.toRadians(snap.viewYaw());
-            float sinYaw = (float) Math.sin(yawRad);
-            float cosYaw = (float) Math.cos(yawRad);
             float dirX = str * cosYaw - fwd * sinYaw;
             float dirZ = fwd * cosYaw + str * sinYaw;
             float len = (float) Math.sqrt(dirX * dirX + dirZ * dirZ);
@@ -396,8 +404,7 @@ public class MechaControl {
                 return new float[]{dirX / len, dirZ / len};
             }
         }
-        float yaw = kcc.getCurrentYaw();
-        return new float[]{-(float) Math.sin(yaw), (float) Math.cos(yaw)};
+        return new float[]{-sinYaw, cosYaw};
     }
 
     /** 将连续输入、环境状态、事件 latch 和 KCC 状态写入共享变量容器。 */
@@ -453,15 +460,36 @@ public class MechaControl {
     }
 
     // ==========================================
-    // 输入转发（私有）
+    // 朝向与输入转发（私有）
     // ==========================================
+
+    /**
+     * 把本帧视野偏航写进 KCC，作为控制器朝向的绝对权威
+     * （{@link MechaCharacter#setViewYaw} 不累积、不插值，写入即生效）。
+     * <p>
+     * 调用点在 {@link #frameLogic(float)} 的第 1b 步：早于闪避方向与行走方向的解算，因此
+     * 本步内所有按朝向解算的量取的是同一个角。
+     * <p>
+     * 死亡时不写入。{@code RAGDOLL} 在当前状态机里的唯一入边条件就是 {@code IS_DEAD}
+     * （{@code common/control/state/preset/PostureLogicGraphs.java#buildGraph} 里转入 ragdoll 的
+     * 六条转移全部以 {@code COND_IS_DEAD} 为条件，且该节点无出口），因此「死亡 / ragdoll 冻结」
+     * 由这一个判据覆盖，控制器停在最后一帧朝向。
+     * <p>
+     * 移动许可（{@code CAN_MOVE}）不影响朝向：被晕住、蓄力、卧倒时仍可转身看向别处。
+     */
+    private void applyFacing() {
+        MechaConditionSnapshot snap = conditionSnapshot;
+        if (snap.isDead()) return;
+        kcc.setViewYaw(snap.viewYaw());
+    }
 
     /**
      * 将快照中的移动/跳跃输入转发到 KCC。
      * <p>
-     * 移动方向从玩家输入方向 + 视角偏航转换为世界坐标系方向。
-     * 跳跃的"按住"取自快照（连续量），"松开"取自本帧事件批（{@link MechaEvent#JUMP_RELEASE}
-     * 的单帧边沿），因此同一次松键只被 latch 一次，不随快照被反复读取。
+     * 移动意图（前后 / 左右）原样交给 {@link MechaCharacter#setMoveIntent}，由 KCC 按本步朝向
+     * 转成世界方向，本层不做三角变换。跳跃的"按住"取自快照（连续量），"松开"取自本帧事件批
+     * （{@link MechaEvent#JUMP_RELEASE} 的单帧边沿），因此同一次松键只被 latch 一次，
+     * 不随快照被反复读取。
      * 旁路观测模式（默认）：原样透传，等价于逻辑层完全不存在时的 KCC 行为；
      * 反向控制模式：按逻辑层合并许可（CAN_MOVE / CAN_JUMP）门控。
      */
@@ -474,11 +502,11 @@ public class MechaControl {
 
         if (bypassObservation) {
             // 旁路观测：原样透传（无输入则置零，触发 KCC §3.9 无输入制动）
-            applyMoveInput(fwd, str, snap.viewYaw(), hasInput);
+            applyMoveIntent(fwd, str, hasInput);
             kcc.setJumpInput(snap.jumpPressed(), jumpRelease);
         } else {
             // 反向控制：CAN_MOVE / CAN_JUMP 门控
-            applyMoveInput(fwd, str, snap.viewYaw(), hasInput && variables.get(CAN_MOVE));
+            applyMoveIntent(fwd, str, hasInput && variables.get(CAN_MOVE));
 
             // CAN_JUMP 只限制开始跳跃；已经开始蓄力后仍须透传 held/released 才能正常释放。
             boolean charging = kcc.isChargingJump();
@@ -489,26 +517,22 @@ public class MechaControl {
     }
 
     /**
-     * 将 [-1,1] 输入方向从视角相对坐标系转换为世界坐标系后写入 KCC。
+     * 把移动意图写入 KCC。
      * <p>
-     * 与 Minecraft 原版 {@code Entity.getInputVector} 完全一致：
-     * <pre>
-     *   worldX = str·cosYaw − fwd·sinYaw
-     *   worldZ = fwd·cosYaw + str·sinYaw
-     * </pre>
-     * 输入约定（与原版 {@code Input.leftImpulse} 一致）：fwd 正=前进，str 正=<b>左移</b>。
-     * 校验：yaw=0（面向南 +Z）按左 → +X（东）；yaw=90（面向西 -X）按左 → +Z（南）。
-     * 禁止移动时置零（触发 KCC 无输入制动）。
+     * 参数是玩家视角相对的原始量（正 = 前进 / 左移），本方法不做坐标系变换：行走方向的
+     * 「意图 → 世界」变换发生在 {@link MechaCharacter#setMoveIntent} 内，用的是本步
+     * {@link #applyFacing} 写下的 {@code currentYaw}。禁止移动时置零（触发 KCC 无输入制动）。
+     *
+     * @param fwd     前后意图，[-1, 1]，正 = 前进
+     * @param str     左右意图，[-1, 1]，正 = 左移
+     * @param allowed 本步是否允许移动
      */
-    private void applyMoveInput(float fwd, float str, float viewYaw, boolean allowed) {
+    private void applyMoveIntent(float fwd, float str, boolean allowed) {
         if (!allowed) {
-            kcc.setMoveInput(0, 0);
+            kcc.setMoveIntent(0f, 0f);
             return;
         }
-        float yawRad = (float) Math.toRadians(viewYaw);
-        float sinYaw = (float) Math.sin(yawRad);
-        float cosYaw = (float) Math.cos(yawRad);
-        kcc.setMoveInput(str * cosYaw - fwd * sinYaw, fwd * cosYaw + str * sinYaw);
+        kcc.setMoveIntent(fwd, str);
     }
 
     // ==========================================

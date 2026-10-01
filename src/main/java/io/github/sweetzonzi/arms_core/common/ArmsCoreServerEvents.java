@@ -105,8 +105,8 @@ public final class ArmsCoreServerEvents {
         core.getSyncedData().set(ArmsCore.DATA_POS, toJoml(position));
         core.getSyncedData().set(ArmsCore.DATA_VEL, toJoml(velocity));
 
-        // 朝向：控制器侧绝对 Y 朝向，单位度。Rotations 的构造器对分量取 % 360，
-        // 因此这里传入未归一化弧度换算出的度数也能得到有界值。
+        // 朝向：控制器侧绝对 Y 朝向，单位度。currentYaw 已由 MechaCharacter.setViewYaw 归约到
+        // [−π, π)，Rotations 的构造器再对分量取 % 360 覆盖线上格式。
         core.getSyncedData().set(ArmsCore.DATA_YAW,
                 new Rotations(0f, (float) Math.toDegrees(kcc.getCurrentYaw()), 0f));
 

@@ -31,10 +31,18 @@ import java.util.List;
  * <p>
  * 线程模型：
  * <ul>
- *   <li>主线程：{@link #setMoveInput}、{@link #setJumpInput}、{@link #setGravityScale}、
- *       {@link #setInputScale}、{@link #setAnimRootDelta}、{@link #setSeparationDistance} 写入 volatile 字段</li>
+ *   <li>写入方：{@link #setMoveIntent}、{@link #setViewYaw}、{@link #setJumpInput}、
+ *       {@link #setGravityScale}、{@link #setInputScale}、{@link #setAnimRootDelta}、
+ *       {@link #setSeparationDistance} 写入 volatile 字段。生产路径上这些调用来自物理线程
+ *       ——{@code MechaControl.frameLogic} 与 {@code onPhysicsStep} 同线程</li>
  *   <li>物理线程：{@link #prePhysicsTick} 读取 volatile 输入，计算力并施加</li>
+ *   <li>主线程：只读出口——同步通道读 {@code getCurrentYaw()} / {@code getPhysicsLocation(null)} /
+ *       {@code getLinearVelocity(null)}，不写任何字段</li>
  * </ul>
+ * <p>
+ * 朝向与移动方向的分工：{@link #setViewYaw} 绝对赋值控制器朝向 {@link #currentYaw}，
+ * {@link #setMoveIntent} 接收本体坐标系的移动意图并按该朝向转成世界方向。两者合起来
+ * 使 WASD 的「前后左右」始终是当前朝向下的一对轴，且朝向只被计入一次。
  * <p>
  * 可覆写定制点（protected）允许后续接入腿部助力子系统：
  * <ul>
@@ -76,12 +84,17 @@ public class MechaCharacter extends PhysicsCharacter {
     private volatile float capsuleHalfTotal;
 
 
-    // ── 主线程写入、物理线程读取的 volatile 输入 ──
+    // ── 移动与跳跃输入（volatile，跨线程可见） ──
 
-    /** 世界坐标 X 方向分量（已归一化） */
+    /**
+     * 本步移动方向的世界坐标 X 分量（已归一化）。
+     * <p>
+     * 由 {@link #setMoveIntent} 在写入时解出：它把体系移动意图按当时的 {@link #currentYaw}
+     * 旋转成世界方向，{@link #updateWalk} 只消费结果、自身不做旋转。
+     */
     @Getter(AccessLevel.PACKAGE)
     private volatile float inputDirX;
-    /** 世界坐标 Z 方向分量（已归一化） */
+    /** 本步移动方向的世界坐标 Z 分量（已归一化），与 {@link #inputDirX} 同一次变换的产物 */
     @Getter(AccessLevel.PACKAGE)
     private volatile float inputDirZ;
     /** 是否有移动意图 */
@@ -111,14 +124,13 @@ public class MechaCharacter extends PhysicsCharacter {
     private volatile float animDeltaZ;
 
     /**
-     * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）。
+     * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）—— 阶段 4 的接入点，当前不参与朝向合成。
      * <p>
-     * 由 MechaControl 每物理步从 body_root 骨骼的帧间旋转差提取并写入，用于转身斩、
-     * 回旋踢、动画 idle 微晃等动画驱动的面向变化。
-     * 正值 = 逆时针旋转（面向左转，对应 Minecraft yaw 增大方向）。在 prePhysicsTick 中
-     * 叠加到 KCC 的 Y 轴旋转。
+     * 朝向的权威是 {@link #setViewYaw}（视野偏航绝对赋值）。动画驱动的转身（转身斩、回旋踢、
+     * idle 微晃）需要先定义它与该权威的合成方式——叠加为随时间长回视野的偏移，或动画层
+     * 活跃时暂停跟随——才能生效；因此本字段被写入后不会改变 {@link #currentYaw}。
      * <p>
-     * KCC 的 angularFactor 为 (0,1,0) —— 只接收 Y 轴旋转，X/Z 被冻结。
+     * 正值 = 逆时针旋转（面向左转，对应 Minecraft yaw 增大方向）。
      */
     @Setter
     private volatile float animRootYawDelta;
@@ -185,14 +197,14 @@ public class MechaCharacter extends PhysicsCharacter {
     private final Vector3f groundNormal = new Vector3f(0, 1, 0);
 
     /**
-     * 控制器当前 Y 轴朝向（弧度），由 {@link #applyAnimRootYaw} 累积动画根骨骼 Y 旋转增量。
+     * 控制器当前 Y 轴朝向（弧度，Minecraft 约定：0 = 南 +Z，取值增大 = 向左转）。
      * <p>
-     * 物理线程写入、主线程读取（同步通道要用它填 `DATA_YAW`），因此声明为 {@code volatile}；
+     * 唯一写入方是 {@link #setViewYaw}：它按视野偏航绝对赋值并归一化到 [−π, π)，因此本字段
+     * 有界，且每一步都等于当步写入的视野朝向。死亡（含 ragdoll）时编排层跳过写入，它保留
+     * 最后一帧的值。
+     * <p>
+     * 物理线程写入、主线程读取（同步通道用它填 `DATA_YAW`），因此声明为 {@code volatile}；
      * 读到的值对应某一次完整物理步结束后的结果，不需要额外加锁。
-     * <p>
-     * 该字段单向累积、不归一化：动画根骨骼持续正转时会超出 ±π 范围，任其无限增长。使用者
-     * 若需要有界朝向，自行归一化（同步通道侧由 `Rotations` 的 `% 360` 覆盖线上格式）；
-     * 归一化约定的讨论见 `docs/ArmsCore双端权威与网络同步实现计划.md` §7 Q2。
      */
     @Getter
     private volatile float currentYaw;
@@ -232,25 +244,71 @@ public class MechaCharacter extends PhysicsCharacter {
     // ═══════════════════════════════════════════════
 
     /**
-     * 设置移动输入方向（世界坐标系水平分量）。
+     * 设置视野偏航 —— 控制器朝向的权威输入，绝对赋值语义。
      * <p>
-     * 调用方负责将玩家 WASD 输入从视角/身体相对坐标系转换到世界坐标系。
-     * 传入 (0, 0) 表示无移动意图。
+     * 写入即生效：{@link #currentYaw} 立即等于本值（先归约到 [−180, 180)，见
+     * {@link #normalizeViewYaw}），不累积、不插值。调用方（{@code MechaControl.applyFacing}）
+     * 每个物理步在解算行走方向之前调用一次，因此同一物理步内的朝向、行走方向与闪避方向
+     * 取的是同一个角。
+     * <p>
+     * 死亡（含 ragdoll）时调用方跳过写入，朝向停在最后一帧。
      *
-     * @param worldDirX 世界坐标 X 分量
-     * @param worldDirZ 世界坐标 Z 分量
+     * @param degrees 视野偏航（度，Minecraft 约定：0 = 南 +Z，90 = 西 −X）
      */
-    public void setMoveInput(float worldDirX, float worldDirZ) {
-        float len = (float) Math.sqrt(worldDirX * worldDirX + worldDirZ * worldDirZ);
+    public void setViewYaw(float degrees) {
+        this.currentYaw = (float) Math.toRadians(normalizeViewYaw(degrees));
+    }
+
+    /**
+     * 设置移动意图（本体坐标系，即玩家视角相对量）。
+     * <p>
+     * 行走方向的「移动意图 → 世界方向」变换在本方法内完成：意图按 {@link #currentYaw} 旋转后
+     * 写入 {@link #inputDirX} / {@link #inputDirZ}，{@link #updateWalk} 只消费结果、自身不做旋转。
+     * 朝向因此只被计入一次，且计入的是本步 {@link #setViewYaw} 写下的那个角。（闪避方向由
+     * {@code MechaControl.resolveDodgeDirection} 按同一个角另行解出，不叠加到行走方向上，
+     * 因此不构成第二次旋转。）
+     * <p>
+     * 变换与原版 {@code Entity.getInputVector} 同式：
+     * <pre>
+     *   worldX = strafe·cos(yaw) − forward·sin(yaw)
+     *   worldZ = forward·cos(yaw) + strafe·sin(yaw)
+     * </pre>
+     * 输入约定（与原版 {@code Input.leftImpulse} 一致）：forward 正 = 前进，strafe 正 = <b>左移</b>。
+     * 校验：yaw=0（面向南 +Z）按左 → +X（东）；yaw=90（面向西 −X）按左 → +Z（南）。
+     * 传入 (0, 0) 表示无移动意图，此时世界方向清零（触发 KCC 无输入制动）。
+     *
+     * @param forward 前后意图，[-1, 1]，正 = 前进
+     * @param strafe  左右意图，[-1, 1]，正 = 左移
+     */
+    public void setMoveIntent(float forward, float strafe) {
+        float len = (float) Math.sqrt(forward * forward + strafe * strafe);
         if (len < 0.001f) {
             this.inputHasMove = false;
             this.inputDirX = 0;
             this.inputDirZ = 0;
-        } else {
-            this.inputDirX = worldDirX / len;
-            this.inputDirZ = worldDirZ / len;
-            this.inputHasMove = true;
+            return;
         }
+        float nForward = forward / len;
+        float nStrafe = strafe / len;
+        float cos = (float) Math.cos(currentYaw);
+        float sin = (float) Math.sin(currentYaw);
+        this.inputDirX = nStrafe * cos - nForward * sin;
+        this.inputDirZ = nForward * cos + nStrafe * sin;
+        this.inputHasMove = true;
+    }
+
+    /**
+     * 把偏航角（度）归约到 [−180, 180)。
+     * <p>
+     * 归约在度制上做，而不是先转弧度再取模：180 与 360 在 float 里可精确表示，因此 ±180
+     * 这类边界值不会因为弧度换算的舍入被判到区间的另一侧（{@code 540°} 与 {@code 180°}
+     * 都归到 {@code −180°}）。
+     */
+    private static float normalizeViewYaw(float degrees) {
+        float wrapped = degrees % 360f;
+        if (wrapped >= 180f) wrapped -= 360f;
+        if (wrapped < -180f) wrapped += 360f;
+        return wrapped;
     }
 
     /**
@@ -403,8 +461,8 @@ public class MechaCharacter extends PhysicsCharacter {
      * @param dt 物理步长 (s)，通常 1/20
      */
     public void prePhysicsTick(float dt) {
-        // 0. 动画根骨骼 Y 轴旋转 — 转身斩/回旋踢等动画驱动的面向变化
-        applyAnimRootYaw();
+        // 朝向不在这里推进：currentYaw 已由编排层（MechaControl.applyFacing → setViewYaw）按
+        // 视野偏航绝对赋值，且早于本步的 setMoveIntent 解算
 
         // 1. 重力调制 — 每步按 gravityScale 动态缩放 KCC 重力加速度
         setGravity(MechaWalkingAttr.GRAVITY * gravityScale);
@@ -434,23 +492,6 @@ public class MechaCharacter extends PhysicsCharacter {
         } else {
             invulnerable = false;
         }
-    }
-
-    // ═══════════════════════════════════════════════
-    // 动画根旋转
-    // ═══════════════════════════════════════════════
-
-    /**
-     * 将动画根骨骼的 Y 轴旋转增量累积到控制器当前 Y 轴朝向。
-     * <p>
-     * KCC 本身没有旋转概念，我们在 MechaCharacter 内自行维护一个 {@code currentYaw} 字段。
-     * 每次动画帧叠加根骨骼的 Y 旋转增量到此字段，
-     * {@link #updateWalk} 中用其旋转行走方向输入。
-     */
-    private void applyAnimRootYaw() {
-        float deltaYaw = animRootYawDelta;
-        if (Math.abs(deltaYaw) < EPSILON) return;
-        currentYaw += deltaYaw;
     }
 
     // ═══════════════════════════════════════════════
@@ -590,11 +631,8 @@ public class MechaCharacter extends PhysicsCharacter {
             if (newSpeed > cappedSpeed) newSpeed = cappedSpeed;
             float dispXZ = newSpeed * dt; // m/s × s → m，即 KCC XZ 位移量 (m/tick)
 
-            // ── 用 currentYaw 旋转输入方向 ──
-            float cos = (float) Math.cos(currentYaw);
-            float sin = (float) Math.sin(currentYaw);
-            float rotatedX = dirX * cos - dirZ * sin;
-            float rotatedZ = dirX * sin + dirZ * cos;
+            // dirX / dirZ 已经是世界方向（setMoveIntent 内按本步 currentYaw 解出），
+            // 这里再旋转一次就会把朝向计入两遍
 
             // ── 闪避冲量：一次性叠加到水平位移（m/tick），不受行走力折减影响 ──
             float dodgeDisp = dodgeSpeed * dt;
@@ -605,7 +643,7 @@ public class MechaCharacter extends PhysicsCharacter {
             float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
 
             setLinearVelocity(tmp2.set(
-                    rotatedX * dispXZ + adx + extraX, yVel, rotatedZ * dispXZ + adz + extraZ));
+                    dirX * dispXZ + adx + extraX, yVel, dirZ * dispXZ + adz + extraZ));
 
         } else {
             // ── 无输入制动 ──

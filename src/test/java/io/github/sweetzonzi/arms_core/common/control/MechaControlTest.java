@@ -60,10 +60,15 @@ class MechaControlTest {
     }
 
     private void applyInput(float forward, float strafe) {
+        applyInputWithView(forward, strafe, 0f);
+    }
+
+    /** 写一份带视野偏航的快照；环境字段全部取默认值。 */
+    private void applyInputWithView(float forward, float strafe, float viewYaw) {
         control.applyConditionSnapshot(MechaConditionSnapshot.builder()
                 .inputForward(forward)
                 .inputStrafe(strafe)
-                .viewYaw(0f)
+                .viewYaw(viewYaw)
                 .viewPitch(0f)
                 .build());
     }
@@ -139,6 +144,74 @@ class MechaControlTest {
 
         assertEquals(0f, kcc.getInputDirX(), 1e-6f);
         assertEquals(1f, kcc.getInputDirZ(), 1e-6f);
+    }
+
+    // ═══════════════════════════════════════════════
+    // 朝向：视野偏航 → KCC
+    // ═══════════════════════════════════════════════
+
+    /** 快照里的视野偏航每帧绝对写到 KCC 的朝向上（覆盖，不累积）。 */
+    @Test
+    void viewYawIsWrittenToKccEveryFrame() {
+        applyInputWithView(0f, 0f, 90f);
+        control.frameLogic(DT);
+        assertEquals((float) Math.toRadians(90f), kcc.getCurrentYaw(), 1.0e-5f);
+
+        applyInputWithView(0f, 0f, -45f);
+        control.frameLogic(DT);
+        assertEquals((float) Math.toRadians(-45f), kcc.getCurrentYaw(), 1.0e-5f);
+    }
+
+    /**
+     * 转视角后同一个物理步内移动方向就跟着转。
+     * <p>
+     * 这是「WASD 是当前朝向下的前后左右」的接线判据，同时钉住朝向只被计入一次：
+     * 若变换在两层各做一次（等于按 yaw 的两倍旋转），yaw=90 的前进会落到 −Z 而不是 −X。
+     */
+    @Test
+    void turningTheViewTurnsTheWalkDirectionInTheSameStep() {
+        applyInputWithView(1f, 0f, 0f);
+        control.frameLogic(DT);
+        assertEquals(0f, kcc.getInputDirX(), 1.0e-6f);
+        assertEquals(1f, kcc.getInputDirZ(), 1.0e-6f);
+
+        applyInputWithView(1f, 0f, 90f);
+        control.frameLogic(DT);
+        assertEquals((float) Math.toRadians(90f), kcc.getCurrentYaw(), 1.0e-5f);
+        assertEquals(-1f, kcc.getInputDirX(), 1.0e-5f, "前进应沿新朝向落在 −X");
+        assertEquals(0f, kcc.getInputDirZ(), 1.0e-5f);
+    }
+
+    /** 死亡（含 ragdoll）时朝向冻结在最后一帧：此后到达的新视角不会被写入。 */
+    @Test
+    void deadControllerKeepsLastFacing() {
+        applyInputWithView(0f, 0f, 90f);
+        control.frameLogic(DT);
+        assertEquals((float) Math.toRadians(90f), kcc.getCurrentYaw(), 1.0e-5f);
+
+        control.applyConditionSnapshot(MechaConditionSnapshot.builder()
+                .viewYaw(180f)
+                .isDead(true)
+                .build());
+        control.frameLogic(DT);
+
+        assertEquals((float) Math.toRadians(90f), kcc.getCurrentYaw(), 1.0e-5f,
+                "死亡后朝向应停在最后一帧");
+    }
+
+    /** 移动许可不门控朝向：硬直（CAN_MOVE=false）中仍能转身。 */
+    @Test
+    void facingFollowsViewEvenWhenMovementIsDenied() {
+        control.setBypassObservation(false);
+
+        applyInputWithView(1f, 0f, 90f);
+        control.postEvent(MechaEvent.STUN);
+        control.frameLogic(DT);
+
+        assertFalse(control.canMove(), "stun 应禁止水平移动");
+        assertFalse(kcc.isInputHasMove(), "禁止移动时移动意图被清零");
+        assertEquals((float) Math.toRadians(90f), kcc.getCurrentYaw(), 1.0e-5f,
+                "朝向不受 CAN_MOVE 门控");
     }
 
     @Test
