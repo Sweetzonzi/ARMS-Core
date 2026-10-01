@@ -63,7 +63,7 @@
 
 因此 **KCC 位姿与根 SubPart 位姿承载不同的信息，各自需要一条同步通道**：KCC 不在任何 `Part` / `SubPart` 内，SubPart 通道表达不了它；根 SubPart 的位姿由 SubPart 刚体自身决定，KCC 通道也表达不了它。
 
-**但这条耦合不是第一阶段的前置。** `MechaControl` 全文不调用 `getRootSubPart()` 与 `getAttr()`（仅在 `MechaControlHolder` 声明、`ArmsCore` 存根与 `ClientMechaTestRig`（计划写作时的客户端测试夹具，见 §1.2）中出现），`extractAnimRootDelta()` 当前是空实现。因此 `rootSubPart == null`、`Part` 装配缺席时，`ArmsCore` 与状态机可以完整运行，代价只落在表现层：动画根位移与动画驱动转身不生效，`currentYaw` 恒为初值（§3.12）。本计划据此把装配体装配推到阶段 4。
+**但这条耦合不是第一阶段的前置。** `MechaControl` 全文不调用 `getRootSubPart()` 与 `getAttr()`（仅在 `MechaControlHolder` 声明、`ArmsCore` 存根与 `ClientMechaTestRig`（计划写作时的客户端测试夹具，见 §1.2）中出现），`extractAnimRootDelta()` 当前是空实现。因此 `rootSubPart == null`、`Part` 装配缺席时，`ArmsCore` 与状态机可以完整运行，代价只落在表现层：动画根位移与动画驱动的转身不生效（§3.12）。控制器朝向不在这个代价里——它由视野偏航独立驱动（§1.2），与装配体是否接入无关。本计划据此把装配体装配推到阶段 4。
 
 ### 1.2 当前实现状态
 
@@ -103,7 +103,7 @@ extractAnimRootDelta()    // 读 body_root 骨骼位姿 → kcc.setAnimRootDelta
 kcc.prePhysicsTick(dt)    // 行走力 / 跳跃 / 碰撞 sweep
 ```
 
-**`MechaCharacter` 的朝向现状**（`.../common/control/MechaCharacter.java`）：
+**`MechaCharacter` 朝向相关的形态快照**（`.../common/control/MechaCharacter.java`，下表行号属于该提交的版本）：
 
 | 位置 @ `93924d9` | 内容 |
 |------|------|
@@ -114,20 +114,17 @@ kcc.prePhysicsTick(dt)    // 行走力 / 跳跃 / 碰撞 sweep
 | `:298-302` | `applyAnimRootYaw()` 中 `currentYaw += animRootYawDelta` |
 | `:420-424` | `updateWalk()` 用 `currentYaw` 的 `sin`/`cos` 旋转输入方向 |
 
-`currentYaw` 是 KCC 的**绝对** Y 朝向，在整个类中**不被写回刚体**（`PhysicsCharacter` 不是刚体，没有 `angularFactor`），也不被任何实际朝向纠正，它是单向累积的。它的**唯一写入方是 `applyAnimRootYaw()`**，输入只来自 `extractAnimRootDelta()`——这条链在阶段 4 之前不通，见 §3.12。
+`currentYaw` 是 KCC 的**绝对** Y 朝向，在整个类中**不被写回刚体**（`PhysicsCharacter` 不是刚体，没有 `angularFactor`）。它的唯一写入方是 `MechaCharacter.setViewYaw(float)`：`MechaControl.applyFacing()` 每个物理步用快照的 `viewYaw` 调用它，写入时归约到 [−180, 180)，且该调用早于本步一切按朝向解算的量。死亡（含 ragdoll）时 `applyFacing()` 跳过写入，朝向停在最后一帧。
 
-**输入方向在其上被同向旋转两次。** `MechaControl.applyMoveInput` 先按视角偏航把 WASD 转成世界方向，`MechaCharacter.updateWalk` 再按 `currentYaw` 转一次，两次都是同向的 Y 轴旋转，因此合成结果等于按 `viewYaw + currentYaw` 旋转一次：
+**输入方向只旋转一次。** `MechaControl.applyMoveIntent` 把玩家视角相对的意图（正 = 前进 / 左移）原样交给 KCC，`MechaCharacter.setMoveIntent` 用 `currentYaw` 把它转成世界方向，`updateWalk` 只消费这个结果、自身不做旋转：
 
 ```java
-// MechaControl.applyMoveInput
-kcc.setMoveInput(str * cosYaw - fwd * sinYaw, fwd * cosYaw + str * sinYaw);  // yawRad = toRadians(viewYaw)
-
-// MechaCharacter.updateWalk
-rotatedX = dirX * cos - dirZ * sin;   // cos/sin 取自 currentYaw
-rotatedZ = dirX * sin + dirZ * cos;
+// MechaCharacter.setMoveIntent —— 行走方向的「意图 → 世界」
+worldX = strafe·cos(currentYaw) − forward·sin(currentYaw);   // 意图已归一化
+worldZ = forward·cos(currentYaw) + strafe·sin(currentYaw);
 ```
 
-由于 `currentYaw` 是绝对朝向（D15），这两次旋转把朝向计入了两遍。待决见 §7 Q1。
+闪避方向（`MechaControl.resolveDodgeDirection`）按同一个 `currentYaw` 独立解出同一公式，其结果只用于闪避冲量、不叠加到行走方向上，因此不构成第二次旋转。两条路径取的都是本步 `applyFacing()` 写下的角，于是 WASD 的「前后左右」始终是当前朝向下的一对轴。
 
 **物理世界是双端的，且两端速率不同**（`../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/`）：
 
@@ -183,7 +180,7 @@ variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 | D14 | `pos` / `vel` 使用 JOML `Vector3f`（`EntityDataSerializers.VECTOR3`） | 该序列化器即为 JOML 类型；与 Machine-Max `DestroyableObject` 的 `DATA_POS_ID` 一致 |
 | D15 | 位姿、速度与 `currentYaw` 由主线程直接读 KCC，只有逻辑状态经不可变 `LogicStateSnapshot` 跨线程 | `SynchedEntityData` 的 accessor 各自独立，不需要统一载体；`DestroyableRigidObject.postTick()` 已确立主线程直读物理体的先例（§3.5） |
 | D16 | `DATA_YAW` 承载**控制器侧**的朝向，躯干朝向仍由 SubPart 通道承载 | 两者解耦且躯干存在受约束的滞后（§1.1）：控制器侧朝向是上游权威量，躯干是下游结果 |
-| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的声明语义就是"控制器当前 Y 轴朝向"（`MechaCharacter.java#currentYaw`、`#animRootYawDelta`），与 `viewYaw` 无合成关系 |
+| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的语义是"控制器当前 Y 轴朝向"（`MechaCharacter.java#currentYaw`、`#setViewYaw`）。它由视野偏航绝对驱动，但**不等于**线上载荷里的 `viewYaw`：写入经过 [−180, 180) 规约，且死亡（含 ragdoll）时被冻结（`MechaControl.java#applyFacing`） |
 | D18 | 客户端不为 `ArmsCore` 重建任何物理体，只按 `DATA_POS` / `DATA_YAW` 摆放一个非实体可视锚点 | 与 `MMPartEntity` 同形（§3.13）；避免"客户端不跑物理"与"客户端要渲染"的冲突，也避免与宿主实体的位置形成双份权威 |
 | D19 | `ArmsCore` 持有 `Level`，并由 `MechaCoreRegistry` 按维度注册；生命周期跟随宿主 / 装配体，不注册为世界实体 | `docs/总体设计文档.md` §2.1 明确 `ArmsCore` 不注册到 `ObjectManager` |
 | D20 | 阶段 1–3 允许 `rootSubPart == null`、`Part` 装配缺席、胶囊尺寸取阶段 0 的临时参数 | §1.1 的耦合不构成运行前置；表现层缺失在 §3.12 显式登记 |
@@ -343,7 +340,7 @@ setLinearVelocity(body.getLinearVelocity(null));
 
 KCC 的幽灵体世界变换由 `playerStep` 在末尾一次性写入（`btKinematicCharacterController.cpp#playerStep` 末尾），因此并发读取拿到的是某一次完整步进的结果，与 `DestroyableRigidObject` 已接受的竞态同类。KCC 侧对应调用是 `getPhysicsLocation(null)`（`PhysicsCollisionObject.java#getPhysicsLocation`，传 `null` 返回新向量）与 `getLinearVelocity(tmp)`。
 
-`MechaCharacter.currentYaw` 由物理线程累积、主线程读取，因此已声明为 `volatile` 并提供 `getCurrentYaw()`（阶段 0.1）。读到的值是某一次完整物理步结束后的结果，无需加锁；归一化问题见 §7 Q2。
+`MechaCharacter.currentYaw` 由物理线程（`MechaControl.applyFacing` → `setViewYaw`）写入、主线程读取，因此已声明为 `volatile` 并提供 `getCurrentYaw()`（阶段 0.1）。读到的值是某一次完整物理步结束后的结果，无需加锁；写入侧的规约见 `MechaCharacter.java#normalizeViewYaw`。
 
 **逻辑状态：需要不可变快照。** `posture` / `gait` / `vertical` / `energy` / `jumpCharging` 的来源是 `MechaControl` 的 `StateVariableContainer`——物理线程写入的可变容器。主线程不得读取它，因此需要一个物理线程 → 主线程的不可变载体 `LogicStateSnapshot`：
 
@@ -497,7 +494,7 @@ btVector3 btKinematicCharacterController::getLinearVelocity() const
 |------|------|------|
 | `coreId` | `UUID` | 目标 `ArmsCore` |
 | `forward` / `strafe` | `float` | 与 `MechaConditionSnapshot` 同约定（正 = 前进 / 左移） |
-| `viewYaw` / `viewPitch` | `float` | 玩家视角（度）。`MechaControl.applyMoveInput` 用它把输入转到世界系 |
+| `viewYaw` / `viewPitch` | `float` | 玩家视角（度）。`MechaControl.applyFacing` 用 `viewYaw` 绝对赋值控制器朝向（`MechaCharacter.setViewYaw`），行走方向再由该朝向解出 |
 | `keyFlags` | `int` 位集 | `jumpHeld`、`sprintHeld`、`walkKeyHeld`、`sneaking` —— 连续量，可丢可合并 |
 | `eventSeq` | `int` | 单调递增的事件序号。每次"产生一个事件"自增一次（不是每 tick 自增），服务端据此判断新旧 |
 | `eventBits` | `int` 位集 | 本包携带的事件类型集合，位序 = `MechaEvent.ordinal()`（当前 13 项，`int` 足够；超过 32 项时改 `long` 或 `int[]`）。跳跃松开是其中的 `MechaEvent.JUMP_RELEASE`，与 `DODGE` / `TOGGLE_*` 同批投递；快照只承载连续量 |
@@ -541,8 +538,8 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
 | 缺失 | 直接后果 | 恢复阶段 |
 |------|----------|----------|
 | 无 `body_root` 骨骼 | `extractAnimRootDelta()` 无可读对象，动画根位移恒为 0 | 阶段 4 |
-| 无动画根 Y 增量 | `applyAnimRootYaw()` 的输入恒为 0，`currentYaw` 恒等于初值 | 阶段 4 |
-| `DATA_YAW` 恒为常数 | **阶段 1–3 只能验收"该字段能过线"，不能验收"朝向正确"**；客户端锚点的朝向在阶段 1–3 应视为未定义，渲染时给固定值或直接不旋转 | 阶段 4 |
+| 动画驱动转身未接入 | `animRootYawDelta` 无人写入，`MechaCharacter` 也不消费它。动画根骨骼的 Y 增量要先定义与视野权威的合成方式（叠加为随时间长回视野的偏移，或动画层活跃时暂停跟随）才能生效，见 `MechaCharacter.java#animRootYawDelta` | 阶段 4 |
+| 躯干朝向与控制器朝向解耦 | `DATA_YAW` 只承载控制器朝向；躯干朝向由 SubPart 通道承载、且受约束存在滞后（§1.1、D16），装配体接入前不存在，因此「躯干朝哪」无法验收 | 阶段 4 |
 | 无 `Part` 装配 | `ArmsCore.prePhysicsTick()` 第 ① 步空转；`getRootSubPart()` / `getAttr()` 返回 `null` | 阶段 4 |
 | 胶囊尺寸取阶段 0 的临时参数 | 与最终 `mech_chassis.json` 的 `controller` 段可能不一致，届时需回归一次手感 | 阶段 4 |
 | 姿态轮廓不随 posture 变化 | 蹲伏 / 卧倒的碰撞体积仍是站立胶囊；`MechaBodyPreset` 的姿态几何已就位但未接入，原因与两条已失败的路径见 §3.12.2 | 阶段 4.6 |
@@ -690,7 +687,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 1.13 | 客户端处理器 | 创建包：按 `coreId` 幂等构造 `ArmsCore`（客户端构造器不建 KCC）→ 注册 → `assignValues(initial)`；移除包：注销并清空锚点；增量包：`UUID` 不存在时丢弃并计数告警，不抛异常（§3.4） |
 | 1.14 | 登录 / 换维度 / 重连补发 | `PlayerEvent.PlayerLoggedInEvent` 遍历该维度注册表逐个补发创建包；客户端进入 `ClientLevel` 时清空本地注册表并按 §3.4 的时序重新获取 |
 | 1.15 | 主线程同步与发包 | `LevelTickEvent.Post` 订阅者遍历注册表：读 `logicState` 与 KCC 位姿 → `set` 8 项 → `packDirty()` → 非空则广播 `MechaCoreSyncPayload`（D8、§3.9） |
-| 1.16 | 客户端可视锚点 | 按 `DATA_POS` 摆放一个非实体锚点（调试用方块 / 线段 / 粒子），在相邻两采样间线性插值（D12、D18）；朝向在阶段 1–3 给固定值（§3.12）。`DestroyableObject.clientSyncPose()` + `getWorldPositionMatrix(partialTick)`（`DestroyableObject.java#clientSyncPose`、`#getWorldPositionMatrix`）是同一形态的参考实现 |
+| 1.16 | 客户端可视锚点 | 按 `DATA_POS` 摆放一个非实体锚点（调试用方块 / 线段 / 粒子），在相邻两采样间线性插值（D12、D18）；朝向取 `DATA_YAW`，在相邻两采样间按最短角路径插值。`DestroyableObject.clientSyncPose()` + `getWorldPositionMatrix(partialTick)`（`DestroyableObject.java#clientSyncPose`、`#getWorldPositionMatrix`）是同一形态的参考实现 |
 | 1.17 | 服务端调试输入源 | 命令 / 调试键在服务端直接 `writeConditionSnapshot` + `postEvent`，用于驱动状态机与跳跃，验证下行通道（§4 阶段 2 之前的唯一输入路径） |
 
 **验收**：
@@ -699,7 +696,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 - 客户端**不存在任何 `MechaCharacter` 实例**（`grep` 级检查即可）；
 - 三个位姿字段（`DATA_POS` / `DATA_VEL` / `DATA_YAW`）每 tick 重新采样并写回，静止时也可能持续成包；这是采样机制的固有结果（§3.3），因此本项验收的是**带宽上界**（例如单机 < 100 B/tick），而不是"静止零包"。同时断言逻辑字段（posture/gait/vertical/energy/jump_charging）在无变化时**不产生**条目；
 - 断开并重连、切换维度、死亡重生后，`MechaCoreRegistry` 与客户端锚点侧均无残留实例，且重连后 5 s 内状态与位姿收敛到服务端当前值（验证 D6 的全量初值）；
-- `DATA_YAW` 的**值**在阶段 1–3 不作验收（§3.12）。
+- `DATA_YAW` 的**值**验收「跟随视野偏航」（`/arms move` 给 yaw、或客户端转视角后观察朝向线段与新朝向一致）；**躯干朝向**不作验收（§3.12）。
 
 **验收结果**：本阶段已在专用服务端上实测，数字见 §0.1 的「验证记录」。其中「三个位姿字段每 tick 重新采样」一条实测为 80 tick 内 5–8 个增量包，远低于带宽上界；「逻辑字段无变化时不产生条目」一条实测为静止段只出现 `vel`（幽灵体在浮点精度边界上的抖动），未出现 `posture` / `gait` / `vertical` / `energy` / `jump_charging`。
 
@@ -789,7 +786,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | # | 问题 | 影响 |
 |---|------|------|
 | Q1 | 是否需要一个"角分离量" | 位置有 `separationDistance` + `SEP_MAX`，并据此触发 `RAGDOLL`（`docs/角色控制器-行走物理设计.md`：§1.5、§5.1）；朝向上不存在对应的阈值或量，因此无法检测躯干在朝向上被扯离过多 |
-| Q2 | `MechaCharacter.currentYaw` 是否需要归一化 | 它单向累积（`currentYaw += animRootYawDelta`）、无界。作为朝向使用需要有界，`Rotations` 的 `% 360` 只覆盖线上格式。阶段 4 接入动画根旋转后必须处理 |
+| Q2 | `MechaCharacter.currentYaw` 的规约（已决） | `setViewYaw` 在度制上把写入值归约到 [−180, 180)（`MechaCharacter.java#normalizeViewYaw`），因此作为朝向使用的值有界；`Rotations` 的 `% 360` 只覆盖线上格式 |
 | Q3 | `DATA_POS` / `DATA_VEL` / `DATA_YAW` 是否加"值变化阈值门控"以实现静止零包 | 决定阶段 1 的验收是"带宽上界"还是"静止零包"（§3.3、阶段 3.1）。加门控会引入少量位姿量化误差 |
 | Q4 | 上行包在控制权转移的瞬间是否需要显式的 `stopInput` 包 | 当前设计由服务端在断线 / 失控时主动重置（R11），但"仍在连接、只是不再控制"的路径依赖服务端能及时察觉控制权变更 |
 | Q5 | 宿主实体（阶段 4）用玩家实体本身、Doll 实体，还是为装配体单开一个代理实体承担位置传输 | 决定 §3.13 的迁移路径与 `DATA_POS` 的最终定位；也决定 `PhysicsHost.shouldCreateDefaultPhysicsBody()` 的返回方 |
@@ -824,8 +821,8 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | `ENERGY` 定义与初值（快照字段来源） | `common/control/MechaControl.java#INITIAL_ENERGY`、`#MechaControl`（构造器初值）；`#logStateChanges`（posture/gait/vertical 的读取形态） |
 | 事件闩锁 | `common/control/MechaControl.java#pendingEventBuffer`、`#postEvent` |
 | `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java#getRootSubPart`、`#getAttr`、`ArmsCore.java`（返回 `null` 的存根） |
-| `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java#currentYaw`、`#animRootYawDelta`、`#applyAnimRootYaw`、`#updateWalk` |
-| 输入方向的双重旋转（`viewYaw` 与 `currentYaw`） | `common/control/MechaControl.java#applyMoveInput`、`common/control/MechaCharacter.java#updateWalk` |
+| `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java#currentYaw`、`#setViewYaw`、`#normalizeViewYaw`、`#animRootYawDelta`（阶段 4 接入点，当前不参与合成）；`common/control/MechaControl.java#applyFacing` |
+| 行走方向「意图 → 世界」的唯一变换点与闪避方向同源 | `common/control/MechaCharacter.java#setMoveIntent`、`#updateWalk`；`common/control/MechaControl.java#applyMoveIntent`、`#resolveDodgeDirection` |
 | 分离距离是一等量 | `common/control/MechaCharacter.java#separationDistance`、`#updateWalk`（`sepFactor` 折减） |
 | 快照模式与跨线程决策 | `common/control/MechaConditionSnapshot.java#MechaConditionSnapshot`；`docs/下一步开发TODO.md` §4、§5.2 |
 | 单帧边沿不得丢失（TODO 条目） | `docs/下一步开发TODO.md` §3.3 |

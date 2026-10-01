@@ -105,6 +105,8 @@
   7. 应用状态机产出再调用 `kcc.prePhysicsTick(dt)` — 当前处于旁路观测模式，门控未启用（`setBypassObservation(false)` 可开启）。
 - [x] 修正视角到世界方向的 yaw 符号，使其与当前 `ARMSClient` 已验证的方向一致。
 - [x] 将跳跃松开边沿真正传给 KCC（`MechaEvent.JUMP_RELEASE` → KCC 的松开闩锁），并保证蓄力期间释放边沿不被 `CAN_JUMP=false` 吞掉。
+- [x] 朝向由视野偏航绝对驱动：`MechaCharacter.setViewYaw` 把写入值归约到 [−180, 180) 后赋值给 `currentYaw`，`MechaControl.applyFacing` 每物理步在解算移动方向之前调用一次（死亡 / ragdoll 时跳过，朝向冻结）。
+- [x] WASD 是体系意图：唯一一次「意图 → 世界」变换在 `MechaCharacter.setMoveIntent` 内按本步朝向完成，`MechaControl.applyMoveIntent` 只做许可门控与透传；闪避方向 `resolveDodgeDirection` 用同一个角独立解出。
 - [ ] 区分以下 KCC 控制量，不能全部复用 `setInputScale()`：
   - 是否允许移动。
   - 是否允许开始/释放跳跃。
@@ -191,7 +193,7 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 - [ ] 正式接入 `ArmsCore`、根 `SubPart`、素体属性和多实例生命周期。
 - [ ] 接入 `MultiAnimStateMachine`、本地 `AnimStateMachine` 和动画事件分发。
 - [ ] 接入 `MechaMolangContext` 与 `ctrl.*` 查询。
-- [ ] 提取 `body_root` 动画根位移和 Y 轴旋转，并与 KCC 位移合成。
+- [ ] 提取 `body_root` 动画根位移和 Y 轴旋转，并与 KCC 位移合成。Y 轴旋转要先定义与视野朝向权威（`MechaCharacter.setViewYaw`）的合成方式，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12。
 - [ ] 实现 DRIVE 模式及轮子、推进器、机翼等子系统力汇聚。
 - [ ] 完善死亡 ragdoll 的物理体切换、复活重建和宿主同步。
 

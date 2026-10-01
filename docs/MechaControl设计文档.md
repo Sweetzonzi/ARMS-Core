@@ -160,9 +160,10 @@ public MechaControl(MechaControlHolder holder, MechaCharacter kcc)
 ```
 public void onPhysicsStep(float dt):
 
-  1. forwardInputToKCC()
-     ├─ 视角偏航 → 将 inputForward/inputStrafe 转换为世界坐标系方向
-     └─ → kcc.setMoveInput(worldDirX, worldDirZ)
+  1. 朝向与输入
+     ├─ applyFacing() → kcc.setViewYaw(snapshot.viewYaw)   —— 朝向的绝对权威（死亡 / ragdoll 时跳过）
+     ├─ forwardInputToKCC()
+     │    └─ → kcc.setMoveIntent(forward, strafe)  —— KCC 用本步朝向转成世界方向
      └─ → kcc.setJumpInput(held, released)
 
   2. 汇入快照字段到 StateVariableContainer
@@ -204,17 +205,19 @@ public void onPhysicsStep(float dt):
 
 ### 5.4 移动输入方向转换
 
-Minecraft yaw：0=南(+Z)，90=西(-X)。视角-世界坐标转换（与原版 `Entity.getInputVector` 一致，`MechaControl.applyMoveInput` 实现）：
+Minecraft yaw：0=南(+Z)，90=西(-X)。体系意图到世界方向的转换与原版 `Entity.getInputVector` 同式，实现在 `MechaCharacter.setMoveIntent`：
 
 ```
 worldDirX = strafe × cos(yaw) - forward × sin(yaw)
 worldDirZ = forward × cos(yaw) + strafe × sin(yaw)
 ```
 
+其中 `yaw` 是 KCC 本步的 `currentYaw`，即 `MechaControl.applyFacing()` 刚按 `snapshot.viewYaw` 写入的那个角（`MechaCharacter.setViewYaw`）。朝向因此只被计入一次，且 WASD 的前后左右始终是当前朝向下的一对轴。
+
 输入约定与原版 `Input.leftImpulse` 一致：`forward` 正=前进，`strafe` 正=**左移**。
 校验：yaw=0（面向南）按左 → +X（东）；yaw=90（面向西）前进 → -X（西）。
 
-此转换在 `MechaControl.forwardInputToKCC()` 中完成，Holder 不需要关心坐标转换——它只需提供原始的 `[-1,1]` 前/左输入。
+Holder 不需要关心坐标转换——它只需提供原始的 `[-1,1]` 前/左输入。
 
 ### 5.5 动画根运动（位移 + Y 轴旋转）
 
@@ -228,9 +231,9 @@ worldDirZ = forward × cos(yaw) + strafe × sin(yaw)
     → 在 updateWalk() 中与物理位移叠加写入 KCC XZ
     
   Y 轴旋转 (deltaYaw, rad/tick)
-    → kcc.setAnimRootYawDelta(deltaYaw)
-    → 在 prePhysicsTick() 第一步叠加到 KCC 当前 Y 旋转
-    → KCC 的 angularFactor(0,1,0) 保证只接收 Y 旋转
+    → kcc.setAnimRootYawDelta(deltaYaw)   —— 阶段 4 接入点，当前不参与朝向合成
+    → 朝向的权威是 kcc.setViewYaw(viewYaw)：视野偏航绝对赋值给 KCC 的 currentYaw
+    → 动画增量要先生成与它的合成方式（叠加为随时间长回视野的偏移，或动画层活跃时暂停跟随）
 ```
 
 **旋转的应用场景**：
@@ -245,7 +248,7 @@ worldDirZ = forward × cos(yaw) + strafe × sin(yaw)
 
 **±π 环绕处理**：提取 yaw 帧间差时，若 delta > π 则减 2π，若 delta < -π 则加 2π，保证增量是"最短路径"而非绕远路。
 
-**分离距离折减对旋转生效吗**？不。旋转不受分离距离限制——即使躯干被击退很远，面向仍跟随动画。这符合直觉：被炸飞时机体应该面朝受击方向（受击动画的 yaw delta），而不是死盯原来的方向。
+**分离距离折减对朝向生效吗**？不。朝向的权威是视野偏航（`MechaCharacter.setViewYaw`），分离距离只折减行走力（`MechaCharacter.java#updateWalk` 的 `sepFactor`：分离超过 `SEP_MAX` 时行走力归零），两者互不影响。
 
 ---
 
@@ -359,7 +362,7 @@ MechControllerSubsystem.onPhysicsStep(dt):
 ### 8.1 MechaCharacter（KCC）
 
 `MechaCharacter` 已实现完整的行走/跳跃物理（`prePhysicsTick`）。MechaControl 在它之前：
-1. `forwardInputToKCC()` 写入 `setMoveInput` / `setJumpInput`
+1. `applyFacing()` 写入 `setViewYaw`；`forwardInputToKCC()` 写入 `setMoveIntent` / `setJumpInput`
 2. 动画编排后写入 `setAnimRootDelta` / `setGravityScale` / `setSeparationDistance`
 3. 最后调用 `kcc.prePhysicsTick(dt)` 完成物理积分
 

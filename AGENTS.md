@@ -65,8 +65,8 @@
 | `ARMS.java` | 模组入口，注册配置、服务端事件监听。 |
 | `Config.java` | 示例配置（当前为占位），实际逻辑待扩展。 |
 | `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。服务端构造 KCC，客户端经 `newClientInstance` 构造且不持有 KCC。 |
-| `MechaControl.java` | 角色运动控制器编排器：输入消费 → 状态机 → 动画 → KCC 物理积分；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
-| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC），包含行走力、跳跃蓄力、动画根位移合成。 |
+| `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → KCC 物理积分；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
+| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、行走力、跳跃蓄力、动画根位移合成。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
 | `common/MechaCoreRegistry.java` | 装配体注册表（服务端按 `ServerLevel`、客户端单表）；服务端注册 / 注销时广播创建 / 移除包，并承载登录 / 换维度补发。 |
 | `common/MechaInputHandler.java` | 上行输入的服务端处理链：控制权校验 → 合并环境状态 → 写快照 → 按事件序号幂等投递事件。 |
@@ -80,7 +80,8 @@
 | `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成世界位姿矩阵。装配体之外的对象，`ArmsCore` 不持有它，改为逐 Part 渲染时整体删除。 |
 | `client/MechaModelRenderer.java` | 每客户端 tick 采样位姿并驱动动画体，在 `AFTER_ENTITIES` 阶段渲染机体模型；同时画胶囊外接盒与朝向线段作对位参考（`DRAW_DEBUG_CAPSULE_BOX`）。 |
 
-- 线程模型：主线程写 `volatile` 输入（`setMoveInput` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
+- 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
+- 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进 KCC（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避方向（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
 - 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC 并**钳制稳态速率**（只折减力不够，均衡点仍在同一顶速），进入 dodge 时施加按窗口积分的冲量。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
 - 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
 - 字段表纪律：`ArmsCore` 的 `EntityDataAccessor` 只允许在末尾追加（`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.2）；改动字段表或载荷字段后必须同时提升 `ARMSNetwork.PROTOCOL_VERSION`。
