@@ -25,6 +25,9 @@
 # GameTest 服务器
 .\gradlew runGameTestServer
 
+# 单元测试（纯逻辑层；不需要启动 Minecraft）
+.\gradlew test
+
 # 构建产物（jar 在 build/libs）
 .\gradlew build
 
@@ -32,7 +35,7 @@
 .\gradlew clean
 ```
 
-- 没有现成单元测试目录，`src/test` 不存在；`test` 任务当前无意义。
+- 单元测试位于 `src/test/java/.../common/control/`（`MechaControlTest` 与四个状态机图测试），纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle:21-27`）。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
 ## 复合构建依赖（极易踩坑）
