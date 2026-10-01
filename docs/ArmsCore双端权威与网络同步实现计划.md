@@ -316,6 +316,10 @@ private volatile LogicStateSnapshot logicState;
 ArmsCore.this.logicState  →  syncedData.set(DATA_POSTURE, ...) 等
 ```
 
+**它是什么、谁消费。** 它是这五项的**一次性不可变副本**，存在的唯一理由是那五项住在物理线程独占的容器里（读法本身要求物理线程内访问，如 `MechaControl.java:501-503`），而主线程要拿它们去填 `DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`。**当前唯一消费者是 `ArmsCore` 主线程 tick**（阶段 1.15）；客户端将来读的是 `synchedData` 的这五个字段（渲染与动画门控、MoLang `ctrl.*`），不直接读本快照。
+
+**为什么用 record 而不是让 `MechaControl` 暴露五个 `volatile` 字段**：后者少一个类型、零分配，但五项不是同一时刻的值，且要在 `MechaControl` 上新增五个公开读点；直接暴露 `variables` 容器则违反 `docs/下一步开发TODO.md:113`「不要把可变 `StateVariableContainer` 暴露给主线程或调试 UI」。因此采用与 `MechaConditionSnapshot` 相同的模式，但它**嵌套在 `MechaControl` 内**而不单独占一个公共协议类型——只服务 `MechaControl` 的查询 API。它的归属是 `common/control/`（与 `MechaConditionSnapshot` 同包），不是 `common/net/`：它与网络无关，只是恰好被发包路径消费。
+
 `MechaConditionSnapshot`（`.../common/control/MechaConditionSnapshot.java`）是同一模式的既有实例：不可变 `record` + `volatile` 引用，方向为主线程 → 物理线程；`LogicStateSnapshot` 的方向相反（物理线程 → 主线程），语义相同。
 
 该模式在仓库内已有成文决策（`docs/下一步开发TODO.md:127-143`）：优先使用不可变对象获得清晰的跨线程语义，在性能数据证明存在问题之前不引入对象池。按 100 物理步/秒、每个 `ArmsCore` 一个小对象估算（约 100 次分配/秒），分配压力可以忽略。
@@ -564,20 +568,28 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 本阶段交付"服务端唯一 KCC → 同步 → 客户端可视锚点"的最小闭环，输入来源为服务端调试命令。**客户端不发任何输入包。**
 
+**新增类型的包归属**（与 Machine-Max 的既有分层一致，避免把状态类型塞进网络包）：
+
+| 类型 | 包 | 理由 |
+|------|----|------|
+| `LogicStateSnapshot` | `common/control/`（作为 `MechaControl` 的嵌套 record） | 纯状态副本，与 `MechaConditionSnapshot` 同类；网络只是恰好消费它的路径之一 |
+| `MechaCoreRegistry` | `common/` | 装配体注册表，同时服务物理步扇出与同步写包；对应 Machine-Max 的 `common/mech/ObjectManager.java` |
+| 四个载荷与包处理器 | `network/payload/` 与 `network/` | 真正的网络类型；对应 Machine-Max 的 `network/payload/*` 与 `MMPayloadRegistry.java` |
+
 | # | 交付物 | 说明 |
 |---|--------|------|
-| 1.1 | `LogicStateSnapshot`（record，`common/net/`） | 不可变，物理线程 → 主线程的唯一载体（§3.5）。字段：`posture, gait, vertical, energy, jumpCharging`。提供 `EMPTY` 常量。对应 `docs/下一步开发TODO.md:113` 的条目 |
+| 1.1 | `LogicStateSnapshot`（不可变 record，**`MechaControl` 的嵌套类型**） | 五项状态（`posture` / `gait` / `vertical` / `energy` / `jumpCharging`）的跨线程出口，唯一消费者是阶段 1.15 的同步写包（§3.5）。嵌套在 `MechaControl` 内，与 `MechaConditionSnapshot` 同属"某一方的按帧状态副本"这一模式，不单独占一个公共协议类型；对应 `docs/下一步开发TODO.md:113` 的条目。它**不属于网络包**，因此不进 `common/net/` |
 | 1.2 | `MechaCharacter` 的只读出口 | `currentYaw` getter；`getPhysicsLocation` / `getLinearVelocity` 的使用约定（§3.5，注意 `getLinearVelocity(Vector3f)` 需传复用缓冲） |
 | 1.3 | `ArmsCore` 实现 `SyncedDataHolder` | 声明 §2.2 的 8 个 `private static final EntityDataAccessor`；构造器内 `new SynchedEntityData.Builder(this)` 并 `build()`（服务端与客户端共用同一构造路径，§3.2）；提供 `getSyncedData()` 供包处理器调用；实现两个 `onSyncedDataUpdated` 重载 |
 | 1.4 | `ArmsCore` 的 KCC 接线 | 阶段 0.3 已让 `ArmsCore(Level, UUID)` 构造 `MechaCharacter`（胶囊几何取自 `MechaBodyPreset`，物理空间取自 `SparkLevel.getPhysicsLevel(level).getWorld()`），无需再补构造；本项剩余的是把 `prePhysicsTick()` 接上 `mechaControl.onPhysicsStep(dt)` 与逻辑状态发布（1.7）。装配体成员（`partMap` / `getRootSubPart` / `getAttr`）按 D20 留空 |
 | 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `ARMSClient.java:136-152` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
 | 1.6 | 唯一的物理步驱动 | `PhysicsLevelTickEvent.Pre` 订阅者按 Level 注册表扇出 `ArmsCore.prePhysicsTick()`（§3.6、D9） |
-| 1.7 | 物理线程发布逻辑状态 | 在 1.6 的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回不可变 record） |
+| 1.7 | 物理线程发布逻辑状态 | 在阶段 1.6 的订阅者所触发的 `ArmsCore.prePhysicsTick()` 中，按 §3.6 伪代码的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回该不可变 record）。注意 §3.6 伪代码与本节任务号是两套编号：前者是 `prePhysicsTick()` 内部的 ①②③ 执行顺序，后者是阶段 1 的交付物清单 |
 | 1.8 | 客户端夹具退役 | 删除 `ARMSClient` 的 KCC / `MechaControl` 构造与物理步订阅（`:44-49`、`:113-126`、`:132-158`）；`ClientMechaTestRig` 退役（或降级为纯观测壳，不持有 KCC）。客户端不再有任何 `MechaCharacter` 实例 |
 | 1.9 | 载荷注册骨架 | 新建 `RegisterPayloadHandlersEvent` 订阅者（`ARMS.java` 当前只注册了一个配置，`:30-38`）。阶段 1 只注册 `playToClient` 三项 + `MainThreadPayloadHandler`；`playToServer` 方向留到阶段 2 一并注册（2.1） |
-| 1.10 | `MechaCoreSyncPayload`（record，`common/net/`） | `(UUID coreId, List<SynchedEntityData.DataValue<?>> dirty)`，载荷 id 见 §3.4；编解码按 §3.3 的 `255` 终结符写法 |
+| 1.10 | `MechaCoreSyncPayload`（record，`network/payload/`） | `(UUID coreId, List<SynchedEntityData.DataValue<?>> dirty)`，载荷 id 见 §3.4；编解码按 §3.3 的 `255` 终结符写法 |
 | 1.11 | `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` | 字段见 §3.4；创建包携带 `getNonDefaultValues()`（D6）与 `hostEntityId`（阶段 1–3 恒为 `-1`） |
-| 1.12 | `MechaCoreRegistry`（`common/net/`） | `Map<Level, Map<UUID, ArmsCore>>`；`add` / `remove` / `get`；服务端注册时广播创建包，注销时广播移除包；维度卸载时清理 |
+| 1.12 | `MechaCoreRegistry`（`common/`） | `Map<Level, Map<UUID, ArmsCore>>`；`add` / `remove` / `get`；服务端注册时广播创建包，注销时广播移除包；维度卸载时清理。它是装配体注册表（同时被物理步扇出与同步写包读取），不是网络类型，因此与 Machine-Max 的 `ObjectManager`（`common/mech/ObjectManager.java`）同级放在 `common/` 下，不进 `network/` |
 | 1.13 | 客户端处理器 | 创建包：按 `coreId` 幂等构造 `ArmsCore`（客户端构造器不建 KCC）→ 注册 → `assignValues(initial)`；移除包：注销并清空锚点；增量包：`UUID` 不存在时丢弃并计数告警，不抛异常（§3.4） |
 | 1.14 | 登录 / 换维度 / 重连补发 | `PlayerEvent.PlayerLoggedInEvent` 遍历该维度注册表逐个补发创建包；客户端进入 `ClientLevel` 时清空本地注册表并按 §3.4 的时序重新获取 |
 | 1.15 | 主线程同步与发包 | `LevelTickEvent.Post` 订阅者遍历注册表：读 `logicState` 与 KCC 位姿 → `set` 8 项 → `packDirty()` → 非空则广播 `MechaCoreSyncPayload`（D8、§3.9） |
@@ -596,7 +608,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 2.1 | `MechaInputPayload`（record，`common/net/`） | 字段见 §3.11；`playToServer` 方向，`MainThreadPayloadHandler`（写入的是 `volatile` 快照，与 `MechaConditionSnapshot` 现有纪律一致） |
+| 2.1 | `MechaInputPayload`（record，`network/payload/`） | 字段见 §3.11；`playToServer` 方向，`MainThreadPayloadHandler`（写入的是 `volatile` 快照，与 `MechaConditionSnapshot` 现有纪律一致） |
 | 2.2 | 客户端采集与发送 | `ClientTickEvent.Pre` 采集 WASD / 跳跃 / 冲刺 / 蹲伏 / 视角，打包上行；仅值变化、`eventBits` 非空、或距上次发包 > 1 s 时发送（§3.11） |
 | 2.3 | 事件序号与重发窗口 | 客户端维护 `eventSeq` 与未确认 `eventBits`，连续 N 个包（建议 3）携带同一对；服务端记录 `lastEventSeq`，仅在新序号时投递 `MechaEvent`，重复到达不重复投递（D7、§3.11） |
 | 2.4 | 服务端合并与写入 | 按 §3.11 的处理链合并"上行输入 + 本地环境"后 `writeConditionSnapshot`；环境类字段此时仍由服务端临时从控制者实体查询（阶段 4 移交给 `IArmsHost`） |
