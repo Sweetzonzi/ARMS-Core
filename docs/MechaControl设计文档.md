@@ -104,17 +104,21 @@ YSM 的 `QueryBinding`（`q.is_on_ground`、`q.ground_speed` 等）直接查询�
 public enum MechaEvent {
     // 当前实现
     ATTACK_PRIMARY, ATTACK_SECONDARY, USE_ITEM, INTERACT,
-    TOGGLE_DRIVE,
+    TOGGLE_DRIVE, TOGGLE_PRONE, TOGGLE_FLY, DODGE,
     HURT, STUN,
     MOUNT, DISMOUNT,
-    // 未来扩展: TOGGLE_SNEAK, TOGGLE_PRONE, DIVE, TACTICAL_SPRINT, SLIDE
+    JUMP_RELEASE,
+    // 未来扩展: DIVE, TACTICAL_SPRINT, SLIDE
 }
 ```
+
+线上身份取 `MechaInputPayload.eventBits` 的位序，即位序 = `ordinal()`，因此新常量只能追加在末尾；在中间插入会让该位置之后的全部事件位平移。
 
 ### 与 Snapshot 的分工示例
 
 - `TOGGLE_DRIVE` 必须是事件（不能是快照字段）——它在按下那帧触发一次。放快照里需要 Holder 手动记"上一帧"来比较，容易重复触发。
 - `jumpPressed` 仍然是快照字段——它是持续状态（按住蓄力），不是离散触发（松开才触发跳跃）。
+- `JUMP_RELEASE` 是事件——`jumpPressed` 只表达"此刻是否按住"，而松键是"发生过一次"的事实。放进快照就会在每个物理步被重复读到，从而把下一次刚开始的蓄力提前放掉。
 
 ### 事件不经过信号总线
 

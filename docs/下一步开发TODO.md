@@ -79,7 +79,7 @@
   - 建议当前阶段由 KCC 维护蓄力计时和冲量计算。
   - 逻辑状态机镜像 KCC 的 `isChargingJump()`，负责表现语义和输入门控。
   - 后续若改为逻辑状态机主导，需移除 KCC 内部重复状态，不能长期保留两套权威状态。
-- [ ] 明确跳跃按下、持续、松开三个信号的语义，保证松开边沿在物理线程消费前不会丢失。
+- [x] 明确跳跃按下、持续、松开三个信号的语义：按下/持续是 `keyFlags` 的 `BIT_JUMP`（连续量，可丢可合并），松开是 `MechaEvent.JUMP_RELEASE`（单帧边沿，经事件闩锁在物理线程被消费一次）。
 - [ ] 细化 `fall`、`glide`、`hover`、`fly` 的进入条件和互斥优先级；事件只负责切换意图，环境条件仍需阻止非法状态。
 
 ### 3.4 状态产出一致性
@@ -104,7 +104,7 @@
   6. 发布只读调试状态 — 待实现（当前直接暴露变量容器）。
   7. 应用状态机产出再调用 `kcc.prePhysicsTick(dt)` — 当前处于旁路观测模式，门控未启用（`setBypassObservation(false)` 可开启）。
 - [x] 修正视角到世界方向的 yaw 符号，使其与当前 `ARMSClient` 已验证的方向一致。
-- [x] 将 `jumpReleased` 真正传给 KCC，并保证蓄力期间释放边沿不被 `CAN_JUMP=false` 吞掉。
+- [x] 将跳跃松开边沿真正传给 KCC（`MechaEvent.JUMP_RELEASE` → KCC 的松开闩锁），并保证蓄力期间释放边沿不被 `CAN_JUMP=false` 吞掉。
 - [ ] 区分以下 KCC 控制量，不能全部复用 `setInputScale()`：
   - 是否允许移动。
   - 是否允许开始/释放跳跃。
@@ -120,7 +120,7 @@
 ### 5.1 record 方案
 
 - [x] 将 `MechaConditionSnapshot` 改为不可变 `record`，构造后通过 `volatile` 字段发布给物理线程（record final 字段 + volatile 引用保证安全发布）。
-- [x] 将连续状态与离散边沿分开：WASD、视角、按键是否按住属于 snapshot；`jumpReleased`、切换姿态、闪避等单独 latch（`MechaEvent` + 原子事件缓冲），不依赖“最新快照”恰好被物理线程看到。
+- [x] 将连续状态与离散边沿分开：WASD、视角、按键是否按住属于 snapshot；跳跃松开（`MechaEvent.JUMP_RELEASE`）、切换姿态、闪避等单独 latch（`MechaEvent` + 原子事件缓冲），不依赖“最新快照”恰好被物理线程看到。
 - [x] `applyConditionSnapshot` 不再保留调用方之后还能修改的对象引用（record 不可变）。
 - [x] `pendingEvents` 改为线程安全且具有明确消费语义的结构：`AtomicReference<Set<MechaEvent>>`，postEvent copy-on-write 追加，物理线程帧首 `getAndSet(空集)` 原子取走整批——任意交错下事件不丢失、不重复，只归属本帧或下一帧。
 

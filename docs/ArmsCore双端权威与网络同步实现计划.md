@@ -173,7 +173,7 @@ variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 | D4 | 增量字段固定为 8 项，见 §2.2；**只追加** | 覆盖 KCC 位姿与逻辑层状态；宿主绑定不进增量 |
 | D5 | 对象的存在性与宿主绑定走创建 / 移除包，不进每 tick 增量包 | `SynchedEntityData` 的 accessor 需要固定序列化器，装不下多态宿主引用（§3.4） |
 | D6 | 创建包携带**全量初值**（`getNonDefaultValues()`） | `packDirty()` 只在变化时发包，后加入 / 重连的客户端否则永远看不到当前状态（§3.4） |
-| D7 | 输入走独立的上行包 `MechaInputPayload`，客户端每 tick 至多一包；离散边沿带单调序号 | 单帧边沿（`jumpReleased`）跨网络不可靠，序号使其幂等且不丢（§3.11） |
+| D7 | 输入走独立的上行包 `MechaInputPayload`，客户端每 tick 至多一包；离散边沿带单调序号 | 单帧边沿（跳跃松开 `MechaEvent.JUMP_RELEASE`、`DODGE` 等）跨网络不可靠，序号使其幂等且不丢（§3.11） |
 | D8 | 服务端每 tick 读取 KCC 是**唯一**的物理状态出口，由 Level 级注册表 + `LevelTickEvent.Post` 扇出 | 与宿主形态解耦；宿主驱动会因宿主不同而时机不同、且漏调即停摆 |
 | D9 | 物理步驱动由 Level 级注册表 + `PhysicsLevelTickEvent.Pre` 扇出，每步恰好一次 | 与 `VehicleCore` 的 `ObjectManager.onPrePhysicsTick` 同相位（§3.6、§3.9） |
 | D10 | `ArmsCore` 实现 `MechaControlHolder`，作为统一控制输入点；宿主侧引入 `IArmsHost` 提供上下文 | 阶段 4；`ArmsCore` 已实现该接口（`ArmsCore.java#ArmsCore`） |
@@ -500,15 +500,14 @@ btVector3 btKinematicCharacterController::getLinearVelocity() const
 | `viewYaw` / `viewPitch` | `float` | 玩家视角（度）。`MechaControl.applyMoveInput` 用它把输入转到世界系 |
 | `keyFlags` | `int` 位集 | `jumpHeld`、`sprintHeld`、`walkKeyHeld`、`sneaking` —— 连续量，可丢可合并 |
 | `eventSeq` | `int` | 单调递增的事件序号。每次"产生一个事件"自增一次（不是每 tick 自增），服务端据此判断新旧 |
-| `eventBits` | `int` 位集 | 本包携带的事件类型集合，位序 = `MechaEvent.ordinal()`（当前 10 项，`int` 足够；超过 32 项时改 `long` 或 `int[]`） |
-| `jumpReleased` | `boolean` | 单帧边沿，与 `eventBits` 同属"发生过"语义，按同一序号机制投递 |
+| `eventBits` | `int` 位集 | 本包携带的事件类型集合，位序 = `MechaEvent.ordinal()`（当前 13 项，`int` 足够；超过 32 项时改 `long` 或 `int[]`）。跳跃松开是其中的 `MechaEvent.JUMP_RELEASE`，与 `DODGE` / `TOGGLE_*` 同批投递；快照只承载连续量 |
 
-**离散边沿必须带序号（D7）。** `jumpReleased` 与 `MechaEvent` 是单帧标记，`MechaControl` 在下一个物理步的第一时间就会 `getAndSet(空集)` 吃掉（`MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批））。跨网络若只发一帧，丢包即永久丢失（`docs/下一步开发TODO.md` §3.3「明确跳跃按下、持续、松开三个信号的语义，保证松开边沿在物理线程消费前不会丢失」正是指这条）。实现方式二选一：
+**离散边沿必须带序号（D7）。** 跳跃松开与 `DODGE` / `TOGGLE_*` 一样是 `MechaEvent` 的一项，都是单帧标记，`MechaControl` 在下一个物理步的第一时间就会 `getAndSet(空集)` 吃掉（`MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批））。跨网络若只发一帧，丢包即永久丢失（`docs/下一步开发TODO.md` §3.3「明确跳跃按下、持续、松开三个信号的语义，保证松开边沿在物理线程消费前不会丢失」正是指这条）。实现方式二选一：
 
 1. **事件序号 + 重发（推荐）**：客户端维护一个自增计数 `eventSeq` 与一组"未确认事件位" `eventBits`；只要 `eventBits` 非空，就**强制发包**，把同一 `eventSeq` 与同一 `eventBits` 连续带在**接下来 N 个上行包**里（建议 N = 3），之后才清空。服务端只在 `seq` 比它记录的更大时投递一次事件，因此重复包不会重复触发（幂等），而丢 1–2 个包也不会丢事件。事件停发后若再丢包才会丢失，此时表现为"这一次动作没生效"，与本地帧丢失的观感同级。注意重发窗口的单位是"包"而不是"tick"——否则"仅值变化时发包"会让窗口内根本没有包可带（见下）。
 2. **序号 + 显式确认**：服务端在收到并消费后回执 `lastConsumedSeq`，客户端据此缩短重发窗口。可省少量带宽，但引入一个反向包与状态机，本阶段不值得。
 
-**推荐方案 1**：`jumpReleased`、`TOGGLE_*`、`DODGE`、`STUN`、`MOUNT` / `DISMOUNT` 都是"发生过"语义，重复表达无害；方案 2 的回执通道等到上行带宽真正成为问题时再引入。
+**推荐方案 1**：跳跃松开（`MechaEvent.JUMP_RELEASE`）、`TOGGLE_*`、`DODGE`、`STUN`、`MOUNT` / `DISMOUNT` 都是"发生过"语义，重复表达无害；方案 2 的回执通道等到上行带宽真正成为问题时再引入。
 
 **连续量可以丢。** `forward` / `strafe` / `viewYaw` / `keyFlags` 属于"最新值覆盖"语义，与现有 `conditionSnapshot` 的覆盖式写入完全一致，丢包只造成短暂迟滞。因此客户端**仅在值变化时发包**（参考 `MovementInputPayload` 的发送条件，`RawInputHandler.java#handleMoveInputs`），另有两条强制发包条件：`eventBits` 非空（上述重发窗口），以及距上次发包超过 1 s 的心跳。心跳的目的不是补齐延迟，而是让服务端能区分"玩家没动"与"这个客户端的包断了"，从而在必要时按 §3.11 的控制权转移路径重置快照。
 
@@ -743,7 +742,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |---|------|------|
 | 4.1 | 引入 `IArmsHost` | 宿主上下文接口：`getLevel()`、`getHostEntity()`、伤害转发。设计文档 `docs/总体设计文档.md` §2.1 已给出原始设定；本仓库尚无任何实现 |
 | 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标 |
-| 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 16 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `jumpReleased` / `sprintPressed` / `walkKeyPressed`）、视角（`viewYaw` / `viewPitch`）、环境（`sneaking` / `inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
+| 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 15 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `sprintPressed` / `walkKeyPressed`）、视角（`viewYaw` / `viewPitch`）、环境（`sneaking` / `inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
 | 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java#pendingEventBuffer`、`#postEvent`） |
 | 4.5 | `rootSubPart` 与 `Part` 装配接入 | 补 `getRootSubPart()`；接 `ArmsCore.prePhysicsTick()` 第 ① 步（§3.6）；同时启用 `extractAnimRootDelta()` 的真实实现，`DATA_YAW` 从本阶段起才有验收意义（§3.12） |
 | 4.6 | `mech_chassis.json` / `MechAttr` | 落地素体定义与 `getAttr()`，替换阶段 0 定义的临时胶囊参数（该组值同时需要补进 `docs/角色控制器-行走物理设计.md` 的 §5.1 参数表）；回归一次手感 |
@@ -766,7 +765,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | R7 | 服务端物理步与其他装配体共享 45 ms 预算，负载过高时 `dynamicRepeat` 会下调，仿真时间相对墙钟变慢（每 tick 实际推进秒数减少） | 单步 dt 恒为 `1f / tps`（§3.6），状态机的时长条件（`STUN_DURATION` / `DODGE_DURATION` / `HARD_LAND_DURATION` / `T_CHARGE`）按 dt 累加即可，无需为降频做补偿；受影响的是手感与仿真速率本身，属于玩法调参 |
 | R8 | `DATA_YAW` 与躯干朝向被当成同一个量 | 二者解耦（§1.1、D16、D17）：渲染机体的仍是 SubPart 姿态，而"角色朝哪"是 KCC 侧的绝对 Y 朝向。躯干是受约束牵引的下游量，RAGDOLL 时二者完全独立 |
 | R9 | 客户端在创建包到达前收到增量包 | 服务端同 tick 内先创建后增量；客户端对未知 `coreId` 丢弃并计数，不抛异常（§3.4） |
-| R10 | 上行包丢失导致单帧边沿永久丢失（`jumpReleased`、`DODGE`） | 事件带单调序号 + 按差投递，同一序号幂等（D7、§3.11） |
+| R10 | 上行包丢失导致单帧边沿永久丢失（跳跃松开 `MechaEvent.JUMP_RELEASE`、`DODGE`） | 事件带单调序号 + 按差投递，同一序号幂等（D7、§3.11） |
 | R11 | 玩家断线 / 换维度后服务端快照停在最后一帧，状态机卡住 | 控制权转移与断线时重置为 `EMPTY` 并清空事件（§3.11、阶段 2.6） |
 | R12 | 客户端为零物理查询重建代理体，与宿主实体位置形成双份权威 | D18：客户端不建物理体；阶段 4 若需迁移按 §3.13 单列，不并存 |
 
@@ -938,3 +937,14 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 ### A.5 客户端为零物理查询重建代理体
 
 取代原因：客户端在阶段 1–3 没有宿主实体与 `Part` 装配，代理体没有消费者；且与宿主实体的位置会形成双份权威。现行设计是客户端只摆放非实体可视锚点（D18、§3.13），位姿权威是否迁移到实体留作 §7 Q5。
+
+### A.6 上行包里独立的 `jumpReleased` 字段
+
+`MechaInputPayload` 曾带第 9 个字段 `boolean jumpReleased`（`src/main/java/io/github/sweetzonzi/arms_core/network/payload/MechaInputPayload.java:51 @ 8ea7199`），服务端 `MechaInputHandler` 合并上行时把它连同 `keyFlags` 一起填进 `MechaConditionSnapshot`，`MechaControl` 再从快照读该字段转发给 KCC。
+
+取代原因有两条：
+
+- **边沿不能搭覆盖式快照。** 快照的语义是"此刻的状态、每帧覆盖"，物理步按 tick 的步数（100 Hz）重复读取同一个引用，于是同一次松键会被重新 latch 多次。跳跃释放必须恰好被消费一次，这与 `DODGE` / `TOGGLE_*` 走事件闩锁的理由相同（D7、§3.11）。
+- **该字段在采集侧曾被算出来却没有填入载荷**：客户端在 `ARMSClient.collectAndSend` 里比较上帧与本帧的跳跃键得到松开边沿，但进包的是另一个只为事件准备的状态位（`src/main/java/io/github/sweetzonzi/arms_core/client/ARMSClient.java:156 @ 8ea7199`）。服务端因此恒收到 `false`，蓄力能起来、松键只会被 `MechaCharacter` 当作中断，跳跃永不施放。
+
+现行设计是 `MechaEvent.JUMP_RELEASE`：按住是 `keyFlags` 的连续量，松开是与 `DODGE` 同批投递的事件位，载荷因此回到 8 个字段（§3.11）。
