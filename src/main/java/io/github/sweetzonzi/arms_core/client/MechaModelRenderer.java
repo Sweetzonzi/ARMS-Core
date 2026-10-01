@@ -91,16 +91,20 @@ public final class MechaModelRenderer {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
         Level level = mc.player.level();
-        if (level == null || !level.isClientSide()) return;
+        if (!level.isClientSide()) return;
 
         long tick = level.getGameTime();
+
+        // 回收：本 tick 注册表里查不到的 UUID 一律丢弃。放在创建之前，淘汰就不依赖后面的
+        // 创建循环能否跑完（循环中途抛异常也不会把淘汰一起跳过）。
+        // 不用「两张表的大小比较」来省这一次遍历：那等于用集合大小推断差集，只在
+        // 「创建循环必定覆盖注册表全部条目」这个隐含前提下成立；前提一旦被破坏
+        // （创建中途抛异常、注册表出现遍历不到的条目），残留项就永远留在表里。
+        ANIMATABLES.keySet().removeIf(id -> MechaCoreRegistry.get(level, id) == null);
+
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             ANIMATABLES.computeIfAbsent(core.getAssemblyId(), id -> new MechaAnimatable(core))
                     .clientTick(tick);
-        }
-        // 注册表里已经没有的 UUID 连同其动画体一起回收
-        if (ANIMATABLES.size() > MechaCoreRegistry.size(level)) {
-            ANIMATABLES.keySet().removeIf(id -> MechaCoreRegistry.get(level, id) == null);
         }
     }
 
