@@ -3,7 +3,7 @@
 > **状态**：阶段 0、1、2 已落地并通过下述验证；阶段 3、4 待执行（见 §4 各阶段标题后的状态标记）
 > **目标**：让 `ArmsCore` 由仅存在于客户端，变为双端存在、服务端权威，并建立两条独立同步通道——服务端 → 客户端的位姿与状态通道，客户端 → 服务端的输入通道。
 > **范围**：`ArmsCore` 的权威归属、创建与移除协议、两条同步通道、tick 驱动、宿主输入契约。不含显示实体本身的实现，不含 SubPart 的物理与渲染。
-> **本文自包含**：判定标准见 `AGENTS.md` 的「文档编辑规范」。具体到本文——全部符号、字段与判据在文内定义，结论写在正文，证据以「文件:行」形式落在 §8 与各节表格，可直接打开源码核验；允许把逐行论述留在外部（如 `docs/角色控制器-行走物理设计.md` 的 §10.3、§11），但每处外部引用都带节号或「文件:行」，可顺引用直接核验。各节之间只有前向引用（如 §3.4、阶段 1.5），不存在指向本文以外或本文其他版本的隐含前提。
+> **本文自包含**：判定标准见 `AGENTS.md` 的「文档编辑规范」。具体到本文——全部符号、字段与判据在文内定义，结论写在正文，证据以「路径#符号」形式落在 §8 与各节表格，可在目标文件里直接检索该符号核验；形态快照另按「路径:行 @ 提交」标注，用 `git show <提交>:<路径>` 复现。允许把逐行论述留在外部（如 `docs/角色控制器-行走物理设计.md` 的 §10.3、§11），但每处外部引用都带节号或上述两种坐标之一，可顺引用直接核验。各节之间只有前向引用（如 §3.4、阶段 1.5），不存在指向本文以外或本文其他版本的隐含前提。
 > **非前置参考**：`docs/总体设计文档.md`（`IArmsHost` 的原始设定、§2.4.5 的两条输入路径）、`docs/下一步开发TODO.md`（`LogicStateSnapshot` 的需求条目与跨线程决策）。本文不要求先读其中任何一份。
 
 ### 0.1 实现与验证状态
@@ -63,15 +63,15 @@
 
 因此 **KCC 位姿与根 SubPart 位姿承载不同的信息，各自需要一条同步通道**：KCC 不在任何 `Part` / `SubPart` 内，SubPart 通道表达不了它；根 SubPart 的位姿由 SubPart 刚体自身决定，KCC 通道也表达不了它。
 
-**但这条耦合不是第一阶段的前置。** `MechaControl` 全文不调用 `getRootSubPart()` 与 `getAttr()`（仅在 `MechaControlHolder` 声明、`ArmsCore` 存根与 `ClientMechaTestRig` 中出现），`extractAnimRootDelta()` 当前是空实现。因此 `rootSubPart == null`、`Part` 装配缺席时，`ArmsCore` 与状态机可以完整运行，代价只落在表现层：动画根位移与动画驱动转身不生效，`currentYaw` 恒为初值（§3.12）。本计划据此把装配体装配推到阶段 4。
+**但这条耦合不是第一阶段的前置。** `MechaControl` 全文不调用 `getRootSubPart()` 与 `getAttr()`（仅在 `MechaControlHolder` 声明、`ArmsCore` 存根与 `ClientMechaTestRig`（计划写作时的客户端测试夹具，见 §1.2）中出现），`extractAnimRootDelta()` 当前是空实现。因此 `rootSubPart == null`、`Part` 装配缺席时，`ArmsCore` 与状态机可以完整运行，代价只落在表现层：动画根位移与动画驱动转身不生效，`currentYaw` 恒为初值（§3.12）。本计划据此把装配体装配推到阶段 4。
 
 ### 1.2 当前实现状态
 
-以下事实可从代码直接验证。
+本节的前三张表记录的是**计划写作时（提交 `93924d9`）**的形态：表中的 `:行` 都是该提交下的行号，可用 `git show 93924d9:<文件>` 核验，它们**不指向当前代码**（表头已标 `@ 93924d9`）。第四张表是 Spark-Core 的活引用，按「文件#符号」给出；本节末尾与 §1.3 的行内引用同样按当前代码给出坐标。
 
 **`ArmsCore` 是骨架**（`src/main/java/io/github/sweetzonzi/arms_core/common/ArmsCore.java`）：
 
-| 位置 | 内容 |
+| 位置 @ `93924d9` | 内容 |
 |------|------|
 | `:20` | `class ArmsCore implements IPartAssembly, MechaControlHolder` |
 | `:25` | `new MechaControl(this, null)` —— 构造时 KCC 传 `null` |
@@ -80,11 +80,11 @@
 | `:95-97` | `getRootSubPart()` 返回 `null` |
 | `:99-102` | `getAttr()` 返回 `null` |
 
-`MechaControl.onPhysicsStep()` 进入 `frameLogic → writeStateInputs` 后第一句即 `kcc.onGround()`（`MechaControl.java:320`），因此 **KCC 为 `null` 时 `ArmsCore` 无法被驱动**：任何驱动 `ArmsCore` 的实现都必须先有一个真实的 `MechaCharacter`。真 KCC 的构造因此是阶段 1 的交付物（阶段 1.4），而不是更晚阶段的前置。
+`MechaControl.onPhysicsStep()` 进入 `frameLogic → writeStateInputs` 后第一句即 `kcc.onGround()`（`MechaControl.java#writeStateInputs`），因此 **KCC 为 `null` 时 `ArmsCore` 无法被驱动**：任何驱动 `ArmsCore` 的实现都必须先有一个真实的 `MechaCharacter`。真 KCC 的构造因此是阶段 1 的交付物（阶段 1.4），而不是更晚阶段的前置。
 
 **唯一的可用闭环在客户端**（`.../client/ARMSClient.java`）：
 
-| 位置 | 内容 |
+| 位置 @ `93924d9` | 内容 |
 |------|------|
 | `:44` | `private static volatile ClientMechaTestRig rig;` —— 一个 JVM 一个夹具 |
 | `:47-49` | `initialized` 布尔量置位后不复位，切维度 / 重生 / 重连后不会重建 |
@@ -93,9 +93,9 @@
 | `:132-158` | 初始化读 `Minecraft.getInstance()`、`player.level()`、`SparkLevel.getPhysicsLevel(player.level())` |
 | `:39-41` | 胶囊常量 `CAPSULE_RADIUS = 0.4f`、`CAPSULE_HEIGHT = 1.6f`（客户端私有） |
 
-`ClientMechaTestRig`（`:33-48`）是一个最小 `MechaControlHolder` 实现：构造 `MechaCharacter(shape, physicsSpace)` 与 `MechaControl(this, kcc)`，`getRootSubPart()` 返回 `null`，`getAttr()` 返回空存根。
+`ClientMechaTestRig`（`src/main/java/io/github/sweetzonzi/arms_core/client/ClientMechaTestRig.java:33-48 @ 93924d9`，该类不在当前代码中）是一个最小 `MechaControlHolder` 实现：构造 `MechaCharacter(shape, physicsSpace)` 与 `MechaControl(this, kcc)`，`getRootSubPart()` 返回 `null`，`getAttr()` 返回空存根。
 
-**`MechaControl.onPhysicsStep(dt)` 的内部顺序**（`.../common/control/MechaControl.java:257-274`）：
+**`MechaControl.onPhysicsStep(dt)` 的内部顺序**（`.../common/control/MechaControl.java#onPhysicsStep`）：
 
 ```
 frameLogic(dt)            // 取事件批 → 汇入变量 → 推进状态机 → 转发输入
@@ -105,7 +105,7 @@ kcc.prePhysicsTick(dt)    // 行走力 / 跳跃 / 碰撞 sweep
 
 **`MechaCharacter` 的朝向现状**（`.../common/control/MechaCharacter.java`）：
 
-| 位置 | 内容 |
+| 位置 @ `93924d9` | 内容 |
 |------|------|
 | `:47` | `class MechaCharacter extends PhysicsCharacter`（Bullet `btKinematicCharacterController`，非刚体） |
 | `:126-135` | 字段及其注释：「控制器当前 Y 轴朝向（弧度），由 `applyAnimRootYaw` 累积动画根骨骼 Y 旋转增量」；该字段为 `volatile`，并有 `getCurrentYaw()` 供主线程读取（阶段 0.1） |
@@ -133,27 +133,27 @@ rotatedZ = dirX * sin + dirZ * cos;
 
 | 位置 | 内容 |
 |------|------|
-| `PhysicsLevelApplier.kt:30` | 服务端 `ServerPhysicsLevel(level, 5, ...)` |
-| `ClientPhysicsLevelApplier.kt:21` | 客户端 `ClientPhysicsLevel(level, 3, ...)` |
-| `PhysicsLevel.kt:62` | `val tps = baseStep * 20` → 服务端 100 Hz，客户端 60 Hz |
-| `PhysicsLevel.kt:146-209` | `stepPhysics()` 按实测帧时间在 `minStep..maxStep` 间动态调整每 tick 步数 |
-| `ServerPhysicsLevel.kt:12-14` | 服务端 `requestEntities()` 返回 `mcLevel.allEntities` |
-| `ClientPhysicsLevel.kt:14-23` | 客户端只返回摄像机 `renderDistance` 内的实体 |
-| `PhysicsLevelApplier.kt:60-66` | 服务端在 `LevelTickEvent.Pre`（`HIGH`）调 `physicsLevel.requestStep()`，物理步在独立线程执行 |
+| `PhysicsLevelApplier.kt#load` | 服务端 `ServerPhysicsLevel(level, 5, ...)` |
+| `ClientPhysicsLevelApplier.kt#load` | 客户端 `ClientPhysicsLevel(level, 3, ...)` |
+| `PhysicsLevel.kt#tps` | `val tps = baseStep * 20` → 服务端 100 Hz，客户端 60 Hz |
+| `PhysicsLevel.kt#stepPhysics` | `stepPhysics()` 按实测帧时间在 `minStep..maxStep` 间动态调整每 tick 步数 |
+| `ServerPhysicsLevel.kt#requestEntities` | 服务端 `requestEntities()` 返回 `mcLevel.allEntities` |
+| `ClientPhysicsLevel.kt#requestEntities` | 客户端只返回摄像机 `renderDistance` 内的实体 |
+| `PhysicsLevelApplier.kt#mcLevelTask` | 服务端在 `LevelTickEvent.Pre`（`HIGH`）调 `physicsLevel.requestStep()`，物理步在独立线程执行 |
 
 ### 1.3 结论：必须单端权威
 
 上述速率差异、步数自适应、刚体集合差异，加上 Bullet 的浮点非确定性，使得"两端各自跑一份 KCC 并期望一致"不成立。而逻辑状态机的输入全部派生自 KCC：
 
 ```java
-// MechaControl.java:320-327
+// MechaControl.java#writeStateInputs
 variables.set(StateVariableKeys.ON_GROUND, kcc.onGround());
 variables.set(StateVariableKeys.SPEED, horizontalSpeed);      // |v_xz| / dt → m/s（§3.10）
 variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);  // 已是 m/s，不得再除以 dt（§3.10）
 variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 ```
 
-`gait` 的 `idle ↔ drift` 使用阈值化的 `SPEED`，`stand` 的 `ground ↔ jump_charge` 镜像 `KCC_JUMP_CHARGING`（`.../state/preset/VerticalSubGraphs.java:69-81`）。两份 KCC 一旦分毫不同，就会在着地判定边界产生不同的 `ON_GROUND`，进而分出不同的 `posture`，再分出不同的 `CAN_MOVE`。**状态机放大差异，不收敛差异。**
+`gait` 的 `idle ↔ drift` 使用阈值化的 `SPEED`，`stand` 的 `ground ↔ jump_charge` 镜像 `KCC_JUMP_CHARGING`（`.../state/preset/VerticalSubGraphs.java#buildStandVert`）。两份 KCC 一旦分毫不同，就会在着地判定边界产生不同的 `ON_GROUND`，进而分出不同的 `posture`，再分出不同的 `CAN_MOVE`。**状态机放大差异，不收敛差异。**
 
 因此本计划确立：**服务端是唯一权威端；客户端不运行 KCC，只消费同步结果。** 状态机不需要同步，它只存在于权威端；跟随端若需要状态用于渲染与动画门控，从同步变量重建。
 
@@ -176,16 +176,16 @@ variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 | D7 | 输入走独立的上行包 `MechaInputPayload`，客户端每 tick 至多一包；离散边沿带单调序号 | 单帧边沿（`jumpReleased`）跨网络不可靠，序号使其幂等且不丢（§3.11） |
 | D8 | 服务端每 tick 读取 KCC 是**唯一**的物理状态出口，由 Level 级注册表 + `LevelTickEvent.Post` 扇出 | 与宿主形态解耦；宿主驱动会因宿主不同而时机不同、且漏调即停摆 |
 | D9 | 物理步驱动由 Level 级注册表 + `PhysicsLevelTickEvent.Pre` 扇出，每步恰好一次 | 与 `VehicleCore` 的 `ObjectManager.onPrePhysicsTick` 同相位（§3.6、§3.9） |
-| D10 | `ArmsCore` 实现 `MechaControlHolder`，作为统一控制输入点；宿主侧引入 `IArmsHost` 提供上下文 | 阶段 4；`ArmsCore` 已实现该接口（`ArmsCore.java:20`） |
+| D10 | `ArmsCore` 实现 `MechaControlHolder`，作为统一控制输入点；宿主侧引入 `IArmsHost` 提供上下文 | 阶段 4；`ArmsCore` 已实现该接口（`ArmsCore.java#ArmsCore`） |
 | D11 | 物理线程计算并发布不可变快照，主线程写入 `syncedData` 并发包，频率为 20 Hz 主线程 tick | `SynchedEntityData` 非线程安全（§3.7） |
 | D12 | 本期不实现位姿外推，客户端在收到的相邻两个采样之间线性插值 | 插值已给出连续运动，外推只缩短恒定延迟，而客户端没有本地模拟与之对照 |
 | D13 | 枚举的线上身份使用其 `molangName()` 字符串 | `molangName()` 已是状态图的稳定节点标识；使用 `ordinal` 会在枚举中间插入常量时整体平移（§3.2） |
 | D14 | `pos` / `vel` 使用 JOML `Vector3f`（`EntityDataSerializers.VECTOR3`） | 该序列化器即为 JOML 类型；与 Machine-Max `DestroyableObject` 的 `DATA_POS_ID` 一致 |
 | D15 | 位姿、速度与 `currentYaw` 由主线程直接读 KCC，只有逻辑状态经不可变 `LogicStateSnapshot` 跨线程 | `SynchedEntityData` 的 accessor 各自独立，不需要统一载体；`DestroyableRigidObject.postTick()` 已确立主线程直读物理体的先例（§3.5） |
 | D16 | `DATA_YAW` 承载**控制器侧**的朝向，躯干朝向仍由 SubPart 通道承载 | 两者解耦且躯干存在受约束的滞后（§1.1）：控制器侧朝向是上游权威量，躯干是下游结果 |
-| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的声明语义就是"控制器当前 Y 轴朝向"（`MechaCharacter.java:126`、`:234-245`），与 `viewYaw` 无合成关系 |
+| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的声明语义就是"控制器当前 Y 轴朝向"（`MechaCharacter.java#currentYaw`、`#animRootYawDelta`），与 `viewYaw` 无合成关系 |
 | D18 | 客户端不为 `ArmsCore` 重建任何物理体，只按 `DATA_POS` / `DATA_YAW` 摆放一个非实体可视锚点 | 与 `MMPartEntity` 同形（§3.13）；避免"客户端不跑物理"与"客户端要渲染"的冲突，也避免与宿主实体的位置形成双份权威 |
-| D19 | `ArmsCore` 持有 `Level`，并由 `MechaCoreRegistry` 按维度注册；生命周期跟随宿主 / 装配体，不注册为世界实体 | `总体设计文档.md:82` 明确 `ArmsCore` 不注册到 `ObjectManager` |
+| D19 | `ArmsCore` 持有 `Level`，并由 `MechaCoreRegistry` 按维度注册；生命周期跟随宿主 / 装配体，不注册为世界实体 | `docs/总体设计文档.md` §2.1 明确 `ArmsCore` 不注册到 `ObjectManager` |
 | D20 | 阶段 1–3 允许 `rootSubPart == null`、`Part` 装配缺席、胶囊尺寸取阶段 0 的临时参数 | §1.1 的耦合不构成运行前置；表现层缺失在 §3.12 显式登记 |
 
 ### 2.2 增量字段表
@@ -229,7 +229,7 @@ variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 | `SynchedEntityData.defineId` | `static <T> EntityDataAccessor<T> defineId(Class<? extends SyncedDataHolder>, EntityDataSerializer<T>)` |
 | `EntityDataSerializers.ROTATIONS` | 值类型 `net.minecraft.core.Rotations`，其构造器对三个分量取 `% 360` 并对 NaN/Inf 归零，因此单位是度且自动环绕 |
 
-Machine-Max 的 `DestroyableObject`（一个非实体、非刚体的抽象类）即建立在此之上：`DestroyableObject.java:33` 声明 `implements SyncedDataHolder`，`:54` 持有 `protected final SynchedEntityData syncedData`，`:60-72` 在构造器内用 `new SynchedEntityData.Builder(this)` 定义初值。
+Machine-Max 的 `DestroyableObject`（一个非实体、非刚体的抽象类）即建立在此之上：`DestroyableObject.java#DestroyableObject` 声明 `implements SyncedDataHolder`，`#syncedData` 持有 `protected final SynchedEntityData syncedData`，`#DestroyableObject`（构造器）内用 `new SynchedEntityData.Builder(this)` 定义初值。
 
 ### 3.2 id 分配语义
 
@@ -270,10 +270,10 @@ public int getLastIdFor(Class<?> cls) {
 三条由此导出的结论：
 
 - 低频率字段（`DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`）在状态稳定时不产生任何流量，无需自行实现比较与脏跟踪。
-- **高频字段每 tick 都重新采样**：`DATA_POS` / `DATA_VEL` 每 tick 从 KCC 读入新的 JOML 向量、`DATA_YAW` 每 tick 构造新的 `Rotations`。写入的值与槽中旧值的比较经 `ObjectUtils.notEqual` 落到 `Objects.equals`（`Rotations` 为逐分量比较，见 `Rotations.java:44-46`），因此**只有数值确实相同才会被抑制**；位姿只要有浮点级抖动就会进入本批脏数据，静止的客户端也可能每 tick 收到这三个字段。阶段 1 的验收判据据此写成带宽上界（§4 阶段 1），并要求逻辑字段在无变化时不出现在批里。若需要静止时完全静默，做法是在主线程侧加"值变化阈值门控"（位移 > ε 或偏航 > ε 才 `set`），该项列为 §7 Q3。
+- **高频字段每 tick 都重新采样**：`DATA_POS` / `DATA_VEL` 每 tick 从 KCC 读入新的 JOML 向量、`DATA_YAW` 每 tick 构造新的 `Rotations`。写入的值与槽中旧值的比较经 `ObjectUtils.notEqual` 落到 `Objects.equals`（`Rotations` 为逐分量比较，见 `net.minecraft.core.Rotations#equals`），因此**只有数值确实相同才会被抑制**；位姿只要有浮点级抖动就会进入本批脏数据，静止的客户端也可能每 tick 收到这三个字段。阶段 1 的验收判据据此写成带宽上界（§4 阶段 1），并要求逻辑字段在无变化时不出现在批里。若需要静止时完全静默，做法是在主线程侧加"值变化阈值门控"（位移 > ε 或偏航 > ε 才 `set`），该项列为 §7 Q3。
 - 因为 `setValue` 不做拷贝，**写入的向量对象不得被后续复用**。`DestroyableRigidObject` 的 `SparkMathKt.toVector3f()` 每次返回新对象，正是这个原因；ArmsCore 侧同样不得把 `kcc.getPhysicsLocation(tmp)` 的复用缓冲直接交给 `set`。
 
-`DataValue` 的线上格式自带 `255` 终结符，可直接复用 Machine-Max 的编解码写法（`network/payload/SubPartSyncPayload.java:23-43`）：
+`DataValue` 的线上格式自带 `255` 终结符，可直接复用 Machine-Max 的编解码写法（`network/payload/SubPartSyncPayload.java#STREAM_CODEC`）：
 
 ```java
 // encode
@@ -304,11 +304,11 @@ while ((i = buffer.readUnsignedByte()) != 255) values.add(DataValue.read(buffer,
 
 | 机制 | 位置 |
 |------|------|
-| 服务端注册 + 维度广播创建包 | `ObjectManager.addVehicle` → `ObjectManager.java:94-108`，载荷 `VehicleCreatePayload(dimension, VehicleData)` |
-| 客户端构造 | `VehicleCreatePayload.handle` → `VehicleCreatePayload.java:37-41`：`new VehicleCore(context.player().level(), payload.vehicle, true)` + `ObjectManager.addVehicle(...)` |
-| 移除 | `ObjectManager.removeVehicle` → `:134-145`，载荷 `VehicleRemovePayload` |
-| 登录补发 | `ObjectManager.transmitVehicleData(PlayerEvent.PlayerLoggedInEvent)` → `:296-306`，逐个 `LevelVehicleDataPayload` |
-| 换维度请求 | `ObjectManager.loadVehicleData(PhysicsLevelInitEvent)` → `:387-390`，客户端发 `ClientRequestVehicleDataPayload`；服务端处理见 `ClientRequestVehicleDataPayload.java` |
+| 服务端注册 + 维度广播创建包 | `ObjectManager.addVehicle` → `ObjectManager.java#addVehicle`，载荷 `VehicleCreatePayload(dimension, VehicleData)` |
+| 客户端构造 | `VehicleCreatePayload.handle` → `VehicleCreatePayload.java#handle`：`new VehicleCore(context.player().level(), payload.vehicle, true)` + `ObjectManager.addVehicle(...)` |
+| 移除 | `ObjectManager.removeVehicle` → `ObjectManager.java#removeVehicle`，载荷 `VehicleRemovePayload` |
+| 登录补发 | `ObjectManager.transmitVehicleData(PlayerEvent.PlayerLoggedInEvent)` → `ObjectManager.java#transmitVehicleData`，逐个 `LevelVehicleDataPayload` |
+| 换维度请求 | `ObjectManager.loadVehicleData(PhysicsLevelInitEvent)` → `ObjectManager.java#loadVehicleData`，客户端发 `ClientRequestVehicleDataPayload`；服务端处理见 `ClientRequestVehicleDataPayload.java` |
 
 **连接与重连的时序。** 客户端在以下三个时刻都可能是"有维度、无对象"：
 
@@ -326,22 +326,22 @@ while ((i = buffer.readUnsignedByte()) != 255) values.add(DataValue.read(buffer,
 
 **广播范围**：`PacketDistributor.sendToPlayersInDimension((ServerLevel) level, payload)`。它不需要维护每个 `ArmsCore` 的追踪玩家集合，代价是维度内全广播；实例数量上升后可切换到 `sendToPlayersTrackingEntity` / `sendToPlayer`（R5）。
 
-**客户端应用**：先按 `UUID` 解析出 `ArmsCore`，再对其 `syncedData` 调用 `SynchedEntityData.assignValues(List<DataValue<?>>)`。该调用会按 accessor 触发 `onSyncedDataUpdated`。`SubPartSyncPayload.java:50-56` 是同一形态的参考实现。
+**客户端应用**：先按 `UUID` 解析出 `ArmsCore`，再对其 `syncedData` 调用 `SynchedEntityData.assignValues(List<DataValue<?>>)`。该调用会按 accessor 触发 `onSyncedDataUpdated`。`SubPartSyncPayload.java#handler` 是同一形态的参考实现。
 
 ### 3.5 跨线程读取的两条路径
 
 `SynchedEntityData` 只能由单一线程写入，而它的数据源分布在两处，两者的跨线程代价不同，需要分开处理。
 
-**位姿、速度、`currentYaw`：主线程直接读 KCC。** 这些量由 Bullet 维护，不需要任何中间载体。`DestroyableRigidObject.postTick()`（`DestroyableRigidObject.java:41-59`）在 Machine-Max 中就是这样做的——它在主线程直接读 Bullet 刚体：
+**位姿、速度、`currentYaw`：主线程直接读 KCC。** 这些量由 Bullet 维护，不需要任何中间载体。`DestroyableRigidObject.postTick()`（`DestroyableRigidObject.java#postTick`）在 Machine-Max 中就是这样做的——它在主线程直接读 Bullet 刚体：
 
 ```java
-// DestroyableRigidObject.java:41-59（主线程）
+// DestroyableRigidObject.java#postTick（主线程）
 transform = PhysicsBodyExtensionKt.stateOf(body).getTransform();
 setPosition(transform.getTranslation());
 setLinearVelocity(body.getLinearVelocity(null));
 ```
 
-KCC 的幽灵体世界变换由 `playerStep` 在末尾一次性写入（`btKinematicCharacterController.cpp:836-837`），因此并发读取拿到的是某一次完整步进的结果，与 `DestroyableRigidObject` 已接受的竞态同类。KCC 侧对应调用是 `getPhysicsLocation(null)`（`PhysicsCollisionObject.java:563`，传 `null` 返回新向量）与 `getLinearVelocity(tmp)`。
+KCC 的幽灵体世界变换由 `playerStep` 在末尾一次性写入（`btKinematicCharacterController.cpp#playerStep` 末尾），因此并发读取拿到的是某一次完整步进的结果，与 `DestroyableRigidObject` 已接受的竞态同类。KCC 侧对应调用是 `getPhysicsLocation(null)`（`PhysicsCollisionObject.java#getPhysicsLocation`，传 `null` 返回新向量）与 `getLinearVelocity(tmp)`。
 
 `MechaCharacter.currentYaw` 由物理线程累积、主线程读取，因此已声明为 `volatile` 并提供 `getCurrentYaw()`（阶段 0.1）。读到的值是某一次完整物理步结束后的结果，无需加锁；归一化问题见 §7 Q2。
 
@@ -355,13 +355,13 @@ private volatile LogicStateSnapshot logicState;
 ArmsCore.this.logicState  →  syncedData.set(DATA_POSTURE, ...) 等
 ```
 
-**它是什么、谁消费。** 它是这五项的**一次性不可变副本**，存在的唯一理由是那五项住在物理线程独占的容器里（读法本身要求物理线程内访问，如 `MechaControl.java:501-503`），而主线程要拿它们去填 `DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`。**当前唯一消费者是 `ArmsCore` 主线程 tick**（阶段 1.15）；客户端将来读的是 `synchedData` 的这五个字段（渲染与动画门控、MoLang `ctrl.*`），不直接读本快照。
+**它是什么、谁消费。** 它是这五项的**一次性不可变副本**，存在的唯一理由是那五项住在物理线程独占的容器里（读法本身要求物理线程内访问，如 `MechaControl.java#logStateChanges`），而主线程要拿它们去填 `DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`。**当前唯一消费者是 `ArmsCore` 主线程 tick**（阶段 1.15）；客户端将来读的是 `synchedData` 的这五个字段（渲染与动画门控、MoLang `ctrl.*`），不直接读本快照。
 
-**为什么用 record 而不是让 `MechaControl` 暴露五个 `volatile` 字段**：后者少一个类型、零分配，但五项不是同一时刻的值，且要在 `MechaControl` 上新增五个公开读点；直接暴露 `variables` 容器则违反 `docs/下一步开发TODO.md:113`「不要把可变 `StateVariableContainer` 暴露给主线程或调试 UI」。因此采用与 `MechaConditionSnapshot` 相同的模式，但它**嵌套在 `MechaControl` 内**而不单独占一个公共协议类型——只服务 `MechaControl` 的查询 API。它的归属是 `common/control/`（与 `MechaConditionSnapshot` 同包），不是 `common/net/`：它与网络无关，只是恰好被发包路径消费。
+**为什么用 record 而不是让 `MechaControl` 暴露五个 `volatile` 字段**：后者少一个类型、零分配，但五项不是同一时刻的值，且要在 `MechaControl` 上新增五个公开读点；直接暴露 `variables` 容器则违反 `docs/下一步开发TODO.md` §4「不要把可变 `StateVariableContainer` 暴露给主线程或调试 UI」。因此采用与 `MechaConditionSnapshot` 相同的模式，但它**嵌套在 `MechaControl` 内**而不单独占一个公共协议类型——只服务 `MechaControl` 的查询 API。它的归属是 `common/control/`（与 `MechaConditionSnapshot` 同包），不是 `common/net/`：它与网络无关，只是恰好被发包路径消费。
 
 `MechaConditionSnapshot`（`.../common/control/MechaConditionSnapshot.java`）是同一模式的既有实例：不可变 `record` + `volatile` 引用，方向为主线程 → 物理线程；`LogicStateSnapshot` 的方向相反（物理线程 → 主线程），语义相同。
 
-该模式在仓库内已有成文决策（`docs/下一步开发TODO.md:127-143`）：优先使用不可变对象获得清晰的跨线程语义，在性能数据证明存在问题之前不引入对象池。按 100 物理步/秒、每个 `ArmsCore` 一个小对象估算（约 100 次分配/秒），分配压力可以忽略。
+该模式在仓库内已有成文决策（`docs/下一步开发TODO.md` §5.2）：优先使用不可变对象获得清晰的跨线程语义，在性能数据证明存在问题之前不引入对象池。按 100 物理步/秒、每个 `ArmsCore` 一个小对象估算（约 100 次分配/秒），分配压力可以忽略。
 
 两个线程各自要遵守的纪律：`SynchedEntityData.set` 只在主线程调用；`StateVariableContainer` 只在物理线程读写。
 
@@ -370,7 +370,7 @@ ArmsCore.this.logicState  →  syncedData.set(DATA_POSTURE, ...) 等
 `VehicleCore` 把自身装配体的物理步驱动集中在单个方法内：
 
 ```java
-// VehicleCore.java:413-419
+// VehicleCore.java#prePhysicsTick
 public void prePhysicsTick() {
     subSystemController.prePhysicsTick();
     if (inLoadedChunk && !isRemoved) {
@@ -382,12 +382,12 @@ public void prePhysicsTick() {
 ```
 
 **构造前置的成立依据**：`ArmsCore` 构造时直接读物理空间
-（`SparkLevel.getPhysicsLevel(level).getWorld()`，`SparkLevel.java:45-46`）。`PhysicsLevel.world`
+（`SparkLevel.getPhysicsLevel(level).getWorld()`，`SparkLevel.java#getPhysicsLevel`）。`PhysicsLevel.world`
 是 `lateinit var`，在默认（多线程）路径下由协程在物理线程上赋值
-（`PhysicsLevel.kt:114`、`:318-329`），而 Spark-Core 在 `LevelEvent.Load` 中 `setPhysicsLevel(...)`
-后立即 `start()`（`PhysicsLevelApplier.kt:24-36`）。因此这条读取成立的前提是**构造发生在
+（`PhysicsLevel.kt#world` 的声明、`#start` 的赋值处），而 Spark-Core 在 `LevelEvent.Load` 中 `setPhysicsLevel(...)`
+后立即 `start()`（`PhysicsLevelApplier.kt#load`）。因此这条读取成立的前提是**构造发生在
 Level 加载完成之后**——宿主登录、装配体创建包、调试命令都满足该顺序。需要显式确认初始化
-完成时，订阅 Spark-Core 的 `PhysicsLevelInitEvent`（`PhysicsLevelApplier.kt:35`）作为构造时机。
+完成时，订阅 Spark-Core 的 `PhysicsLevelInitEvent`（`PhysicsLevelApplier.kt#load` 里 `start {}` 之后投递）作为构造时机。
 
 `ArmsCore.prePhysicsTick()` 因此为：
 
@@ -406,7 +406,7 @@ public void prePhysicsTick() {
 
 ① 早于 ② 是硬约束：`extractAnimRootDelta()` 读取 `body_root` 骨骼位姿，而该位姿由 `Part.onPrePhysicsTick()` 产出。该约束在阶段 1–3 不生效（`partMap` 为空），阶段 4 接入装配后立即生效。
 
-**dt 的正确取法**：`1f / physicsLevel.getTps()`。`PhysicsLevel.stepPhysics()` 对每一步都传同一个 `fixedStep = 1f / tps` 给 `world.update(...)`（`PhysicsLevel.kt:147`、`:159`），因此**单步 dt 是恒定值，不随负载变化**；负载自适应调整的是每 tick 的步数 `dynamicRepeat`（`PhysicsLevel.kt:185-203`）。`getTps()` 返回名义值 `baseStep * 20`，服务端为 100。
+**dt 的正确取法**：`1f / physicsLevel.getTps()`。`PhysicsLevel.stepPhysics()` 对每一步都传同一个 `fixedStep = 1f / tps` 给 `world.update(...)`（`PhysicsLevel.kt#stepPhysics`），因此**单步 dt 是恒定值，不随负载变化**；负载自适应调整的是每 tick 的步数 `dynamicRepeat`（`PhysicsLevel.kt#stepPhysics` 的负载自适应段）。`getTps()` 返回名义值 `baseStep * 20`，服务端为 100。
 
 ### 3.7 反馈回路与线程纪律
 
@@ -428,29 +428,29 @@ public void prePhysicsTick() {
 
 - 不在主线程直接操作物理体，一律经 `SparkLevel.getPhysicsLevel(level).submitImmediateTask(PPhase..., ...)`。
 - `SynchedEntityData` 的 `set` 只在主线程调用。
-- 主线程读取物理体状态存在良性竞态，`DestroyableRigidObject.postTick()`（`:41-59`）即建立在此前提上。
+- 主线程读取物理体状态存在良性竞态，`DestroyableRigidObject.postTick()`（`DestroyableRigidObject.java#postTick`）即建立在此前提上。
 
 ### 3.8 数学库
 
 物理侧使用 JME（`com.jme3.math.*`），渲染与同步数据使用 JOML（`org.joml.*`），跨界通过 `PhysicsHelperKt.toBVector3f(Vector3f)`（JOML → JME）与 `SparkMathKt.*` 转换。`EntityDataSerializers.VECTOR3` 的值类型是 JOML `Vector3f`。
 
-`MechaCharacter` 内部经 `getLinearVelocity(tmp)`（继承自 `PhysicsCharacter`）取得 JME `Vector3f`（`MechaCharacter.java:367` 等处）。
+`MechaCharacter` 内部经 `getLinearVelocity(tmp)`（继承自 `PhysicsCharacter`）取得 JME `Vector3f`（`MechaCharacter.java#updateWalk` 等处）。
 
 ### 3.9 事件与优先级
 
 | 事件 | 线程 | Machine-Max 采用的优先级 | 触发点 |
 |------|------|--------------------------|--------|
-| `LevelTickEvent.Pre` | 主线程 | `EventPriority.HIGHEST` | `ObjectManager.java:207` |
-| `LevelTickEvent.Post` | 主线程 | `EventPriority.NORMAL` | `ObjectManager.java:226` |
-| `PhysicsLevelTickEvent.Pre` | 物理线程 | 默认 | `ObjectManager.java:241` |
-| `PhysicsLevelTickEvent.Post` | 物理线程 | 默认 | `ObjectManager.java:257` |
+| `LevelTickEvent.Pre` | 主线程 | `EventPriority.HIGHEST` | `ObjectManager.java#onPreTick` |
+| `LevelTickEvent.Post` | 主线程 | `EventPriority.NORMAL` | `ObjectManager.java#onPostTick` |
+| `PhysicsLevelTickEvent.Pre` | 物理线程 | 默认 | `ObjectManager.java#onPrePhysicsTick` |
+| `PhysicsLevelTickEvent.Post` | 物理线程 | 默认 | `ObjectManager.java#onPostPhysicsTick` |
 
 本计划在两个相位各接一次：
 
 - **`PhysicsLevelTickEvent.Pre`**：按 Level 扇出 `ArmsCore.prePhysicsTick()`（D9）。
 - **`LevelTickEvent.Post`**：读快照 → 写 `syncedData` → 发包（D8）。与 `DestroyableObject.postTick()` → `syncToClient()` 的相位一致，优先级沿用 `EventPriority.NORMAL`。
 
-> 注意 Spark-Core 自身在 `LevelTickEvent.Pre`（`HIGH`）调 `physicsLevel.requestStep()`（`PhysicsLevelApplier.kt:60-66`）。本计划不在该相位做同步，避免与物理请求步进竞争。
+> 注意 Spark-Core 自身在 `LevelTickEvent.Pre`（`HIGH`）调 `physicsLevel.requestStep()`（`PhysicsLevelApplier.kt#mcLevelTask`）。本计划不在该相位做同步，避免与物理请求步进竞争。
 
 ### 3.10 KCC 线速度的单位约定
 
@@ -464,15 +464,15 @@ public void prePhysicsTick() {
 原生实现给出了原因。`getLinearVelocity()` 把两者拼接返回：
 
 ```cpp
-// ../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:673
+// ../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#getLinearVelocity
 btVector3 btKinematicCharacterController::getLinearVelocity() const
 {
     return m_walkDirection + (m_verticalVelocity * m_up);
 }
 ```
 
-- `m_walkDirection` 是**每步位移**：`playerStep` 直接把它当位移传给 `stepForwardAndStrafe`（`:799`），而 Java 侧 `getWalkDirection()` 的 javadoc 称其为 "the character's **walk offset**"（"an **offset** vector"）。
-- `m_verticalVelocity` 是**真正的速度**：按 `m_verticalVelocity -= m_gravity * dt` 积分（`:761`），随后 `m_verticalOffset = m_verticalVelocity * dt` 转成位移（`:770`），并被 `m_fallSpeed`（`:150` 注释写明 "Terminal velocity of a sky diver in m/s"）与 `m_jumpSpeed` 钳制。
+- `m_walkDirection` 是**每步位移**：`playerStep` 直接把它当位移传给 `stepForwardAndStrafe`（`btKinematicCharacterController.cpp#playerStep`），而 Java 侧 `getWalkDirection()` 的 javadoc 称其为 "the character's **walk offset**"（"an **offset** vector"）。
+- `m_verticalVelocity` 是**真正的速度**：按 `m_verticalVelocity -= m_gravity * dt` 积分（`btKinematicCharacterController.cpp#playerStep`），随后 `m_verticalOffset = m_verticalVelocity * dt` 转成位移（同处），并被 `m_fallSpeed`（`btKinematicCharacterController.cpp#btKinematicCharacterController` 构造器注释写明 "Terminal velocity of a sky diver in m/s"）与 `m_jumpSpeed` 钳制。
 
 该结论与调用方转换规则在 `docs/角色控制器-行走物理设计.md`：§10.3、§11 有逐行的源码证据。本节给出同步通道需要遵守的结论（下表），需要展开推导时按上述节号查阅：
 
@@ -503,14 +503,14 @@ btVector3 btKinematicCharacterController::getLinearVelocity() const
 | `eventBits` | `int` 位集 | 本包携带的事件类型集合，位序 = `MechaEvent.ordinal()`（当前 10 项，`int` 足够；超过 32 项时改 `long` 或 `int[]`） |
 | `jumpReleased` | `boolean` | 单帧边沿，与 `eventBits` 同属"发生过"语义，按同一序号机制投递 |
 
-**离散边沿必须带序号（D7）。** `jumpReleased` 与 `MechaEvent` 是单帧标记，`MechaControl` 在下一个物理步的第一时间就会 `getAndSet(空集)` 吃掉（`MechaControl.java:286`）。跨网络若只发一帧，丢包即永久丢失（`docs/下一步开发TODO.md:82`「明确跳跃按下、持续、松开三个信号的语义，保证松开边沿在物理线程消费前不会丢失」正是指这条）。实现方式二选一：
+**离散边沿必须带序号（D7）。** `jumpReleased` 与 `MechaEvent` 是单帧标记，`MechaControl` 在下一个物理步的第一时间就会 `getAndSet(空集)` 吃掉（`MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批））。跨网络若只发一帧，丢包即永久丢失（`docs/下一步开发TODO.md` §3.3「明确跳跃按下、持续、松开三个信号的语义，保证松开边沿在物理线程消费前不会丢失」正是指这条）。实现方式二选一：
 
 1. **事件序号 + 重发（推荐）**：客户端维护一个自增计数 `eventSeq` 与一组"未确认事件位" `eventBits`；只要 `eventBits` 非空，就**强制发包**，把同一 `eventSeq` 与同一 `eventBits` 连续带在**接下来 N 个上行包**里（建议 N = 3），之后才清空。服务端只在 `seq` 比它记录的更大时投递一次事件，因此重复包不会重复触发（幂等），而丢 1–2 个包也不会丢事件。事件停发后若再丢包才会丢失，此时表现为"这一次动作没生效"，与本地帧丢失的观感同级。注意重发窗口的单位是"包"而不是"tick"——否则"仅值变化时发包"会让窗口内根本没有包可带（见下）。
 2. **序号 + 显式确认**：服务端在收到并消费后回执 `lastConsumedSeq`，客户端据此缩短重发窗口。可省少量带宽，但引入一个反向包与状态机，本阶段不值得。
 
 **推荐方案 1**：`jumpReleased`、`TOGGLE_*`、`DODGE`、`STUN`、`MOUNT` / `DISMOUNT` 都是"发生过"语义，重复表达无害；方案 2 的回执通道等到上行带宽真正成为问题时再引入。
 
-**连续量可以丢。** `forward` / `strafe` / `viewYaw` / `keyFlags` 属于"最新值覆盖"语义，与现有 `conditionSnapshot` 的覆盖式写入完全一致，丢包只造成短暂迟滞。因此客户端**仅在值变化时发包**（参考 `MovementInputPayload` 的发送条件，`RawInputHandler.java:248-251`），另有两条强制发包条件：`eventBits` 非空（上述重发窗口），以及距上次发包超过 1 s 的心跳。心跳的目的不是补齐延迟，而是让服务端能区分"玩家没动"与"这个客户端的包断了"，从而在必要时按 §3.11 的控制权转移路径重置快照。
+**连续量可以丢。** `forward` / `strafe` / `viewYaw` / `keyFlags` 属于"最新值覆盖"语义，与现有 `conditionSnapshot` 的覆盖式写入完全一致，丢包只造成短暂迟滞。因此客户端**仅在值变化时发包**（参考 `MovementInputPayload` 的发送条件，`RawInputHandler.java#handleMoveInputs`），另有两条强制发包条件：`eventBits` 非空（上述重发窗口），以及距上次发包超过 1 s 的心跳。心跳的目的不是补齐延迟，而是让服务端能区分"玩家没动"与"这个客户端的包断了"，从而在必要时按 §3.11 的控制权转移路径重置快照。
 
 **服务端处理链。**
 
@@ -526,7 +526,7 @@ payload 到达（主线程，MainThreadPayloadHandler）
 **频率对齐。** 上行取自 20 Hz 客户端 tick，物理步为 100 Hz，两者不是固定 1:5 交替（物理线程独立推进，见 §3.9）。两点必须写成显式约定：
 
 - 连续量复用同一快照是正确的：物理线程只读 `volatile` 引用，快照被下一次上行覆盖不会破坏正在读取的对象。
-- **离散事件的"至多消费一次"由 `MechaControl` 的写入侧保证，不由频率保证**：事件经 `postEvent` 进入 `AtomicReference<Set<MechaEvent>>`，物理线程帧首 `getAndSet(空集)` 原子取走整批（`MechaControl.java:108-112`、`:286`），因此投递一次就只消费一次，与后面跟着几个物理步无关。需要上游避免的只是"把同一个事件投递多次"——这正是 `eventSeq` 幂等的职责（上述方案 1），而不是发包频率的职责。反过来，如果客户端按物理步（100 Hz）发包并每次都生成新 `seq`，同一按键边沿就会被判定为新事件并投递多次。
+- **离散事件的"至多消费一次"由 `MechaControl` 的写入侧保证，不由频率保证**：事件经 `postEvent` 进入 `AtomicReference<Set<MechaEvent>>`，物理线程帧首 `getAndSet(空集)` 原子取走整批（`MechaControl.java#pendingEventBuffer`、`#frameLogic`），因此投递一次就只消费一次，与后面跟着几个物理步无关。需要上游避免的只是"把同一个事件投递多次"——这正是 `eventSeq` 幂等的职责（上述方案 1），而不是发包频率的职责。反过来，如果客户端按物理步（100 Hz）发包并每次都生成新 `seq`，同一按键边沿就会被判定为新事件并投递多次。
 
 **控制权转移与断线。** 服务端必须在下列时机重置该 `ArmsCore` 的输入状态，否则状态机会卡在最后一帧（例如 `jumpHeld = true` 永久蓄力）：
 
@@ -553,21 +553,21 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
 #### 3.12.1 逻辑层产出到物理的落地
 
 本计划的阶段清单只覆盖「状态机怎么跑」与「状态怎么同步」，**不包含**「状态机的产出怎么变成物理效果」。
-这一层没有单独列项，实现它需要下面三项落地。注意 `MechaStateVariableKeys.java:29` 那句
+这一层没有单独列项，实现它需要下面三项落地。注意 `MechaStateVariableKeys.java` 类注释里那句
 「MOVE_SPEED_MODIFIER，KCC 直接读取」描述的是设计意图而不是现存事实：该变量被写入
-（`MechaStateActions.java:134`），`MechaCharacter` 本身并不读它，其行走参数取自
+（`MechaStateActions.java#gaitWithModifier`），`MechaCharacter` 本身并不读它，其行走参数取自
 `MechaWalkingAttr` / `MechaJumpAttr` 常量。因此在补齐下面三项之前，蹲伏、卧倒、闪避在物理上
 没有表现，只有状态机在变。三项的落地位置与判据如下。
 
 | 产出 | 落地位置 | 语义 | 验证方式 |
 |------|----------|------|----------|
-| 速度倍率 `MOVE_SPEED_MODIFIER`（= posture.speedModifier × gait.baseSpeedModifier） | `MechaControl.java:339` 读变量 → `MechaCharacter.java:330` 写入 → 在 `updateWalk` 里同时**折减力**（加速变慢）与**钳制稳态速率**（顶速变低，`MechaCharacter.java:629`） | 蹲伏 0.3、卧倒 0.1、闪避 0、硬直 0 | 站立与蹲伏各跑 40 tick，位移比 0.300，与 `Posture.CROUCH.speedModifier()` 一致 |
-| 闪避冲量 | `MechaControl.java:360` 在进入 dodge 的那一物理步调用 → `MechaCharacter.java:398` 记录方向/初速/时长 → `consumeDodgeSpeed`（`MechaCharacter.java:419`）在 `DODGE_DURATION` 内逐物理步叠加并按线性衰减 | 单次闪避位移 = 初速 × 时长 / 2 = 6 × 0.4 / 2 = 1.2 m；同时开启 0.4 s 无敌窗口（`MechaCharacter.java:437`） | 投递 `DODGE` 事件后水平位移 1.24 m（含衰减离散化误差） |
+| 速度倍率 `MOVE_SPEED_MODIFIER`（= posture.speedModifier × gait.baseSpeedModifier） | `MechaControl.java#applyLogicOutputToKcc` 读变量 → `MechaCharacter.java#setMoveSpeedModifier` 写入 → 在 `MechaCharacter.java#updateWalk` 里同时**折减力**（加速变慢）与**钳制稳态速率**（顶速变低，同处） | 蹲伏 0.3、卧倒 0.1、闪避 0、硬直 0 | 站立与蹲伏各跑 40 tick，位移比 0.300，与 `Posture.CROUCH.speedModifier()` 一致 |
+| 闪避冲量 | `MechaControl.java#applyLogicOutputToKcc` 在进入 dodge 的那一物理步调用 → `MechaCharacter.java#requestDodgeImpulse` 记录方向/初速/时长 → `MechaCharacter.java#consumeDodgeSpeed` 在 `DODGE_DURATION` 内逐物理步叠加并按线性衰减 | 单次闪避位移 = 初速 × 时长 / 2 = 6 × 0.4 / 2 = 1.2 m；同时开启 0.4 s 无敌窗口（`MechaCharacter.java#invulnerable`） | 投递 `DODGE` 事件后水平位移 1.24 m（含衰减离散化误差） |
 | 姿态轮廓（蹲伏 / 卧倒的胶囊尺寸） | **未落地**；原因与两条走不通的路径见 §3.12.2 | — | 无 |
 
 **只折减力是不够的。** 力-速曲线的均衡点几乎正好落在 `v_rated` 上，乘以倍率只是让**加速**变慢，
 最终仍会走到同一个顶速：实测蹲伏倍率 0.3 而稳态速率反而略高于站立。真正的「蹲着走得慢」必须是
-**速度上限**：`MechaCharacter.java:703` 的 `currentTargetSpeed` 解出倍率为 1.0 时的均衡速率
+**速度上限**：`MechaCharacter.java#currentTargetSpeed` 解出倍率为 1.0 时的均衡速率
 （含抓地力上限钳制），再乘以本帧倍率作为上限。
 
 **闪避冲量不能一次性注入速度。** `MechaCharacter.updateWalk` 每物理步重写速度矢量，一次性注入
@@ -582,7 +582,7 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
 > **should not be in any PhysicsSpace while changing shape**; the character gets
 > rebuilt on the physics side.
 >
-> —— `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:342-363`
+> —— `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape`
 
 方法体内还有 `assert !isInWorld()`。**在世的 KCC 上换形状会让进程以 `0xC0000409`
 （Windows STATUS_STACK_BUFFER_OVERRUN）中止** —— release JVM 不检查断言，原生侧挂接了一个
@@ -595,7 +595,7 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
    → 不中止，但幽灵体内部状态被重置（`onGround()` 失效、姿态回落到 `air`、位移读出 0），
    且仍会在后续换形状时中止。
 
-因此 `MechaCharacter.applyPostureShape`（`MechaCharacter.java:360`）是 `@Deprecated` 且恒返回
+因此 `MechaCharacter.applyPostureShape`（`MechaCharacter.java#applyPostureShape`）是 `@Deprecated` 且恒返回
 `false` 的记录，**调用方不得接入**；`MechaControl.applyLogicOutputToKcc` 的第 ② 步已注释掉。
 `MechaBodyPreset` 里的姿态几何（`CROUCH_HEIGHT` / `PRONE_HEIGHT` / `MIN_CAPSULE_HEIGHT` /
 `capsuleHeightFor` / `halfTotalFor` / `newCapsuleShape(Posture)`）已就位，供将来走通时直接使用；
@@ -614,10 +614,10 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | 环节 | 位置 | 事实 |
 |------|------|------|
-| 服务端读物理体并写入实体 | `SubPart.postTick()` → `SubPart.java:256-266` | 在主线程读 `PhysicsBodyExtensionKt.stateOf(body).getCachedBoundingBox()` 与 `getTransform().getTranslation()`，直接写 `entity.boundingBox.set(box)`、`entity.bodyCenter.set(center)`，**不经 `syncedData`** |
-| 客户端跟随 | `MMPartEntity.baseTick()` → `MMPartEntity.java:112-140` | 每 tick `this.setPos(SparkMathKt.toVec3(subPart.getPosition()))`，并从四元数提取 yaw/pitch 调 `setRot`，速度乘 `0.05f` 后写 `setDeltaMovement` |
-| 让原版别插手 | `MMPartEntity.java:631-634`、`:636-644`、`:143-146` | `move()` 空实现（"交由物理引擎处理"）、`setPos` 只透传、`shouldCreateDefaultPhysicsBody()` 返回 `false`（否则 Spark-Core 会给实体再挂一个运动学盒体） |
-| 服务端直接写实体位置 | `SubPart.setPosition()` → `SubPart.java:1048-1052` | `entity.setPos(...)` 受 `updateLock` 门控（§3.7） |
+| 服务端读物理体并写入实体 | `SubPart.postTick()` → `SubPart.java#postTick` | 在主线程读 `PhysicsBodyExtensionKt.stateOf(body).getCachedBoundingBox()` 与 `getTransform().getTranslation()`，直接写 `entity.boundingBox.set(box)`、`entity.bodyCenter.set(center)`，**不经 `syncedData`** |
+| 客户端跟随 | `MMPartEntity.baseTick()` → `MMPartEntity.java#baseTick` | 每 tick `this.setPos(SparkMathKt.toVec3(subPart.getPosition()))`，并从四元数提取 yaw/pitch 调 `setRot`，速度乘 `0.05f` 后写 `setDeltaMovement` |
+| 让原版别插手 | `MMPartEntity.java#move`、`#setPos`、`#shouldCreateDefaultPhysicsBody` | `move()` 空实现（"交由物理引擎处理"）、`setPos` 只透传、`shouldCreateDefaultPhysicsBody()` 返回 `false`（否则 Spark-Core 会给实体再挂一个运动学盒体） |
+| 服务端直接写实体位置 | `SubPart.setPosition()` → `SubPart.java#setPosition` | `entity.setPos(...)` 受 `updateLock` 门控（§3.7） |
 
 **关键差异**：`MMPartEntity` 是**真实体**，所以位姿传输完全由原版实体追踪（位移/传送包）承担，`DestroyableObject` 的 `DATA_POS_ID` 那条 `SynchedEntityData` 通道并不是它的位置传输路径。也就是说 SubPart 的方案是"物理体 → 代理实体 → 原版追踪"，而本计划是"物理体 → `synchedData` → 自建包"。
 
@@ -636,12 +636,12 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 量 | 含义 | 来源 |
 |----|------|------|
 | KCC 物理位置 | **胶囊几何中心**。Bullet 幽灵体的世界变换就是它 | `MechaCharacter.getPhysicsLocation(null)` |
-| 胶囊底面（脚底） | `pos.y - halfTotal`，`halfTotal = shape.getHeight()/2 + shape.getRadius()` | `ARMSClient.java:138` 已有该算式 |
-| 实体 `setPos` | 原版语义是**包围盒中心**（`MMPartEntity` 直接 `setPos(subPart.getPosition())`，而 `SubPart.getPosition()` 正是刚体中心） | `MMPartEntity.java:125` |
+| 胶囊底面（脚底） | `pos.y - halfTotal`，`halfTotal = shape.getHeight()/2 + shape.getRadius()` | `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 实现了该算式 |
+| 实体 `setPos` | 原版语义是**包围盒中心**（`MMPartEntity` 直接 `setPos(subPart.getPosition())`，而 `SubPart.getPosition()` 正是刚体中心） | `MMPartEntity.java#baseTick` |
 
 因此：
 
-- 服务端出生点由"目标脚底位置 + `halfTotal`"算出 KCC 位置，与 `ARMSClient.java:136-143` 现有写法一致；
+- 服务端出生点由"目标脚底位置 + `halfTotal`"算出 KCC 位置，与 `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 的写法一致；
 - 若阶段 4 改为写宿主实体，写的是包围盒中心 = KCC 位置（同一基准），**不**需要再加 `halfTotal`；若写的是实体脚底坐标（`Entity.position()` 的语义即脚底），则必须 `- halfTotal`。这一条要在阶段 4 明确到代码注释，避免差一个身高的经典错误。
 
 ---
@@ -652,12 +652,12 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 ### 阶段 0：前置修正（已完成）
 
-**先定一组临时胶囊参数并写在共享位置。** 当前仓库唯一的胶囊尺寸来源是 `ARMSClient.java:39-41` 的两个客户端常量（半径 `0.4f`、圆柱段高 `1.6f`，全高 = 圆柱段 + 2×半径 = `2.4f`）；`docs/角色控制器-行走物理设计.md` 的 §5.1「素体级参数表」不含胶囊尺寸与质量，也没有 `mech_chassis.json` 落地，因此这组值就是本阶段的**临时权威取值**，阶段 4.6 再由素体定义替换。取值集中到一处（`MechaCharacter` 或新的素体预设常量类），服务端出生点与客户端锚点共用同一组值与 `halfTotal = 全高/2`（§3.14）。
+**先定一组临时胶囊参数并写在共享位置。** 当前仓库唯一的胶囊尺寸来源是 `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT`（半径 `0.4f`、圆柱段高 `1.6f`，全高 = 圆柱段 + 2×半径 = `2.4f`）；`docs/角色控制器-行走物理设计.md` 的 §5.1「素体级参数表」不含胶囊尺寸与质量，也没有 `mech_chassis.json` 落地，因此这组值就是本阶段的**临时权威取值**，阶段 4.6 再由素体定义替换。服务端出生点与客户端锚点共用同一组值与 `halfTotal = 全高/2`（§3.14），转换算式在 `#capsuleCenterFromFeet`。
 
 | # | 任务 | 位置 | 完成判据 |
 |---|------|------|----------|
-| 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java:127` | 该字段由物理线程写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
-| 0.2 | 胶囊常量提到共享位置 | `ARMSClient.java:39-41` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
+| 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java#currentYaw` | 该字段由物理线程写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
+| 0.2 | 胶囊常量提到共享位置 | `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
 | 0.3 | 为 `ArmsCore` 增加最小构造参数、查询 API 与 KCC | `ArmsCore.java` 整体 | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；构造时以 `MechaBodyPreset` 的胶囊几何 + `SparkLevel.getPhysicsLevel(level).getWorld()` 创建 `MechaCharacter` 并交给 `MechaControl`；暴露 `getKcc()`；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
 
 客户端不持有 KCC，因此本阶段不包含客户端的控制器生命周期管理：KCC 的初始化、出生点与兜底逻辑都在服务端（阶段 1.5），客户端只维护按 `coreId` 索引的锚点，其生命周期跟随创建 / 移除包（阶段 1.12–1.14）。
@@ -676,22 +676,22 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | # | 交付物 | 说明 |
 |---|--------|------|
-| 1.1 | `LogicStateSnapshot`（不可变 record，**`MechaControl` 的嵌套类型**） | 五项状态（`posture` / `gait` / `vertical` / `energy` / `jumpCharging`）的跨线程出口，唯一消费者是阶段 1.15 的同步写包（§3.5）。嵌套在 `MechaControl` 内，与 `MechaConditionSnapshot` 同属"某一方的按帧状态副本"这一模式，不单独占一个公共协议类型；对应 `docs/下一步开发TODO.md:113` 的条目。它**不属于网络包**，因此不进 `common/net/` |
+| 1.1 | `LogicStateSnapshot`（不可变 record，**`MechaControl` 的嵌套类型**） | 五项状态（`posture` / `gait` / `vertical` / `energy` / `jumpCharging`）的跨线程出口，唯一消费者是阶段 1.15 的同步写包（§3.5）。嵌套在 `MechaControl` 内，与 `MechaConditionSnapshot` 同属"某一方的按帧状态副本"这一模式，不单独占一个公共协议类型；对应 `docs/下一步开发TODO.md` §4 的条目。它**不属于网络包**，因此不进 `common/net/` |
 | 1.2 | `MechaCharacter` 的只读出口 | `currentYaw` getter；`getPhysicsLocation` / `getLinearVelocity` 的使用约定（§3.5，注意 `getLinearVelocity(Vector3f)` 需传复用缓冲） |
 | 1.3 | `ArmsCore` 实现 `SyncedDataHolder` | 声明 §2.2 的 8 个 `private static final EntityDataAccessor`；构造器内 `new SynchedEntityData.Builder(this)` 并 `build()`（服务端与客户端共用同一构造路径，§3.2）；提供 `getSyncedData()` 供包处理器调用；实现两个 `onSyncedDataUpdated` 重载 |
 | 1.4 | `ArmsCore` 的 KCC 接线 | 阶段 0.3 已让 `ArmsCore(Level, UUID)` 构造 `MechaCharacter`（胶囊几何取自 `MechaBodyPreset`，物理空间取自 `SparkLevel.getPhysicsLevel(level).getWorld()`），无需再补构造；本项剩余的是把 `prePhysicsTick()` 接上 `mechaControl.onPhysicsStep(dt)` 与逻辑状态发布（1.7）。装配体成员（`partMap` / `getRootSubPart` / `getAttr`）按 D20 留空 |
-| 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `ARMSClient.java:136-152` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
+| 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
 | 1.6 | 唯一的物理步驱动 | `PhysicsLevelTickEvent.Pre` 订阅者按 Level 注册表扇出 `ArmsCore.prePhysicsTick()`（§3.6、D9） |
 | 1.7 | 物理线程发布逻辑状态 | 在阶段 1.6 的订阅者所触发的 `ArmsCore.prePhysicsTick()` 中，按 §3.6 伪代码的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回该不可变 record）。注意 §3.6 伪代码与本节任务号是两套编号：前者是 `prePhysicsTick()` 内部的 ①②③ 执行顺序，后者是阶段 1 的交付物清单 |
 | 1.8 | 客户端夹具退役 | 删除 `ARMSClient` 的 KCC / `MechaControl` 构造与物理步订阅；`ClientMechaTestRig` 整个删除。客户端不存在任何 `MechaCharacter` 实例 |
-| 1.9 | 载荷注册骨架 | 新建 `RegisterPayloadHandlersEvent` 订阅者（`ARMS.java` 当前只注册了一个配置，`:30-38`）。阶段 1 只注册 `playToClient` 三项 + `MainThreadPayloadHandler`；`playToServer` 方向留到阶段 2 一并注册（2.1） |
+| 1.9 | 载荷注册骨架 | 新建 `RegisterPayloadHandlersEvent` 订阅者（`ARMS.java#ARMS` 构造器当前只注册了一个配置）。阶段 1 只注册 `playToClient` 三项 + `MainThreadPayloadHandler`；`playToServer` 方向留到阶段 2 一并注册（2.1） |
 | 1.10 | `MechaCoreSyncPayload`（record，`network/payload/`） | `(UUID coreId, List<SynchedEntityData.DataValue<?>> dirty)`，载荷 id 见 §3.4；编解码按 §3.3 的 `255` 终结符写法 |
 | 1.11 | `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` | 字段见 §3.4；创建包携带 `getNonDefaultValues()`（D6）与 `hostEntityId`（阶段 1–3 恒为 `-1`） |
 | 1.12 | `MechaCoreRegistry`（`common/`） | `Map<Level, Map<UUID, ArmsCore>>`；`add` / `remove` / `get`；服务端注册时广播创建包，注销时广播移除包；维度卸载时清理。它是装配体注册表（同时被物理步扇出与同步写包读取），不是网络类型，因此与 Machine-Max 的 `ObjectManager`（`common/mech/ObjectManager.java`）同级放在 `common/` 下，不进 `network/` |
 | 1.13 | 客户端处理器 | 创建包：按 `coreId` 幂等构造 `ArmsCore`（客户端构造器不建 KCC）→ 注册 → `assignValues(initial)`；移除包：注销并清空锚点；增量包：`UUID` 不存在时丢弃并计数告警，不抛异常（§3.4） |
 | 1.14 | 登录 / 换维度 / 重连补发 | `PlayerEvent.PlayerLoggedInEvent` 遍历该维度注册表逐个补发创建包；客户端进入 `ClientLevel` 时清空本地注册表并按 §3.4 的时序重新获取 |
 | 1.15 | 主线程同步与发包 | `LevelTickEvent.Post` 订阅者遍历注册表：读 `logicState` 与 KCC 位姿 → `set` 8 项 → `packDirty()` → 非空则广播 `MechaCoreSyncPayload`（D8、§3.9） |
-| 1.16 | 客户端可视锚点 | 按 `DATA_POS` 摆放一个非实体锚点（调试用方块 / 线段 / 粒子），在相邻两采样间线性插值（D12、D18）；朝向在阶段 1–3 给固定值（§3.12）。`DestroyableObject.clientSyncPose()` + `getWorldPositionMatrix(partialTick)`（`:173-177`、`:315-317`）是同一形态的参考实现 |
+| 1.16 | 客户端可视锚点 | 按 `DATA_POS` 摆放一个非实体锚点（调试用方块 / 线段 / 粒子），在相邻两采样间线性插值（D12、D18）；朝向在阶段 1–3 给固定值（§3.12）。`DestroyableObject.clientSyncPose()` + `getWorldPositionMatrix(partialTick)`（`DestroyableObject.java#clientSyncPose`、`#getWorldPositionMatrix`）是同一形态的参考实现 |
 | 1.17 | 服务端调试输入源 | 命令 / 调试键在服务端直接 `writeConditionSnapshot` + `postEvent`，用于驱动状态机与跳跃，验证下行通道（§4 阶段 2 之前的唯一输入路径） |
 
 **验收**：
@@ -733,7 +733,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |---|------|------|
 | 3.1 | 静止零包的阈值门控（可选） | 若阶段 1 的带宽上界不可接受，按 §7 Q3 在主线程加位移 / 偏航阈值门控，把"静止零包"变为可达性质 |
 | 3.2 | 广播范围收窄 | 实例数量上升后由维度广播切换到 `sendToPlayersTrackingEntity`（R5） |
-| 3.3 | 插值质量 | 补齐 D12 的插值边界（首采样、跳跃式传送、长时间无包），参考 `DestroyableObject.lastSync`（`:41`、`:176`）与 `getWorldPositionMatrix`（`:315-317`）的既有处理 |
+| 3.3 | 插值质量 | 补齐 D12 的插值边界（首采样、跳跃式传送、长时间无包），参考 `DestroyableObject.lastSync`（`DestroyableObject.java#lastSync`）与 `DestroyableObject.java#getWorldPositionMatrix` 的既有处理 |
 
 **验收**：单机带宽可观测并稳定；传送 / 重连后锚点不出现跨越地图的插值拖尾。
 
@@ -741,10 +741,10 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 4.1 | 引入 `IArmsHost` | 宿主上下文接口：`getLevel()`、`getHostEntity()`、伤害转发。设计文档 `总体设计文档.md:27-59` 已给出原始设定；本仓库尚无任何实现 |
+| 4.1 | 引入 `IArmsHost` | 宿主上下文接口：`getLevel()`、`getHostEntity()`、伤害转发。设计文档 `docs/总体设计文档.md` §2.1 已给出原始设定；本仓库尚无任何实现 |
 | 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标 |
 | 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 16 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `jumpReleased` / `sprintPressed` / `walkKeyPressed`）、视角（`viewYaw` / `viewPitch`）、环境（`sneaking` / `inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
-| 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java:99-112`、`:207-214`） |
+| 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java#pendingEventBuffer`、`#postEvent`） |
 | 4.5 | `rootSubPart` 与 `Part` 装配接入 | 补 `getRootSubPart()`；接 `ArmsCore.prePhysicsTick()` 第 ① 步（§3.6）；同时启用 `extractAnimRootDelta()` 的真实实现，`DATA_YAW` 从本阶段起才有验收意义（§3.12） |
 | 4.6 | `mech_chassis.json` / `MechAttr` | 落地素体定义与 `getAttr()`，替换阶段 0 定义的临时胶囊参数（该组值同时需要补进 `docs/角色控制器-行走物理设计.md` 的 §5.1 参数表）；回归一次手感 |
 | 4.7 | 位姿权威迁移（可选） | 按 §3.13 的迁移路径，把位置传输交给宿主 / 代理实体，`DATA_POS` 降级为对账通道 |
@@ -762,7 +762,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | R3 | 服务端读取物理体与物理线程写入形成反馈回路 | 引入与 `updateLock` 等价的锁，主线程写 `syncedData` 期间不推回 KCC；`onSyncedDataUpdated` 在服务端不应用位姿（§3.7） |
 | R4 | 主线程从物理体读到的位姿处于物理步中途 | 与 `DestroyableRigidObject.postTick()` 同等接受该竞态；同步结果是"最近一次物理步的近似采样"，由阶段 3.3 的插值吸收 |
 | R5 | 维度广播在实例数量上升后带宽增长 | 承载实体存在时使用 `sendToPlayersTrackingEntity`；阶段 3.2 |
-| R6 | 物理线程每步分配 `LogicStateSnapshot` 的 GC 压力 | 按 `docs/下一步开发TODO.md:127-143` 的既有决策先使用不可变对象；若 JFR 证明是热点，再切换到"主线程置位同步请求、物理线程仅在请求时分配"的门控 |
+| R6 | 物理线程每步分配 `LogicStateSnapshot` 的 GC 压力 | 按 `docs/下一步开发TODO.md` §5.2 的既有决策先使用不可变对象；若 JFR 证明是热点，再切换到"主线程置位同步请求、物理线程仅在请求时分配"的门控 |
 | R7 | 服务端物理步与其他装配体共享 45 ms 预算，负载过高时 `dynamicRepeat` 会下调，仿真时间相对墙钟变慢（每 tick 实际推进秒数减少） | 单步 dt 恒为 `1f / tps`（§3.6），状态机的时长条件（`STUN_DURATION` / `DODGE_DURATION` / `HARD_LAND_DURATION` / `T_CHARGE`）按 dt 累加即可，无需为降频做补偿；受影响的是手感与仿真速率本身，属于玩法调参 |
 | R8 | `DATA_YAW` 与躯干朝向被当成同一个量 | 二者解耦（§1.1、D16、D17）：渲染机体的仍是 SubPart 姿态，而"角色朝哪"是 KCC 侧的绝对 Y 朝向。躯干是受约束牵引的下游量，RAGDOLL 时二者完全独立 |
 | R9 | 客户端在创建包到达前收到增量包 | 服务端同 tick 内先创建后增量；客户端对未知 `coreId` 丢弃并计数，不抛异常（§3.4） |
@@ -776,9 +776,9 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 以下内容不在本期范围内：
 
-- **位姿外推**。客户端在相邻采样之间线性插值（D12）。`DestroyableObject` 的 `lastSync` 字段（`:41`、`:176`）记录了同步时刻，而其 `getWorldPositionMatrix`（`:315-317`）只做 `lerp`；本计划不补齐外推。
+- **位姿外推**。客户端在相邻采样之间线性插值（D12）。`DestroyableObject` 的 `DestroyableObject.java#lastSync` 字段记录了同步时刻，而其 `DestroyableObject.java#getWorldPositionMatrix` 只做 `lerp`；本计划不补齐外推。
 - **客户端预测与回滚**。在 KCC 力学模型与权威归属稳定后另行评估。
-- **显示实体本身**。宿主实体、渲染器、骑乘挂点、乘客装配属于另一条工作线；本计划只要求通道对宿主形态不敏感。该线的已知约束：Spark-Core 的 `CollisionFuncApplier` 为每个加入世界的实体自动创建一个名为 `body` 的运动学盒体，实体侧可用 `PhysicsHost.shouldCreateDefaultPhysicsBody()` 返回 `false` 关闭（`MMPartEntity.java:143-146` 即此用法）；由 KCC 驱动位姿的显示实体需要关闭它，否则物理空间中会多出一个不参与模拟的盒子。
+- **显示实体本身**。宿主实体、渲染器、骑乘挂点、乘客装配属于另一条工作线；本计划只要求通道对宿主形态不敏感。该线的已知约束：Spark-Core 的 `CollisionFuncApplier` 为每个加入世界的实体自动创建一个名为 `body` 的运动学盒体，实体侧可用 `PhysicsHost.shouldCreateDefaultPhysicsBody()` 返回 `false` 关闭（`MMPartEntity.java#shouldCreateDefaultPhysicsBody` 即此用法）；由 KCC 驱动位姿的显示实体需要关闭它，否则物理空间中会多出一个不参与模拟的盒子。
 - **客户端为 `ArmsCore` 重建物理体**。D18 明确排除。
 - **SubPart 的物理与渲染**。SubPart 的姿态由 Machine-Max 现有的 `DestroyableObject` / `SubPartSyncPayload` 通道承载，本计划不触碰；阶段 4 的 `rootSubPart` 只接入 KCC 耦合与动画根位移，不含 SubPart 自身的同步。
 - **`MechControllerSubsystem`**。它是"可驾驶机甲"产品线的宿主实现，与本计划的通道设计正交。
@@ -794,7 +794,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | Q3 | `DATA_POS` / `DATA_VEL` / `DATA_YAW` 是否加"值变化阈值门控"以实现静止零包 | 决定阶段 1 的验收是"带宽上界"还是"静止零包"（§3.3、阶段 3.1）。加门控会引入少量位姿量化误差 |
 | Q4 | 上行包在控制权转移的瞬间是否需要显式的 `stopInput` 包 | 当前设计由服务端在断线 / 失控时主动重置（R11），但"仍在连接、只是不再控制"的路径依赖服务端能及时察觉控制权变更 |
 | Q5 | 宿主实体（阶段 4）用玩家实体本身、Doll 实体，还是为装配体单开一个代理实体承担位置传输 | 决定 §3.13 的迁移路径与 `DATA_POS` 的最终定位；也决定 `PhysicsHost.shouldCreateDefaultPhysicsBody()` 的返回方 |
-| Q6 | `ArmsCore` 的持久化边界 | `总体设计文档.md:82` 说"由宿主 NBT + Capability 序列化"，但阶段 1–3 的 `ArmsCore` 只有 KCC 与状态机，没有可持久化内容。是否需要在本计划内定义最小存档形态（至少保证重启后 `coreId` 与位置可恢复） |
+| Q6 | `ArmsCore` 的持久化边界 | `docs/总体设计文档.md` §2.1 说"由宿主 NBT + Capability 序列化"，但阶段 1–3 的 `ArmsCore` 只有 KCC 与状态机，没有可持久化内容。是否需要在本计划内定义最小存档形态（至少保证重启后 `coreId` 与位置可恢复） |
 
 ---
 
@@ -802,74 +802,74 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 ### 本仓库
 
-本节记录把本计划落到代码之后，各结论对应的坐标。符号名与「文件:行」并存：文件与行号会随代码编辑漂移，符号名可作为失效后的重新定位入口。
+本节记录各结论对应的坐标，一律是「路径#符号」——在目标文件里检索该符号即可定位。行号只在形态快照里出现，且必定带 `@ 提交`（见 §1.2）；活引用不写行号。
 
 | 结论 | 位置 |
 |------|------|
-| `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java:62`（类声明）、`:74`（`DATA_POS`）、`:102`（`DATA_JUMP_CHARGING`）、`:221`（`newClientInstance`）、`:308`（`prePhysicsTick`）、`:338`（`enterPhysicsSpace`）、`:355`（`applyDriftFallback`） |
-| 逻辑状态跨线程出口 | `common/control/MechaControl.java:567`（`LogicStateSnapshot`）、`:584`（`snapshotLogicState`） |
-| 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java:339`（`applyLogicOutputToKcc`）、`:642`（`getMoveSpeedModifier`）、`:375`（`resolveDodgeDirection`）；`common/control/MechaCharacter.java:330`（`setMoveSpeedModifier`）、`:398`（`requestDodgeImpulse`）、`:419`（`consumeDodgeSpeed`）、`:629`（速度上限）、`:703`（`currentTargetSpeed`） |
-| 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java:41`、`:54`、`:62`、`:107`、`:126`、`:139` |
-| 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:342-363` |
+| `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_JUMP_CHARGING`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace`、`#applyDriftFallback` |
+| 逻辑状态跨线程出口 | `common/control/MechaControl.java#LogicStateSnapshot`、`#snapshotLogicState` |
+| 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#requestDodgeImpulse`、`#consumeDodgeSpeed`、`#updateWalk`（稳态速率上限那段）、`#currentTargetSpeed` |
+| 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_CAPSULE_HEIGHT`、`#capsuleHeightFor`、`#halfTotalFor`、`#newCapsuleShape` |
+| 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape` |
 | 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |
-| 装配体注册表 | `common/MechaCoreRegistry.java:120`（`addServer`）、`:171`（`onLevelUnload`）、`:222`（`sendAllTo`） |
-| 上行输入服务端处理链 | `common/MechaInputHandler.java:56`（`setController`）、`:70`（`releaseController`）、`:113`（`apply`） |
-| 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java:65`（`onPrePhysicsTick`）、`:96`（`syncToClients`）、`:147`（`onPlayerJoinLevel`） |
-| 载荷注册与协议版本 | `network/ARMSNetwork.java:30`（`PROTOCOL_VERSION`）、`:37`/`:41`/`:45`（`playToClient`）、`:52`（`playToServer`） |
-| 客户端输入采集与重发窗口 | `client/ARMSClient.java:50`（`RESEND_WINDOW`）、`:92`（`onClientTick`）、`:222`（`queueEvent`） |
-| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java:64`（`accept`）、`:113`（`lerpPosition`）；`client/MechaAnimatable.java:119`（`clientTick`）、`:219`（`getWorldPositionMatrix`）；`client/MechaModelRenderer.java:90`（`onClientTick` 采样）、`:113`（`onRenderLevelStage` 渲染） |
+| 装配体注册表 | `common/MechaCoreRegistry.java#addServer`、`#onLevelUnload`、`#sendAllTo` |
+| 上行输入服务端处理链 | `common/MechaInputHandler.java#setController`、`#releaseController`、`#apply` |
+| 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java#onPrePhysicsTick`、`#syncToClients`、`#onPlayerJoinLevel` |
+| 载荷注册与协议版本 | `network/ARMSNetwork.java#PROTOCOL_VERSION`、`#register`（三处 `playToClient`、一处 `playToServer`） |
+| 客户端输入采集与重发窗口 | `client/ARMSClient.java#RESEND_WINDOW`、`#onClientTick`、`#queueEvent` |
+| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java#accept`、`#lerpPosition`；`client/MechaAnimatable.java#clientTick`、`#getWorldPositionMatrix`；`client/MechaModelRenderer.java#onClientTick`（采样）、`#onRenderLevelStage`（渲染） |
 | 调试命令 | `common/command/ArmsCoreDebugCommand.java` |
-| `onPhysicsStep` 顺序 | `common/control/MechaControl.java:257-274` |
-| 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java:286` |
-| 状态机输入来源 | `common/control/MechaControl.java:305-333` |
-| `ENERGY` 定义与初值（快照字段来源） | `common/control/MechaControl.java:63`、`:180`；`common/control/MechaControl.java:501-503`（posture/gait/vertical 的读取形态） |
-| 事件闩锁 | `common/control/MechaControl.java:99-112`、`:207-214` |
-| `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java:54`、`:62`、`ArmsCore.java`（返回 `null` 的存根） |
-| `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java:126-127`、`:234-245`、`:294`、`:298-302`、`:420-424` |
-| 输入方向的双重旋转（`viewYaw` 与 `currentYaw`） | `common/control/MechaControl.java:402-411`、`common/control/MechaCharacter.java:420-424` |
-| 分离距离是一等量 | `common/control/MechaCharacter.java:110`、`:255-257`、`:410-412` |
-| 快照模式与跨线程决策 | `common/control/MechaConditionSnapshot.java:24-57`；`docs/下一步开发TODO.md:113`、`:127-143` |
-| 单帧边沿不得丢失（TODO 条目） | `docs/下一步开发TODO.md:82` |
-| `vertical` 子机条件 | `common/control/state/preset/VerticalSubGraphs.java:69-81` |
+| `onPhysicsStep` 顺序 | `common/control/MechaControl.java#onPhysicsStep` |
+| 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批） |
+| 状态机输入来源 | `common/control/MechaControl.java#writeStateInputs` |
+| `ENERGY` 定义与初值（快照字段来源） | `common/control/MechaControl.java#INITIAL_ENERGY`、`#MechaControl`（构造器初值）；`#logStateChanges`（posture/gait/vertical 的读取形态） |
+| 事件闩锁 | `common/control/MechaControl.java#pendingEventBuffer`、`#postEvent` |
+| `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java#getRootSubPart`、`#getAttr`、`ArmsCore.java`（返回 `null` 的存根） |
+| `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java#currentYaw`、`#animRootYawDelta`、`#applyAnimRootYaw`、`#updateWalk` |
+| 输入方向的双重旋转（`viewYaw` 与 `currentYaw`） | `common/control/MechaControl.java#applyMoveInput`、`common/control/MechaCharacter.java#updateWalk` |
+| 分离距离是一等量 | `common/control/MechaCharacter.java#separationDistance`、`#updateWalk`（`sepFactor` 折减） |
+| 快照模式与跨线程决策 | `common/control/MechaConditionSnapshot.java#MechaConditionSnapshot`；`docs/下一步开发TODO.md` §4、§5.2 |
+| 单帧边沿不得丢失（TODO 条目） | `docs/下一步开发TODO.md` §3.3 |
+| `vertical` 子机条件 | `common/control/state/preset/VerticalSubGraphs.java#buildStandVert` |
 | 位置与朝向的解耦、各状态的约束设置 | `docs/角色控制器-行走物理设计.md`：§1.2、§2.1、§2.3、§2.4 |
 | KCC 线速度的单位语义（含逐行源码证据与调用方转换规则） | `docs/角色控制器-行走物理设计.md`：§10.3、§11 |
 | 控制器跨线程字段清单 | `docs/角色控制器-行走物理设计.md`：§10.1 |
-| 胶囊尺寸的唯一来源 | `common/control/attr/MechaBodyPreset.java:27-33` |
-| `ArmsCore` 不注册为世界实体、由宿主序列化 | `docs/总体设计文档.md:82` |
-| 宿主输入路径（玩家按键 → 网络包 → `IArmsHost`） | `docs/总体设计文档.md:209-232`、`:304-339` |
-| 客户端渲染遍历 `SubPart.body` | `docs/总体设计文档.md:106-119` |
-| 载荷注册的现状 | `ARMS.java:30-38`（只注册配置）；四个载荷在 `network/ARMSNetwork.java:37-56` 注册 |
+| 胶囊尺寸的唯一来源 | `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT` |
+| `ArmsCore` 不注册为世界实体、由宿主序列化 | `docs/总体设计文档.md` §2.1 |
+| 宿主输入路径（玩家按键 → 网络包 → `IArmsHost`） | `docs/总体设计文档.md` §2.4.5、§3.2 |
+| 客户端渲染遍历 `SubPart.body` | `docs/总体设计文档.md` §2.3 |
+| 载荷注册的现状 | `ARMS.java#ARMS`（构造器，只注册配置）；四个载荷在 `network/ARMSNetwork.java#register` 注册 |
 
 ### `../Spark-Core`
 
 | 结论 | 位置 |
 |------|------|
-| 双端物理世界与速率 | `physics/level/PhysicsLevelApplier.kt:30`、`ClientPhysicsLevelApplier.kt:21`、`PhysicsLevel.kt:62` |
-| 步数负载自适应 | `physics/level/PhysicsLevel.kt:146-209` |
-| 服务端物理步请求点（`LevelTickEvent.Pre`，`HIGH`） | `physics/level/PhysicsLevelApplier.kt:60-66` |
-| 物理世界初始化时机与完成事件（构造前置依据） | `physics/level/PhysicsLevelApplier.kt:30-36`、`PhysicsLevel.kt:114`、`:312-329`；`api/SparkLevel.java:45-46` |
-| 物理线程发布点 | `physics/level/PhysicsLevel.kt:391-412` |
-| 两端实体集合差异 | `physics/level/ServerPhysicsLevel.kt:12-14`、`ClientPhysicsLevel.kt:14-23` |
-| 每个实体自动获得运动学盒体 | `mixin/extension/EntityMixin.java`、`EntityPatch.java:21`、`physics/body/CollisionFuncApplier.kt:20-59`、`physics/PhysicsHost.kt:60` |
+| 双端物理世界与速率 | `physics/level/PhysicsLevelApplier.kt#load`（服务端构造调用）、`ClientPhysicsLevelApplier.kt#load`（客户端构造调用）、`PhysicsLevel.kt#tps` |
+| 步数负载自适应 | `physics/level/PhysicsLevel.kt#stepPhysics` |
+| 服务端物理步请求点（`LevelTickEvent.Pre`，`HIGH`） | `physics/level/PhysicsLevelApplier.kt#mcLevelTask` |
+| 物理世界初始化时机与完成事件（构造前置依据） | `physics/level/PhysicsLevelApplier.kt#load`（`start {}` 与完成事件）、`PhysicsLevel.kt#world`、`#start`；`api/SparkLevel.java#getPhysicsLevel` |
+| 物理线程发布点 | `physics/level/PhysicsLevel.kt#prePhysicsTick`、`#physicsTick` |
+| 两端实体集合差异 | `physics/level/ServerPhysicsLevel.kt#requestEntities`、`ClientPhysicsLevel.kt#requestEntities` |
+| 每个实体自动获得运动学盒体 | `mixin/extension/EntityMixin.java`、`EntityPatch.java`（接口声明）、`physics/body/CollisionFuncApplier.kt#addBodyForEntity`、`physics/PhysicsHost.kt#shouldCreateDefaultPhysicsBody` |
 
 ### `../Machine-Max`
 
 | 结论 | 位置 |
 |------|------|
-| `SynchedEntityData` 用于非实体类 | `common/mech/DestroyableObject.java:33`、`:42-52`、`:54`、`:60-72` |
-| 增量发包 | `common/mech/DestroyableObject.java:163-171` |
-| 客户端应用钩子 | `common/mech/DestroyableObject.java:184-197` |
-| 插值与其边界 | `common/mech/DestroyableObject.java:173-177`、`:315-317` |
-| 反馈回路锁 | `common/mech/DestroyableRigidObject.java:29`、`:34`、`:41-59`、`:107`、`:118`、`:129`、`:140` |
-| 客户端运动学代理体 | `common/mech/DestroyableRigidObject.java:37`、`:62-68` |
-| 增量包编解码 | `network/payload/SubPartSyncPayload.java:23-43`、`:50-56` |
-| 创建 / 移除 / 登录补发 / 换维度请求 | `common/mech/ObjectManager.java:94-108`、`:134-145`、`:296-306`、`:387-390`；`network/payload/assembly/VehicleCreatePayload.java:37-41` |
-| 上行输入的发送条件 | `client/input/RawInputHandler.java:248-251`；`network/payload/MovementInputPayload.java:33-50`、`:64-73` |
-| 两套注册表 | `common/mech/ObjectManager.java:45-46` |
-| tick 与物理步扇出 | `common/mech/ObjectManager.java:207`、`:226`、`:241`、`:257` |
-| 整数 id 的创建包交接 | `common/mech/vehicle/Part.java:194` |
-| 装配体自驱动 `Part` 动画 | `common/mech/vehicle/VehicleCore.java:413-419` |
-| 位姿回写的两段式实现（物理体 → 实体 → 原版追踪） | `common/mech/vehicle/SubPart.java:245-268`、`:1048-1052`；`common/entity/MMPartEntity.java:92-100`、`:112-140`、`:143-146`、`:631-644` |
+| `SynchedEntityData` 用于非实体类 | `common/mech/DestroyableObject.java#DestroyableObject`（类声明）、`#DATA_POS_ID`（accessor 表）、`#syncedData`、`#DestroyableObject`（构造器） |
+| 增量发包 | `common/mech/DestroyableObject.java#syncToClient` |
+| 客户端应用钩子 | `common/mech/DestroyableObject.java#onSyncedDataUpdated` |
+| 插值与其边界 | `common/mech/DestroyableObject.java#clientSyncPose`、`#getWorldPositionMatrix` |
+| 反馈回路锁 | `common/mech/DestroyableRigidObject.java#updateLock`、`#DestroyableRigidObject`（构造器）、`#postTick`、`#setPosition`、`#setRotation`、`#setLinearVelocity`、`#setAngularVelocity` |
+| 客户端运动学代理体 | `common/mech/DestroyableRigidObject.java#DestroyableRigidObject`（构造器里 `body.setKinematic(true)`）、`#prePhysicsTick` |
+| 增量包编解码 | `network/payload/SubPartSyncPayload.java#STREAM_CODEC`、`#handler` |
+| 创建 / 移除 / 登录补发 / 换维度请求 | `common/mech/ObjectManager.java#addVehicle`、`#removeVehicle`、`#transmitVehicleData`、`#loadVehicleData`；`network/payload/assembly/VehicleCreatePayload.java#handle` |
+| 上行输入的发送条件 | `client/input/RawInputHandler.java#handleMoveInputs`；`network/payload/MovementInputPayload.java#STREAM_CODEC`、`#serverHandler` |
+| 两套注册表 | `common/mech/ObjectManager.java#levelVehicles`、`#levelDestroyableObjects` |
+| tick 与物理步扇出 | `common/mech/ObjectManager.java#onPreTick`、`#onPostTick`、`#onPrePhysicsTick`、`#onPostPhysicsTick` |
+| 整数 id 的创建包交接 | `common/mech/vehicle/Part.java#Part`（构造器里按客户端接收 id） |
+| 装配体自驱动 `Part` 动画 | `common/mech/vehicle/VehicleCore.java#prePhysicsTick` |
+| 位姿回写的两段式实现（物理体 → 实体 → 原版追踪） | `common/mech/vehicle/SubPart.java#preTick`、`#postTick`、`#setPosition`；`common/entity/MMPartEntity.java#MMPartEntity`（构造器）、`#baseTick`、`#shouldCreateDefaultPhysicsBody`、`#move`、`#setPos` |
 
 ### Minecraft 1.21.1
 
@@ -886,7 +886,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 全量非默认值（创建包用） | `SynchedEntityData.getNonDefaultValues()` |
 | 客户端应用 | `SynchedEntityData.assignValues(List<DataValue<?>>)` |
 | `setValue` 不做防御性拷贝 | `SynchedEntityData.DataItem.setValue` |
-| 自动环绕的度制旋转、逐分量 `equals` | `EntityDataSerializers.ROTATIONS`、`net.minecraft.core.Rotations.java:25-46` |
+| 自动环绕的度制旋转、逐分量 `equals` | `EntityDataSerializers.ROTATIONS`、`net.minecraft.core.Rotations#Rotations`（`% 360` 环绕）、`net.minecraft.core.Rotations#equals` |
 | 骑乘输入上行（阶段 4 的玩家宿主） | `ServerboundPlayerInputPacket`、`ServerboundMoveVehiclePacket`、`PlayerRideableJumping.handleStartJump` |
 | 骑乘与乘客 API | `Entity.getControllingPassenger()`、`Entity.isControlledByLocalInstance()`、`LivingEntity.travelRidden` |
 
@@ -896,16 +896,16 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | 结论 | 位置 |
 |------|------|
-| KCC 水平/垂直分量单位不同（javadoc 明示） | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:203-215` |
-| `getWalkDirection()` 的描述是 "walk offset" | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:261-270` |
-| `warp` 接口 | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java:542` |
-| `getPhysicsLocation(storeResult)`（传 `null` 返回新向量） | `src/main/java/com/jme3/bullet/collision/PhysicsCollisionObject.java:563` |
-| 返回值 = `m_walkDirection` + `m_verticalVelocity * m_up` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:673` |
-| `setLinearVelocity` 把沿 `up` 的分量拆进 `m_verticalVelocity` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:644-658` |
-| 垂直分量按速度积分（`-= m_gravity * dt`），再转位移（`m_verticalOffset = m_verticalVelocity * dt`） | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:761`、`:770` |
-| `m_fallSpeed` 单位为 m/s（注释 "Terminal velocity of a sky diver in m/s"） | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:150` |
-| `m_walkDirection` 作为位移传给 `stepForwardAndStrafe` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:799` |
-| 幽灵体世界变换在 `playerStep` 末尾写入一次 | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp:836-837` |
+| KCC 水平/垂直分量单位不同（javadoc 明示） | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#getLinearVelocity` |
+| `getWalkDirection()` 的描述是 "walk offset" | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#getWalkDirection` |
+| `warp` 接口 | `src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#warp` |
+| `getPhysicsLocation(storeResult)`（传 `null` 返回新向量） | `src/main/java/com/jme3/bullet/collision/PhysicsCollisionObject.java#getPhysicsLocation` |
+| 返回值 = `m_walkDirection` + `m_verticalVelocity * m_up` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#getLinearVelocity` |
+| `setLinearVelocity` 把沿 `up` 的分量拆进 `m_verticalVelocity` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#setLinearVelocity` |
+| 垂直分量按速度积分（`-= m_gravity * dt`），再转位移（`m_verticalOffset = m_verticalVelocity * dt`） | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#playerStep`（两处） |
+| `m_fallSpeed` 单位为 m/s（注释 "Terminal velocity of a sky diver in m/s"） | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#btKinematicCharacterController`（构造器里的 `m_fallSpeed` 注释） |
+| `m_walkDirection` 作为位移传给 `stepForwardAndStrafe` | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#playerStep` |
+| 幽灵体世界变换在 `playerStep` 末尾写入一次 | `src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#playerStep`（末尾） |
 
 ---
 
@@ -923,7 +923,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 早期阶段划分把"建立并验证同步通道"与"服务端权威接线"分成两阶段，阶段 1 计划在服务端创建一个只写合成快照、不构造 KCC 的 `ArmsCore`。
 
-取代原因：`MechaControl.onPhysicsStep()` 进入 `writeStateInputs` 后立即调用 `kcc.onGround()`（`MechaControl.java:320`），`kcc == null` 时抛 `NullPointerException`（§1.2）。现行设计把真实 KCC 的构造放在阶段 1.4，阶段 1 交付完整闭环。
+取代原因：`MechaControl.onPhysicsStep()` 进入 `writeStateInputs` 后立即调用 `kcc.onGround()`（`MechaControl.java#writeStateInputs`），`kcc == null` 时抛 `NullPointerException`（§1.2）。现行设计把真实 KCC 的构造放在阶段 1.4，阶段 1 交付完整闭环。
 
 ### A.3 "静止时不产生任何包"作为验收判据
 

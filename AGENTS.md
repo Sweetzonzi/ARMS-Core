@@ -5,7 +5,7 @@
 
 ## 环境约束
 
-- **Java 21**：`build.gradle:15` 与 `src/main/resources/arms_core.mixins.json` 均要求 `JAVA_21`。
+- **Java 21**：`build.gradle` 的 `java.toolchain.languageVersion` 与 `src/main/resources/arms_core.mixins.json` 均要求 `JAVA_21`。
 - **Gradle 8.8**：使用仓库自带 `gradlew` / `gradlew.bat`；Windows 下用 `gradlew` 而非 `gradle`。
 - **Minecraft / NeoForge**：`minecraft_version=1.21.1`，`neo_version=21.1.219`（见 `gradle.properties`）。
 - **模组 ID**：`arms_core`；入口类 `io.github.sweetzonzi.arms_core.ARMS`。
@@ -35,7 +35,7 @@
 .\gradlew clean
 ```
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle:21-27`）。
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
 ## 复合构建依赖（极易踩坑）
@@ -54,8 +54,8 @@
 
 ## 构建与资源生成
 
-- `src/main/templates/META-INF/neoforge.mods.toml` 中的 `${...}` 占位符由 `generateModMetadata` 任务在构建时替换（属性列表在 `build.gradle:103-116`）。
-- `src/main/resources` 与 `build/generated/sources/modMetadata` 共同打包；数据生成输出目录 `src/generated/resources` 也被包含进资源集（`build.gradle:93`）。
+- `src/main/templates/META-INF/neoforge.mods.toml` 中的 `${...}` 占位符由 `generateModMetadata` 任务在构建时替换（属性列表是 `generateModMetadata` 任务里的 `replaceProperties` 映射）。
+- `src/main/resources` 与 `build/generated/sources/modMetadata` 共同打包；数据生成输出目录 `src/generated/resources` 也被包含进资源集（`build.gradle` 的 `sourceSets.main.resources`）。
 - 新增资源后若 IDEA 没识别，运行 `gradlew neoForgeIdeSync` 或 `gradlew generateModMetadata`。
 
 ## 代码架构要点
@@ -90,7 +90,7 @@
 
 - 使用 **Lombok**：`@Getter` / `@Setter` 注解已启用，主源码集与测试源码集各声明一次（`repositories.gradle:127-133`）。字段上的 `@NotNull` / `@Nullable`（JetBrains）会被 Lombok 拷到生成的 getter 上，因此接口的返回值可空性靠字段注解维持。
 - 使用 **Mixin**（`arms_core.mixins.json`），但当前 `mixins` / `client` 数组为空；新增 Mixin 需同步写入该文件。
-- 编码统一为 UTF-8（`build.gradle:18`）。
+- 编码统一为 UTF-8（`build.gradle` 的 `options.encoding` 与 `ProcessResources.filteringCharset`）。
 - 包结构：`io.github.sweetzonzi.arms_core.*`，与 `mod_group_id` 一致。
 
 ## 文档编辑规范
@@ -101,7 +101,7 @@
 
 **要求只有两条。**
 
-1. **对外部依赖：可以读别的文档，但必须交叉引用。** 本文档的结论、判据、字段含义写在自己文内；引用别的文档或源码时给出可定位的坐标（`docs/X.md` 的节号、`../Spark-Core/.../PhysicsLevel.kt:62`）。允许把支撑论述留在外部——读者顺着引用去读即可，但不给引用就引用，等于要求读者自己猜，属于违规。
+1. **对外部依赖：可以读别的文档，但必须交叉引用。** 本文档的结论、判据、字段含义写在自己文内；引用别的文档或源码时给出可定位的坐标，分两种：**活引用**（指向当前代码）写「路径#符号」，符号取可唯一检索的声明名——`docs/X.md` 的节号、`../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/PhysicsLevel.kt#stepPhysics`、`common/control/MechaControl.java#frameLogic`；**历史快照**（指向某一版形态）写「路径:行 @ 提交」——`src/main/java/io/github/sweetzonzi/arms_core/common/ArmsCore.java:20 @ 93924d9`，可用 `git show 93924d9:<同一路径>` 复现。活引用不写行号：行号漂移是静默的，既不会报错也不会提示，转换后只会指向无关代码。符号必须**在源码里可检索**：Lombok 生成的 getter / setter 不出现在源码文本里，这类成员锚到它所在的**字段**——写字段名（`MechaCharacter.java#currentYaw`），不写 Lombok 生成的那个方法名。允许把支撑论述留在外部——读者顺着引用去读即可，但不给引用就引用，等于要求读者自己猜，属于违规。
 2. **对自身历史：绝对不允许假设读者了解先前版本。** 差分残留是最常见的失效模式：句子的成立以读者知道修改前的内容为前提。典型：`文件名不再使用 X`、`掩体仍然生效`、`A 取消，改为 B`、`（原 foo()）`、`比之前更简单`、`见上文`。
 
 **唯一判据**：假设读者只拿到当前文件的最终版本，从未看过历史版本、git diff、PR 描述或本次对话，该句是否仍能被无歧义地理解与验证？不能 → 违规，必须修复。第 1 条违反给引用即可，第 2 条违反只能改写或搬家。
@@ -149,16 +149,18 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 - 顺手扩写无关章节——除修复点外不动内容
 - 汇报「已检查无问题」却不给证据
 
+**机械校验**：`pwsh -NoProfile -File tools/check_doc_refs.ps1` 逐条核对 `AGENTS.md` 与 `docs/` 里的坐标——`路径#符号` 能否在目标文件（含三个同级源码仓库）里检索到、`路径:行 @ 提交` 能否被 `git show` 复现、Minecraft 一类外部类名能否在 `build/moddev/artifacts` 的 sources jar 里找到；同时列出仍写裸行号、没有 `@ 提交` 基线的活引用。有无法定位的引用时退出码为 1，可在提交前跑一次。
+
 **完成条件（汇报格式）**
 
-1. 命中清单：`文件:行` + 原句
+1. 命中清单：`路径#符号`（或 `路径:行 @ 提交`）+ 原句
 2. 逐条处理：改写后的句子 / 已移入附录 / 判 C 类并说明基线或引用出处
 3. 交叉引用复核：本次涉及的 §号与阶段号是否仍指向存在的目标
 4. C 类判定有争议时，一律改写为自足表述
 
 **与上游的关系**：本节的第 2 条与 `../Machine-Max/AGENTS.md`「文档编辑规范」的判据一致（那份文档不允许以自身旧版本为前提）；第 1 条在本项目放宽——允许读者顺着交叉引用去读别的文档与源码，只要引用可定位。
 
-**一句话版**：凡出现「不再/仍然/改为/之前/取消/（原…）」等对照词，判断该对照的基线是否在同一份文档里给出；没有就给基线、改成绝对陈述、或移到文末附录。凡引用别的文档或源码，必须给出节号或「文件:行」。
+**一句话版**：凡出现「不再/仍然/改为/之前/取消/（原…）」等对照词，判断该对照的基线是否在同一份文档里给出；没有就给基线、改成绝对陈述、或移到文末附录。凡引用别的文档或源码，必须给出节号、「路径#符号」（活引用）或「路径:行 @ 提交」（历史快照）。
 
 ## 调试与运行
 
@@ -177,4 +179,4 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | `docs/下一步开发TODO.md` | 当前里程碑、逐项待办、跨线程快照决策。 |
 | `docs/ArmsCore双端权威与网络同步实现计划.md` | `ArmsCore` 的服务端权威归属、创建 / 移除协议、上下行同步通道、实施阶段与验收判据。 |
 
-- 设计文档的结论与判据以表格和「文件:行」证据为主，改动代码后若与文档冲突，先按上节复核文档的自包含性，再决定改代码还是改文档。
+- 设计文档的结论与判据以表格和「路径#符号」证据为主，改动代码后若与文档冲突，先按上节复核文档的自包含性，再决定改代码还是改文档。
