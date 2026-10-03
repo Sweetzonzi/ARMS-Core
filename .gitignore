@@ -26,3 +26,7 @@ Thumbs.db
 # Gradle cache
 !gradle/wrapper/*
 /.eclipse/
+
+# 开发期第三方 jar：不入库，放置说明见 mods/README.md 与 mods-client/README.md
+/mods/*.jar
+/mods-client/*.jar

@@ -53,23 +53,23 @@
 - **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
 - `.vscode/launch.json` 已有 `GameTestServer` 启动项，依赖 `build/moddev/gameTestServerRunProgramArgs.txt`（由 `gradlew prepareGameTestServerRun` 生成）。
 
-### 开发期 mod 目录（两个）
+### 开发期 mod 目录（两个，都在本仓库根）
 
-开发期用的第三方 jar 都放在 `../Machine-Max` 下，按「哪些 run 需要它」分两个目录：
+| 目录 | 放什么 | 挂载点 | 哪些 run 加载 |
+|------|--------|--------|---------------|
+| `mods/` | 双端都要：Curios、SuperbWarfare | 私有配置 `devMods` → main 的 `runtimeClasspath` | `runClient`、`runServer`、`runGameTestServer`、`runData` |
+| `mods-client/` | 仅客户端：DistantHorizons、Iris、Sodium | 私有配置 `devClientMods` → `runClient` 任务的 `classpathProvider` | 只有 `runClient` |
 
-| 目录 | 内容 | 在 Machine-Max | 在本仓库 |
-|------|------|----------------|----------|
-| `../Machine-Max/mods/` | 双端都要：Curios、SuperbWarfare | 四个 run 全加载 | 四个 run 全加载 |
-| `../Machine-Max/client_mods/` | 仅客户端：DistantHorizons、Iris、Sodium | 只有 `runClient` 加载 | 只有 `runClient` 加载 |
-
-投放方式两侧一致：双端的那批经本仓库的私有配置 `devSharedMods` 挂到四个 run 的 `<run>AdditionalRuntimeClasspath`，仅客户端的那批经一条文件依赖挂到 `clientAdditionalRuntimeClasspath`（`../Machine-Max/client_mods`）。因此 `runServer` / `runGameTestServer` / `runData` 看得到 Curios 与 SuperbWarfare，看不到 DistantHorizons / Iris / Sodium。
-
-- **不能写进 `runtimeOnly`**：那是所有 run 共用的基类路径。DistantHorizons 会在 `ServerAboutToStart` 里把服务器强转 `DedicatedServer`，而 `GameTestServer` 不是该类型，进程会在启动阶段以 `ClassCastException` 退出。
-- **GeckoLib 与 Spark 不放 `mods/`**：它们的 jar 与其它来源的同名模块同时在类路径上时，ModLauncher 在模块解析阶段直接中止，服务端根本起不来：
+- **jar 不入库**：两份目录都只提交各自的 `README.md`，`.gitignore` 忽略其中的 `*.jar`；clone 之后按 README 里的清单自行下载放置（版本以 README 为准）。目录为空或整个不存在时，对应的 run 只是少加载几个 mod。Machine-Max 用的是同一套目录布局与同两条挂载规则。
+- **不要写进 `runtimeOnly`**：文件依赖没有坐标，会作为 root component 进入 `runtimeElements`，本项目被下游消费（或发布到 `repo/`）时会被一并带出去。`runtimeClasspath` 只用于解析，不属于任何 variant。
+- **判据是 jar 在不在该 run 的 JVM 类路径上**。run 的类路径就是 main 的 `runtimeClasspath`：moddev 的 `RunGameTask.exec()` 执行 `classpath(getClasspathProvider())`，`classpathProvider` 由 `setupRunInGradle` 用 `sourceSet.runtimeClasspath` 填充。FML 的开发期 mod 发现读的也是这条类路径——`UserdevLocator` 用 `DevEnvUtils` 在系统类加载器上枚举 `META-INF/neoforge.mods.toml`，即 `java.class.path`。
+- **不能挂 `<run>AdditionalRuntimeClasspath`**：那条配置只被 `WriteLegacyClasspath` 写进 `build/moddev/<run>LegacyClasspath.txt`，由 `BootstrapLauncher` 读取后建 MC-BOOTSTRAP 模块层，并用它取代 `java.class.path`；写在那里的 jar 不属于任何 run 的类路径，不会被当作 mod 扫描。本项目用的 moddev 2.0.141 把这条配置描述为「给 manifest 里没有 `FMLModType` 的普通库用的」（`VersionCapabilities.legacyClasspath()`）。
+- **仅客户端的那批不能进 `mods/`**：`runServer` / `runGameTestServer` / `runData` 与 `runClient` 共用 main 的 `runtimeClasspath`。DistantHorizons 会在 `ServerAboutToStart` 里把服务器强转 `DedicatedServer`，而 `GameTestServer` 不是该类型，进程会在启动阶段以 `ClassCastException` 退出。
+- **GeckoLib 与 Spark 不放 `mods/`**：它们的 jar 与其它来源的同名模块同时在类路径上时，ModLauncher 在模块解析阶段直接中止：
   `java.lang.module.ResolutionException: Modules geckolib and geckolib.neoforge export package … to module mixinextras.neoforge`。
-  GeckoLib 由 Spark-Core 与 Machine-Max 各自的 Maven 依赖 `software.bernie.geckolib:geckolib-neoforge-<mc>:<geckolib_version>` 提供，不需要 jar；Spark 那一条尚未查清第二个模块的来源，jar 现被移出 `mods/`（它本来也不在运行期 Maven 依赖里）。两份 jar 都保留在 `../Machine-Max/mods-disabled/`。
-- 核对办法是直接看 `build/moddev/*LegacyClasspath.txt`（它列出每个 run 实际加载的 jar）。改 Machine-Max 那边之后要重跑 `gradlew prepareXxxRun` 才会刷新这份渲染。
-- 目录不存在时这一步为空，不影响其它 run。
+  GeckoLib 由 Spark-Core 与 Machine-Max 各自的 Maven 依赖 `software.bernie.geckolib:geckolib-neoforge-<mc>:<geckolib_version>` 提供，不需要 jar；Spark 来自 Spark-Core 构建脚本里的 `implementation(files(fileTree("mods")))`，它作为 root component 进入 Spark-Core 的 `runtimeElements`，随复合构建出现在本项目的 `runtimeClasspath` 上（Mod List 里的 `spark 1.10.124` 就是它），本地再放一份同名模块就会撞包。
+- **从 IDE 发起的 run 只带 `mods/`**：IDE 的类路径来自 Gradle 的 main `runtimeClasspath`（四个 run 共用一份），`runClient` 任务上的 `classpathProvider` 只有 `gradlew runClient` 会走。`gradlew createClientLaunchScript` 生成的启动脚本同理。
+- **核对办法**：`run/logs/latest.log` 里 `ModDiscoverer` 打出的 Mod List 是最终生效的 mod 集合；`build/moddev/*LegacyClasspath.txt` 只是 MC-BOOTSTRAP 模块层的清单，其中出现某个 jar 不代表它会被当成 mod 载入。
 
 ## 复合构建依赖（极易踩坑）
 
