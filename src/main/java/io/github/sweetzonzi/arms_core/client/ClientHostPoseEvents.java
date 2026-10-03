@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.client;
 
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
+import io.github.sweetzonzi.arms_core.common.HostPositionIntake;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import net.minecraft.client.Minecraft;
@@ -58,6 +59,12 @@ public final class ClientHostPoseEvents {
      * {@code ClientboundPlayerPositionPacket} 的 {@code ClientPacketListener#handleMovePlayer}
      * 同样这么做。
      * <p>
+     * <b>这次写入落在第 4 类作用域内。</b> 它和服务端的
+     * {@code common/ArmsCoreServerEvents.java#applyPoseToHost} 是同一条链的两端（服务端把 KCC 位姿写进
+     * 宿主实体、客户端按 {@code DATA_POS} 摆放本机玩家），因此在
+     * {@code common/HostPositionIntake.java} 的分类里同属「本模组运行时回写」：不摄入，但按目标推进锚点。
+     * 不压栈的话，客户端会在每个 tick 把这次镜像写入判成一次外部位移。
+     * <p>
      * <b>不写朝向。</b> 视野偏航是本机输入，服务端只是接收方：{@code ARMSClient} 把玩家实体的
      * {@code yRot} 上行，服务端 {@code MechaControl#applyFacing} 把它绝对赋值给 KCC 的
      * {@code currentYaw}，{@code DATA_YAW} 只是这个值的回显。若把回显写回 {@code yRot}，就形成
@@ -68,7 +75,13 @@ public final class ClientHostPoseEvents {
     private static void applySyncedPose(LocalPlayer player, ArmsCore core) {
         org.joml.Vector3f synced = core.getSyncedData().get(ArmsCore.DATA_POS);
 
-        player.setPos(synced.x, synced.y - MechaBodyPreset.HALF_TOTAL, synced.z);
+        HostPositionIntake intake = core.getPositionIntake();
+        int outerDepth = intake.enterScope(HostPositionIntake.SCOPE_RUNTIME_WRITEBACK);
+        try {
+            player.setPos(synced.x, synced.y - MechaBodyPreset.HALF_TOTAL, synced.z);
+        } finally {
+            intake.exitScope(outerDepth);
+        }
         player.setDeltaMovement(Vec3.ZERO);
     }
 }

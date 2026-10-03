@@ -88,7 +88,7 @@ BlockPos blockpos = new BlockPos(
 
 ### 5.2 单精度物理 → 亚米级量不出来
 
-物理链路把世界坐标转成 float32：`PhysicsHelper.kt#toBVector3f` 把 `Vec3` 的 double 分量压成 jme3 的 `Vector3f`；物理侧存的就是它（`PhysicsCollisionObject.java#getPhysicsLocation` 返回 `Vector3f`，`PhysicsCharacter.java#setPhysicsLocation` 收 `Vector3f`，这两个类来自 Spark-Core 源码里内嵌的 jme3 分支）。Arm 侧的写入点是 `MechaCharacter#warpTo`，同样收 `Vector3f`。Gradle 缓存里解析到的 native 制品只有单精度那一支（`com.github.stephengold:Libbulletjme-Windows64:22.0.3` 的 `SpMtRelease` 变体）；Libbulletjme 的双精度变体以 `Dp` 标记，与 `Sp`/`SpMt` 相对（判据见 `Libbulletjme/src/test/java/Utils.java#loadNativeLibrary`），本仓库没有引入它，它提供的 `getPhysicsLocationDp` / `setPhysicsLocationDp` 也不在链路上。运行期可用 `NativeLibrary#isDoublePrecision` 复核实际加载到的是哪一支。
+物理链路把世界坐标转成 float32：`PhysicsHelper.kt#toBVector3f` 把 `Vec3` 的 double 分量压成 jme3 的 `Vector3f`；物理侧存的就是它（`PhysicsCollisionObject.java#getPhysicsLocation` 返回 `Vector3f`，`PhysicsCharacter.java#setPhysicsLocation` 收 `Vector3f`，这两个类来自 Spark-Core 源码里内嵌的 jme3 分支）。Arm 侧的写入点是 `MechaCharacter#warp`（重写 `PhysicsCharacter#warp`，仍收 `Vector3f`）。Gradle 缓存里解析到的 native 制品只有单精度那一支（`com.github.stephengold:Libbulletjme-Windows64:22.0.3` 的 `SpMtRelease` 变体）；Libbulletjme 的双精度变体以 `Dp` 标记，与 `Sp`/`SpMt` 相对（判据见 `Libbulletjme/src/test/java/Utils.java#loadNativeLibrary`），本仓库没有引入它，它提供的 `getPhysicsLocationDp` / `setPhysicsLocationDp` 也不在链路上。运行期可用 `NativeLibrary#isDoublePrecision` 复核实际加载到的是哪一支。
 
 float32 在整数坐标上的可表示间隔（ULP）：
 
@@ -123,10 +123,11 @@ float32 在整数坐标上的可表示间隔（ULP）：
 
 ## 7. 本仓库现在的用法与边界
 
-- 唯一用例：`src/main/java/io/github/sweetzonzi/arms_core/common/gametest/ArmsCoreGameTest.java#physicsSpaceIsReadyAndCoreConstructs`。它只断言四件事：服务端构造成功、拿到权威实例与 KCC、装配体持有位移摄入状态、物理步长是有限正数。**这四条都与坐标无关**，因此随机原点不影响它。
+- 用例一：`src/main/java/io/github/sweetzonzi/arms_core/common/gametest/ArmsCoreGameTest.java#physicsSpaceIsReadyAndCoreConstructs`。它只断言四件事：服务端构造成功、拿到权威实例与 KCC、装配体持有位移摄入状态、物理步长是有限正数。**这四条都与坐标无关**，因此随机原点不影响它。
+- 用例二：同类的 `#intakeClassifiesMirrorsAndAdoptsOnlyRealDisplacement`。它绑一个 `GameTestHelper#makeMockPlayer` 到装配体，然后在作用域内外直接调 `Entity#setPos`，断言位置写入的分类（三类已知镜像不摄入、其中第 2/4 类推进锚点、第 1 类不推进、栈空且目标 ≠ 锚点才采纳一次、重复写入不重复采纳）。**这些断言也是纯逻辑**：作用域深度、锚点的三个 double、已采纳次数，用的都是整数级坐标（`0.5`、`40.0`），与 float32 的量化步长无关；量不了的只是「KCC 有没有落到目标」。
 - 批次名必须自成一档（`ArmsCoreGameTest#BATCH = "armsCore"`）：每个批次至多一个 `@BeforeBatch`，兄弟仓库 BallisticsFramework 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
-- 该车道**不适合**承载的东西：位移摄入（`/tp`、末影珍珠、紫颂果）、KCC 落地与越障、速度积分、闪避冲量、跳跃继承——全部是 §5.2 那一类。这些走 `gradlew test` 的 JUnit 车道（`MechaCharacterWalkPhysicsTest`、`MechaCharacterStepTest` 在裸 `PhysicsSpace` 里按 100 Hz 步进，坐标在原点附近）。
-- 适合继续加的：注册表与字段表一致性、载荷编解码、状态机图的纯逻辑、以及「物理空间就绪」这类构造性断言；真实 `ServerLevel` + 真物理线程 + 真 tick 循环这一层，用它验证构造与接线，而不是验证数值。
+- 该车道**不适合**承载的东西：位移量本身（`/tp`、末影珍珠、紫颂果落在哪）、KCC 落地与越障、速度积分、闪避冲量、跳跃继承——全部是 §5.2 那一类。这些走 `gradlew test` 的 JUnit 车道（`MechaCharacterWalkPhysicsTest`、`MechaCharacterStepTest` 在裸 `PhysicsSpace` 里按 100 Hz 步进，坐标在原点附近）。
+- 适合继续加的：注册表与字段表一致性、载荷编解码、状态机图的纯逻辑、位移摄入的**判据**（分类与锚点），以及「物理空间就绪」这类构造性断言；真实 `ServerLevel` + 真物理线程 + 真 tick 循环这一层，用它验证构造、接线与判据，而不是验证数值。
 
 ## 8. 常用命令与核对点
 

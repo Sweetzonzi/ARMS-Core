@@ -399,29 +399,36 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /**
      * 采纳一次外部位移：改写 {@code DATA_POS} 的来源并提交任务改写 KCC 物理位置。
      * <p>
-     * 由 {@code mixin/EntityPositionWriteMixin} 与 {@code mixin/ServerGamePacketListenerMixin} 在「作用域栈
-     * 已回到空」的那一次写入之后调用。分类判据（栈空不空）在 {@link HostPositionIntake#isInScope()}，
-     * 采纳与投递在 {@link HostPositionIntake#intake}，本方法只负责把实体当前位置取出来。
+     * 由 {@code mixin/EntityPositionWriteMixin} 在 {@code Entity#setPos(double,double,double)} 的 {@code HEAD}
+     * 处、且作用域栈为空时调用。分类判据（栈空不空、目标是否等于锚点）在
+     * {@link HostPositionIntake#isInScope()} 与 {@link HostPositionIntake#isAtAnchor(double, double, double)}，
+     * 采纳与投递在 {@link HostPositionIntake#intake}，本方法只负责把这次写入的目标转交过去。
+     * <p>
+     * 目标由调用方传入而不是在这里从实体读：{@code HEAD} 注入点的时点早于原版方法体，此刻
+     * {@code Entity#getX()} 一族返回的仍是<b>上一次</b>写入的值，只有入参是这一次的目标。
+     * <p>
+     * 宿主由本类自己的 {@link #host} 承担，不入参：发起这次写入的实体与该引用由绑定关系维持一致
+     * （{@code IArmsHost#setControlledArmsCore} 同时写两个方向），调用方已经用它取到了本实例。
      * <p>
      * 摄入成立时发生三件事：
      * <ol>
      *   <li><b>pin</b> —— 在 warp 真正落地之前，{@code ArmsCoreServerEvents#syncToClients} 用目标填
      *       {@code DATA_POS}，客户端因此不会被旧的 KCC 位置拉回旧处；</li>
      *   <li><b>KCC warp</b> —— 经 {@code SparkLevel#submitImmediateTask} 投递
-     *       {@link MechaCharacter#warpTo}，位置落到目标（保留水平动量、清垂直分量、复位本步遗留的施力状态）；</li>
+     *       {@link MechaCharacter#warp}，位置落到目标（保留水平动量、清垂直分量、复位本步遗留的施力状态）；</li>
      *   <li><b>待投递落点</b> —— 落点先写进 {@code HostPositionIntake} 的字段，同一 tick 内多次摄入按最后
      *       写入者生效。</li>
      * </ol>
      * 客户端实例同样走这条路径：它没有 KCC，投递的任务是空操作，但 pin 照常武装，客户端手里的
      * {@code DATA_POS} 因此与实体位置一致。
      *
-     * @param host 宿主实体（调用方已确认非空）
+     * @param x 这次写入的目标 X（包围盒底面基准）
+     * @param y 这次写入的目标 Y
+     * @param z 这次写入的目标 Z
      * @return 已采纳时返回判定结果（目标 + 判定路径）；未采纳时为 {@code null}
      */
-    public @Nullable HostPositionIntake.Decision applyExternalDisplacement(IArmsHost host) {
-        if (host == null) return null;
-        Entity entity = host.getHostEntity();
-        return positionIntake.intake(entity.getX(), entity.getY(), entity.getZ(), host);
+    public @Nullable HostPositionIntake.Decision applyExternalDisplacement(double x, double y, double z) {
+        return positionIntake.intake(x, y, z);
     }
 
     /**

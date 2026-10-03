@@ -176,8 +176,9 @@ public final class ArmsCoreServerEvents {
     /**
      * 每 tick 的只读断言：作用域深度必须归零。
      * <p>
-     * 作用域的平衡本来由两个 {@code @WrapMethod} 包装体与 {@code applyPoseToHost} 的 {@code try/finally}
-     * 保证（§5.2），因此这里只报告、不清状态。清理会把「某个注入点没配对」这个状态错误藏起来，而它的
+     * 作用域的平衡由两个 {@code @WrapMethod} 包装体与两端运行时回写（{@code applyPoseToHost}、
+     * {@code client/ClientHostPoseEvents.java#applySyncedPose}）的 {@code try/finally} 保证（§5.2），
+     * 因此这里只报告、不清状态。清理会把「某个注入点没配对」这个状态错误藏起来，而它的
      * 后果是此后<b>每一次</b>位置写入都被当作已知镜像、外部位移永远不再被摄入。
      */
     private static void assertScopeBalanced(ArmsCore core) {
@@ -219,12 +220,12 @@ public final class ArmsCoreServerEvents {
         if (host == null) return;
         Vec3 entityBefore = host.getHostEntity().position();
         float yRot = (float) Math.toDegrees(kcc.getCurrentYaw());
-        // 第 4 类作用域（服务端运行时回写）：本模组自己写的这一笔不能被判成外部位移，否则每 tick 一次误判。
+        // 第 4 类作用域（本模组运行时回写）：本模组自己写的这一笔不能被判成外部位移，否则每 tick 一次误判。
         // 用 try/finally 而不是「每个返回点各注入一次」——异常路径也要把栈弹干净
         // （`docs/宿主位置权威与位移摄入设计.md` §5.2）。
-        // 类别码只影响日志标注：判定只看栈空不空，见 common/HostPositionIntake.java#isInScope
+        // 类别码只影响日志标注与锚点推进：判定只看栈空不空，见 common/HostPositionIntake.java#isInScope
         int outerDepth = core.getPositionIntake()
-                .enterScope(HostPositionIntake.SCOPE_SERVER_WRITEBACK);
+                .enterScope(HostPositionIntake.SCOPE_RUNTIME_WRITEBACK);
         try {
             host.applyPose(new Vec3(position.x, position.y, position.z), yRot, yRot);
         } finally {

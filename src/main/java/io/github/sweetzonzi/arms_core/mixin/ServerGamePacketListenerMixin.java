@@ -30,8 +30,9 @@ import org.spongepowered.asm.mixin.Mixin;
  * {@code BlockBehaviour#entityInside} 里搬人的方块、以及本方法内嵌套的传送。收紧办法是把第 1 类的作用域
  * 从整个 {@code Entity#move} 收窄到两个已知调用点，见设计文档 §八 第 1 项。
  * <p>
- * <b>为什么用 {@code @WrapMethod}。</b> 同 {@code EntityPositionWriteMixin}：作用域的平衡由 {@code finally}
- * 保证，异常路径也弹干净。
+ * <b>退出时只弹栈，且这一笔写入要走锚点。</b> 作用域本身只说明「这次写入是回声」，它不构成位移；
+ * 方法体内那几处写入会让 {@code Entity#setPos} 的注入点按栈顶类别码（{@code SCOPE_CLIENT_REPORT}）
+ * 推进锚点，因此紧随其后的「把实体重断言回基准值」那类写入与锚点相等，被无变化守卫吞掉。
  *
  * @author Sweetzonzi
  */
@@ -41,10 +42,8 @@ public abstract class ServerGamePacketListenerMixin {
     /**
      * 第 2 类作用域：包住一次位置包处理的完整动态范围。
      * <p>
-     * 退出时由 {@link HostPositionIntake#leaveAndIntake} 做摄入判定。本方法内层还会经过
-     * {@code Entity#move} 的第 1 类作用域，因此这里读到的深度通常已回到 0，判定在<b>最内层</b>那次退出
-     * （即 {@code move} 的包装体）里就完成过一次——那一次判定的参与者是乘客分支与 {@code player.move}
-     * 之外的部分，这正是整方法压栈要覆盖的范围。
+     * 退出时只弹栈（{@code HostPositionIntake#exitScope(int)}）：本方法内的 {@code player.move} 与末段的
+     * {@code absMoveTo} 都是已知镜像，栈空之后的判定留给 {@code Entity#setPos} 注入点。
      */
     @WrapMethod(method = "handleMovePlayer")
     private void armsCore$wrapHandleMovePlayer(ServerboundMovePlayerPacket packet, Operation<Void> original) {
@@ -61,7 +60,7 @@ public abstract class ServerGamePacketListenerMixin {
         try {
             original.call(packet);
         } finally {
-            HostPositionIntake.leaveAndIntake(core, host, outerDepth);
+            core.getPositionIntake().exitScope(outerDepth);
         }
     }
 }
