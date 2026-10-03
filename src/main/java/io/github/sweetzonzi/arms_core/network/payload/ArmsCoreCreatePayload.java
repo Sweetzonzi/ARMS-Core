@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.network.payload;
 
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
+import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -28,7 +29,9 @@ import java.util.UUID;
  * 之间可能相隔任意久，因此创建包必须携带 {@code getNonDefaultValues()}。服务端上全部字段
  * 都等于默认值（即该方法返回 {@code null}）时，客户端保持默认值即可。
  * <p>
- * {@code hostEntityId} 在宿主接入之前恒为 {@code -1}（无实体宿主）。
+ * {@code hostEntityId} 由服务端从 {@code ArmsCore#getBoundHostEntityId} 取值：未绑定宿主时为
+ * {@link #NO_HOST_ENTITY}，绑定宿主时为该宿主的网络 id。客户端只在它与本地玩家实体 id 相等时
+ * 建立绑定。
  *
  * @param dimension    目标维度，客户端据此校验自己是否在正确维度
  * @param coreId       装配体 UUID
@@ -89,10 +92,16 @@ public record ArmsCoreCreatePayload(
     }
 
     /**
-     * 客户端处理器：按 {@code coreId} 幂等建立并注册客户端实例，再应用全量初值。
+     * 客户端处理器：按 {@code coreId} 幂等建立并注册客户端实例，再应用全量初值，最后按
+     * {@code hostEntityId} 建立本地玩家的绑定。
      * <p>
      * 已存在同 {@code coreId} 的实例时复用并按增量方式应用初值，而不是覆盖重建——
      * 重建会让正在插值的可视锚点跳变。
+     * <p>
+     * <b>{@code hostEntityId} 的比对不可省。</b> 创建包按维度广播，同一个 {@code hostEntityId}
+     * 会被维度里每个客户端收到，漏掉比对会让每个玩家都把自己绑定到同一个装配体。
+     * 两条绑定路径都不能少：新建分支与复用分支都要写，因为换维度、重生、登录后的补发走的是
+     * 复用分支（客户端实例通常已经存在），只在新建分支写会让这些路径全部失去绑定。
      */
     public static void handle(ArmsCoreCreatePayload payload, IPayloadContext context) {
         Level level = context.player().level();
@@ -112,7 +121,24 @@ public record ArmsCoreCreatePayload(
         if (initial != null) {
             core.getSyncedData().assignValues(initial);
         }
+        bindLocalHost(payload, context, core);
         ARMS.LOGGER.debug("[ARMS-Core] 客户端{}装配体 {}：{} 项初值", created ? "创建" : "复用",
                 payload.coreId(), initial == null ? 0 : initial.size());
+    }
+
+    /**
+     * 若本包指向的宿主实体就是本地玩家，则把客户端实例绑定到本地玩家实体上。
+     * <p>
+     * 不匹配时还要处理反向：本地玩家此前绑定的装配体若正是本包这个 {@code coreId}，说明服务端已经
+     * 把它交给了别人（{@code hostEntityId} 变了），本地必须解绑，否则客户端会继续按一个已经不属于
+     * 自己的装配体的位姿摆放玩家。
+     */
+    private static void bindLocalHost(ArmsCoreCreatePayload payload, IPayloadContext context, ArmsCore core) {
+        if (!(context.player() instanceof IArmsHost host)) return;
+        if (payload.hostEntityId() == host.getHostEntity().getId()) {
+            host.setControlledArmsCore(core);
+        } else if (host.getControlledArmsCore() == core) {
+            host.setControlledArmsCore(null);
+        }
     }
 }

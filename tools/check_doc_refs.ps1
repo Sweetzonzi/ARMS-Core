@@ -31,7 +31,7 @@ if (-not (Test-Path 'AGENTS.md') -or -not (Test-Path 'docs')) {
 
 # ---- 文件名 → 候选路径索引（含三个同级源码仓库）----
 $index = @{}
-foreach ($r in @('src', '..\Spark-Core\src', '..\Machine-Max\src', '..\Libbulletjme\src')) {
+foreach ($r in @('src', '..\Spark-Core\src', '..\Machine-Max\src', '..\BallisticsFramework\src', '..\Libbulletjme\src')) {
     if (-not (Test-Path $r)) { continue }
     Get-ChildItem -Path $r -Recurse -File -Include *.java, *.kt, *.cpp, *.h -ErrorAction SilentlyContinue |
         ForEach-Object {

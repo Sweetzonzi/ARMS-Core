@@ -633,12 +633,12 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |----|------|------|
 | KCC 物理位置 | **胶囊几何中心**。Bullet 幽灵体的世界变换就是它 | `MechaCharacter.getPhysicsLocation(null)` |
 | 胶囊底面（脚底） | `pos.y - halfTotal`，`halfTotal = shape.getHeight()/2 + shape.getRadius()` | `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 实现了该算式 |
-| 实体 `setPos` | 原版语义是**包围盒中心**（`MMPartEntity` 直接 `setPos(subPart.getPosition())`，而 `SubPart.getPosition()` 正是刚体中心） | `MMPartEntity.java#baseTick` |
+| 实体 `setPos` | 原版语义是**包围盒底面中心（脚底）**。`net.minecraft.world.entity.Entity#setPos` 把三个分量存进 `net.minecraft.world.entity.Entity#position`，再以它为原点重建包围盒，重建由 `net.minecraft.world.entity.EntityDimensions#makeBoundingBox` 完成，形状是 `AABB(x − 宽/2, y, z − 宽/2, x + 宽/2, y + 高, z + 宽/2)` | `net.minecraft.world.entity.Entity#setPos` |
 
 因此：
 
 - 服务端出生点由"目标脚底位置 + `halfTotal`"算出 KCC 位置，与 `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 的写法一致；
-- 若阶段 4 改为写宿主实体，写的是包围盒中心 = KCC 位置（同一基准），**不**需要再加 `halfTotal`；若写的是实体脚底坐标（`Entity.position()` 的语义即脚底），则必须 `- halfTotal`。这一条要在阶段 4 明确到代码注释，避免差一个身高的经典错误。
+- 阶段 4 把位姿写进宿主实体时，实体位置字段的语义是包围盒底面，因此写入值是 `KCC 位置 − halfTotal`。交叉验证：`net.minecraft.world.entity.player.Player#DEFAULT_EYE_HEIGHT` 为 `1.62`，只有在"`position.y` 是脚底"的语义下才等于"脚上 1.62 m"。展开见 `docs/IArmsHost宿主接口设计.md` §2.1 与 `docs/宿主接入与伤害管线设计.md` §5.1。
 
 ---
 
@@ -802,18 +802,18 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | 结论 | 位置 |
 |------|------|
-| `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_JUMP_CHARGING`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace`、`#applyDriftFallback` |
+| `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_JUMP_CHARGING`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace` |
 | 逻辑状态跨线程出口 | `common/control/MechaControl.java#LogicStateSnapshot`、`#snapshotLogicState` |
 | 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#requestDodgeImpulse`、`#consumeDodgeSpeed`、`#updateWalk`（稳态速率上限那段）、`#currentTargetSpeed` |
 | 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_CAPSULE_HEIGHT`、`#capsuleHeightFor`、`#halfTotalFor`、`#newCapsuleShape` |
 | 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape` |
 | 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |
 | 装配体注册表 | `common/MechaCoreRegistry.java#addServer`、`#onLevelUnload`、`#sendAllTo` |
-| 上行输入服务端处理链 | `common/MechaInputHandler.java#setController`、`#releaseController`、`#apply` |
+| 上行输入服务端处理链 | `common/MechaInputHandler.java#isController`、`#resetInput`、`#apply` |
 | 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java#onPrePhysicsTick`、`#syncToClients`、`#onPlayerJoinLevel` |
 | 载荷注册与协议版本 | `network/ARMSNetwork.java#PROTOCOL_VERSION`、`#register`（三处 `playToClient`、一处 `playToServer`） |
 | 客户端输入采集与重发窗口 | `client/ARMSClient.java#RESEND_WINDOW`、`#onClientTick`、`#queueEvent` |
-| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java#accept`、`#lerpPosition`；`client/MechaAnimatable.java#clientTick`、`#getWorldPositionMatrix`；`client/MechaModelRenderer.java#onClientTick`（采样）、`#onRenderLevelStage`（渲染） |
+| 客户端可视锚点与其渲染 | `client/ClientMechaAnchor.java#accept`、`#lerpPosition`；`client/MechaAnimatable.java#clientTick`、`#getModelSpaceMatrix`、`#getWorldPositionMatrix`；`client/MechaPlayerRenderer.java#onClientTick`（驱动动画体）、`#onRenderPlayerPre`（取消玩家模型并就地绘制机体） |
 | 调试命令 | `common/command/ArmsCoreDebugCommand.java` |
 | `onPhysicsStep` 顺序 | `common/control/MechaControl.java#onPhysicsStep` |
 | 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批） |

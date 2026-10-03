@@ -8,6 +8,7 @@ import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.Part;
@@ -19,6 +20,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SyncedDataHolder;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -160,11 +162,26 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Getter
     private volatile MechaControl.@Nullable LogicStateSnapshot logicState;
 
-    /** 入世时记录的胶囊中心位置，兜底 warp 的目标点 */
-    private volatile com.jme3.math.@Nullable Vector3f anchorPos;
-
-    /** 兜底阈值：KCC 与锚点距离超过该值 (m) 时 warp 回锚点 */
-    private static final float DRIFT_WARP_THRESHOLD = 8f;
+    /**
+     * 承载本装配体的宿主实体；{@code null} 表示尚未绑定宿主。
+     * <p>
+     * <b>可空是常态，{@code null} 不是错误状态。</b> 装配体在「已注册、尚未绑定宿主」这段区间里
+     * 合法存在，客户端实例则永远没有宿主。三条使用路径的空值行为：位姿回写只跳过
+     * {@code applyPose} / {@code applyVelocity} 两步而写包照常、伤害解析返回 {@code null}
+     * （等价于「线段与宿主包围盒无交点」这一出口）、环境字段与控制权校验的调用方本身持有判据
+     * 因此拿不到 {@code null}。逐条见 `docs/宿主接入与伤害管线设计.md` §3.1.2。
+     * <p>
+     * 反向兜底——引用为 {@code null} 时去查「哪个玩家在控制这个装配体」——是禁止的：那会让
+     * 「装配体属于谁」有两个来源。
+     * <p>
+     * 只在主线程读写。宿主实体的全部已知用途（位姿回写、伤害解析的包围盒、环境字段来源）都在
+     * 主线程相位，物理线程不读它。
+     * <p>
+     * 读取入口是 {@link #getHost()}；写入入口是 {@link #setHost}，它由
+     * {@link IArmsHost#setControlledArmsCore} 调用。
+     */
+    @Getter
+    private volatile @Nullable IArmsHost host;
 
     /** 是否已加入物理空间（避免重复 addCollisionObject） */
     private final AtomicBoolean inPhysicsSpace = new AtomicBoolean(false);
@@ -280,6 +297,26 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // ==========================================
 
     /**
+     * 单个物理步的时长 (s)。
+     * <p>
+     * 取自已初始化的物理空间，两端各自成立：服务端 {@code ServerPhysicsLevel(level, 5, ...)} 给出
+     * {@code tps = baseStep × 20 = 100}，即 {@code 0.01 s}；客户端 {@code ClientPhysicsLevel(level, 3, ...)}
+     * 给出 {@code tps = 60}，即约 {@code 0.0167 s}。
+     * <p>
+     * <b>为什么需要它。</b> KCC 的 {@code getLinearVelocity} 在三个轴上语义不同：水平两个分量是
+     * 「每物理步位移」，垂直分量是 m/s（见 `docs/角色控制器-行走物理设计.md` 的单位约定）。而宿主实体
+     * 上 {@code deltaMovement} 的三个分量语义统一是「每 tick 位移」。把前者直接写进后者会同时错两次，
+     * 且两个错的倍数不同：水平差 {@code 1 / (20 × 本值)} 倍，垂直差 {@code 1 / 20} 倍。换算必须同时用到
+     * 本值与 Minecraft 的 20 TPS 常数，因此本值应作为唯一来源暴露，而不是让调用点各自去猜 100 或 60。
+     *
+     * @return 物理步长 (s)
+     * @throws IllegalStateException 所在 Level 的物理空间尚未初始化（见类注释的构造前置）
+     */
+    public float physicsStepSeconds() {
+        return 1f / SparkLevel.getPhysicsLevel(level).getTps();
+    }
+
+    /**
      * 每物理步调用一次，由 Level 级注册表在 {@code PhysicsLevelTickEvent.Pre} 中扇出。
      * <p>
      * 执行顺序（硬约束）：
@@ -307,36 +344,72 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 物理线程：把 KCC 放入物理空间并设置出生点。
      * <p>
      * 必须在 {@code SparkLevel.submitImmediateTask} 投递的任务内调用。
+     * <p>
+     * KCC 的位置就是宿主实体的位置（{@code common/ArmsCoreServerEvents.java#applyPoseToHost} 每 tick
+     * 把它写进宿主），因此本方法只负责「入世」这一次设置，<b>不记录任何兜底锚点</b>：以出生点为锚点、
+     * 偏移超限就把 KCC warp 回去，会把一个正在正常行走的机体拉回出生点，与「KCC 位置即玩家位置」直接
+     * 冲突。
      *
-     * @param capsuleCenter 胶囊中心的世界坐标（不是脚底坐标，见计划 §3.14）；
-     *                      同时被记为兜底 warp 的锚点
+     * @param capsuleCenter 胶囊中心的世界坐标（不是脚底坐标，见计划 §3.14）
      */
     public void enterPhysicsSpace(com.jme3.math.Vector3f capsuleCenter) {
         if (!authoritative) return;
         PhysicsLevel physicsLevel = SparkLevel.getPhysicsLevel(level);
         MechaCharacter kcc = getKcc();
         kcc.setPhysicsLocation(capsuleCenter);
-        this.anchorPos = capsuleCenter.clone();
         if (inPhysicsSpace.compareAndSet(false, true)) {
             physicsLevel.getWorld().addCollisionObject(kcc);
         }
     }
 
+    // ==========================================
+    // 宿主绑定
+    // ==========================================
+
     /**
-     * 物理线程兜底：KCC 与入世锚点偏离超过 {@link #DRIFT_WARP_THRESHOLD} 时拉回。
+     * 写入「装配体 → 宿主」这一方向的引用。
      * <p>
-     * 触发原因是约束、外力或异常传送把幽灵体推离了目标点；不处理会让同步通道把
-     * 一个已经跑飞的位姿持续广播给客户端。
+     * 由 {@link IArmsHost#setControlledArmsCore} 的实现调用，因此<b>不要直接调用本方法</b>：
+     * 单独改写这里会让宿主字段仍指着旧装配体，形成单边绑定。建立与解除绑定请走
+     * {@link IArmsHost#setControlledArmsCore}，那一个入口同时维护两个方向、并在绑定确实变化时
+     * 重置输入状态（{@link MechaInputHandler#resetInput}）。
+     * <p>
+     * 没有做成私有：Mixin 与实体类不在同一个包、也不是子类，唯一替代是把这部分流程做成接口上的
+     * 静态方法。当前保留为公开 setter，靠这条注释约束调用方。
      */
-    public void applyDriftFallback() {
-        if (!authoritative) return;
-        com.jme3.math.Vector3f anchor = this.anchorPos;
-        if (anchor == null) return;
-        MechaCharacter kcc = getKcc();
-        com.jme3.math.Vector3f current = kcc.getPhysicsLocation(null);
-        if (current.distance(anchor) > DRIFT_WARP_THRESHOLD) {
-            ARMS.LOGGER.warn("[ARMS-Core] KCC 偏离锚点 {} m，warp 回 {}", current.distance(anchor), anchor);
-            kcc.warp(anchor);
+    public void setHost(@Nullable IArmsHost host) {
+        this.host = host;
+    }
+
+    /**
+     * 宿主实体的网络 id，供创建包携带。
+     * <p>
+     * 未绑定宿主时返回 {@link ArmsCoreCreatePayload#NO_HOST_ENTITY} —— 客户端的绑定判据是
+     * 「{@code hostEntityId} 等于本地玩家实体 id」，用 {@code 0} 兜底会让世界里的第 0 号实体
+     * 错误地收到绑定。
+     */
+    public int getBoundHostEntityId() {
+        IArmsHost current = this.host;
+        return current == null
+                ? ArmsCoreCreatePayload.NO_HOST_ENTITY
+                : current.getHostEntity().getId();
+    }
+
+    /**
+     * 建立 / 解除绑定：宿主实体一侧的便捷入口。
+     * <p>
+     * 等价的直接写法是
+     * {@code ((IArmsHost) host).setControlledArmsCore(core)}——绑定关系的唯一入口就是它，
+     * 本方法只负责把参数从 {@link Entity} 转成宿主身份，便于 {@code Entity} 类型的调用点使用。
+     * 两个方向的一致性、单宿主唯一性、以及绑定变化时的输入重置都在
+     * {@link IArmsHost#setControlledArmsCore} 内完成。
+     *
+     * @param host 宿主实体；{@code null} 表示不做任何事
+     * @param core 该宿主现在承载的装配体；{@code null} 表示解绑
+     */
+    public static void bindHostOf(@Nullable Entity host, @Nullable ArmsCore core) {
+        if (host instanceof IArmsHost armsHost) {
+            armsHost.setControlledArmsCore(core);
         }
     }
 

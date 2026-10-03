@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.network.payload;
 
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
+import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -46,13 +47,26 @@ public record ArmsCoreRemovePayload(
         return TYPE;
     }
 
-    /** 客户端处理器：注销实例。重复到达（实例已不存在）只记日志。 */
+    /**
+     * 客户端处理器：先解绑本地玩家，再注销实例。重复到达（实例已不存在）只记日志。
+     * <p>
+     * <b>解绑必须在这里做。</b> 宿主实体上的绑定字段不随注册表清理而消失，只注销实例会让本地玩家
+     * 仍认为自己承载着装配体，而 {@code client/ClientHostPoseEvents.java#onPlayerTickPost} 每 tick 都去读
+     * 它的 {@code DATA_POS}——那条路径找不到实例，客户端就会停在上一次采样上。服务端一侧同形，见
+     * {@link io.github.sweetzonzi.arms_core.common.MechaCoreRegistry#removeServer}。
+     */
     public static void handle(ArmsCoreRemovePayload payload, IPayloadContext context) {
         Level level = context.player().level();
         if (!level.dimension().equals(payload.dimension())) {
             ARMS.LOGGER.error("[ARMS-Core] 从错误的维度收到移除请求：期望 {}，实际 {}",
                     payload.dimension().location(), level.dimension().location());
             return;
+        }
+        ArmsCore removed = MechaCoreRegistry.get(level, payload.coreId());
+        if (context.player() instanceof IArmsHost host
+                && removed != null
+                && host.getControlledArmsCore() == removed) {
+            host.setControlledArmsCore(null);
         }
         if (MechaCoreRegistry.removeClient(level, payload.coreId())) {
             ARMS.LOGGER.debug("[ARMS-Core] 客户端注销装配体 {}", payload.coreId());

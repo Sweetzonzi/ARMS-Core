@@ -142,7 +142,12 @@ public final class MechaCoreRegistry {
     }
 
     /**
-     * 服务端注销一个装配体，并向该维度广播移除包。
+     * 服务端注销一个装配体：先解绑宿主，再注销并向该维度广播移除包。
+     * <p>
+     * <b>解绑必须在这里做。</b> 宿主实体上的绑定字段不随注册表清理而消失，若只从注册表移除，
+     * 玩家仍会认为自己承载着装配体（{@code isController} 为真），而输入路径在注册表里找不到
+     * 这个装配体——表现为「人成了机娘、按什么键都没反应」。客户端一侧同理，见
+     * {@link ArmsCoreRemovePayload#handle}。
      *
      * @return 该 UUID 此前是否已注册
      */
@@ -155,11 +160,30 @@ public final class MechaCoreRegistry {
         if (inLevel == null || inLevel.remove(core.getAssemblyId()) == null) {
             return false;
         }
+        unbindHosts(serverLevel, core);
         MechaInputHandler.forget(core.getAssemblyId());
         PacketDistributor.sendToPlayersInDimension(serverLevel,
                 new ArmsCoreRemovePayload(level.dimension(), core.getAssemblyId()));
         ARMS.LOGGER.info("[ARMS-Core] 注销装配体 {} 于 {}", core.getAssemblyId(), level.dimension().location());
         return true;
+    }
+
+    /** 解绑该维度内所有承载着 {@code core} 的玩家。 */
+    private static void unbindHosts(ServerLevel level, ArmsCore core) {
+        for (ServerPlayer player : level.players()) {
+            if (player instanceof IArmsHost host && host.getControlledArmsCore() == core) {
+                host.setControlledArmsCore(null);
+            }
+        }
+    }
+
+    /** 解绑该维度内承载着任一 {@code cores} 的玩家，用于维度卸载路径。 */
+    private static void unbindHosts(ServerLevel level, List<ArmsCore> cores) {
+        for (ServerPlayer player : level.players()) {
+            if (player instanceof IArmsHost host && cores.contains(host.getControlledArmsCore())) {
+                host.setControlledArmsCore(null);
+            }
+        }
     }
 
     /** 服务端某个 Level 卸载时清理它自己的表项，不广播（连接已经不在了）。 */
@@ -189,7 +213,9 @@ public final class MechaCoreRegistry {
             return;
         }
         if (level instanceof ServerLevel serverLevel) {
-            for (ArmsCore core : snapshot(serverLevel)) {
+            List<ArmsCore> cores = snapshot(serverLevel);
+            unbindHosts(serverLevel, cores);
+            for (ArmsCore core : cores) {
                 MechaInputHandler.forget(core.getAssemblyId());
             }
         }
@@ -232,14 +258,17 @@ public final class MechaCoreRegistry {
     /**
      * 把某维度内全部装配体的创建包发给单个玩家。
      * <p>
-     * 与 {@link #addServer} 使用同一份载荷构造逻辑，因此全量初值的语义不会在两处漂移。
+     * 与 {@link #addServer} 使用同一份 {@link #createPayload} 构造逻辑，因此全量初值与
+     * {@code hostEntityId} 的语义不会在两处漂移。宿主 id 必须取真实绑定：客户端的绑定判据是
+     * 「{@code hostEntityId} 等于本地玩家实体 id」，补发时写成
+     * {@link ArmsCoreCreatePayload#NO_HOST_ENTITY} 会让换维度、重生、登录后的客户端认不出自己的机体。
      */
     public static void sendAllTo(ServerPlayer player) {
         if (!(player.level() instanceof ServerLevel serverLevel)) return;
         List<ArmsCore> cores = snapshot(serverLevel);
         if (cores.isEmpty()) return;
         for (ArmsCore core : cores) {
-            PacketDistributor.sendToPlayer(player, createPayload(core, ArmsCoreCreatePayload.NO_HOST_ENTITY));
+            PacketDistributor.sendToPlayer(player, createPayload(core, core.getBoundHostEntityId()));
         }
         ARMS.LOGGER.info("[ARMS-Core] 向玩家 {} 补发维度 {} 的 {} 个装配体",
                 player.getGameProfile().getName(), player.level().dimension().location(), cores.size());

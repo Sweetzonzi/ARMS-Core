@@ -10,7 +10,6 @@ import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
-import io.github.sweetzonzi.arms_core.common.MechaInputHandler;
 import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
@@ -111,7 +110,6 @@ public final class ArmsCoreDebugCommand {
 
         UUID coreId = UUID.randomUUID();
         ArmsCore core = new ArmsCore(level, coreId);
-        MechaCoreRegistry.addServer(core, io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload.NO_HOST_ENTITY);
 
         // 出生点：目标脚底位置 + HALF_TOTAL = 胶囊中心（计划 §3.14）
         float[] center = MechaBodyPreset.capsuleCenterFromFeet(
@@ -119,8 +117,10 @@ public final class ArmsCoreDebugCommand {
         MechaCoreRegistry.enterPhysicsSpace(core,
                 new com.jme3.math.Vector3f(center[0], center[1], center[2]));
 
-        // 命令执行者成为控制者，这样 /arms move 与上行包都能驱动它
-        MechaInputHandler.setController(core, player.getUUID());
+        // 先绑定再注册：创建包携带真实 hostEntityId，客户端据此认出自己的机体。
+        // 绑定同时使执行者成为控制者，这样 /arms move 与上行包都能驱动它。
+        ArmsCore.bindHostOf(player, core);
+        MechaCoreRegistry.addServer(core, core.getBoundHostEntityId());
 
         source.sendSuccess(() -> Component.literal("已创建装配体 " + coreId), true);
         return 1;
@@ -243,13 +243,19 @@ public final class ArmsCoreDebugCommand {
         return 1;
     }
 
+    /**
+     * 把某个装配体交给命令执行者承载。
+     * <p>
+     * 「控制权」不是独立的一份状态：它由绑定关系派生（{@code common/MechaInputHandler.java#isController}
+     * 读的就是宿主实体上的绑定字段），因此这里做的是重新绑定宿主。
+     */
     private static int control(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         CommandSourceStack source = ctx.getSource();
         ServerPlayer player = source.getPlayer();
         if (player == null) throw NOT_SERVER.create();
         ArmsCore core = resolve(source, StringArgumentType.getString(ctx, "uuid"));
-        MechaInputHandler.setController(core, player.getUUID());
-        source.sendSuccess(() -> Component.literal("控制权已交给 " + player.getGameProfile().getName()), true);
+        ArmsCore.bindHostOf(player, core);
+        source.sendSuccess(() -> Component.literal("已把装配体交给 " + player.getGameProfile().getName()), true);
         return 1;
     }
 

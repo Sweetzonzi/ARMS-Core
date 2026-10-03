@@ -35,7 +35,8 @@
 .\gradlew clean
 ```
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。
+- **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
 ## 复合构建依赖（极易踩坑）
@@ -68,7 +69,11 @@
 | `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → KCC 物理积分；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
 | `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、行走力、跳跃蓄力、动画根位移合成。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
-| `common/MechaCoreRegistry.java` | 装配体注册表（服务端按 `ServerLevel`、客户端单表）；服务端注册 / 注销时广播创建 / 移除包，并承载登录 / 换维度补发。 |
+| `common/IArmsHost.java` | 宿主接口：绑定关系的读写（`getControlledArmsCore` / `setControlledArmsCore`）、`getHostEntity`、位置与速度的落地入口（`applyPose` / `applyVelocity`）。玩家经 Mixin 实现它，Doll / AI 敌人可直接实现。 |
+| `mixin/PlayerHostMixin.java` | `@Mixin(Player.class) implements IArmsHost`：注入绑定字段 `armsCore$controlledCore` 并实现五个方法。绑定关系的唯一入口，负责三条换绑路径与输入重置；绑定期间通过 `neoforge:creative_flight` 属性授予飞行许可。 |
+| `common/PlayerHostEvents.java` | 双端共用的 `PlayerTickEvent.Post` 订阅者：置 `noPhysics` 与重置坠距。 |
+| `client/ClientHostPoseEvents.java` | 客户端专属（`Dist.CLIENT`）：按 `DATA_POS` 摆放本地玩家实体并清速度。`LocalPlayer` 只在客户端发行版存在，所以必须单独成类。 |
+| `common/MechaCoreRegistry.java` | 装配体注册表（服务端按 `ServerLevel`、客户端单表）；服务端注册 / 注销时广播创建 / 移除包，并承载登录 / 换维度补发。注销时一并解绑宿主。 |
 | `common/MechaInputHandler.java` | 上行输入的服务端处理链：控制权校验 → 合并环境状态 → 写快照 → 按事件序号幂等投递事件。 |
 | `common/ArmsCoreServerEvents.java` | 两个相位的接线：`PhysicsLevelTickEvent.Pre` 扇出 `prePhysicsTick`，`LevelTickEvent.Post` 写 `syncedData` 并发包；以及补发、断线重置、维度卸载。 |
 | `common/command/ArmsCoreDebugCommand.java` | `/arms` 调试命令（spawn / list / remove / move / jump / stop / event / control）。 |
@@ -77,8 +82,8 @@
 | `network/ARMSNetwork.java` | 载荷注册与协议版本串；四个载荷为下行 `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` / `MechaCoreSyncPayload` 与上行 `MechaInputPayload`。 |
 | `client/ARMSClient.java` | 客户端输入采集与上行发送（`ClientTickEvent.Pre`）。客户端不构造 KCC、不跑状态机。 |
 | `client/ClientMechaAnchor.java` | 客户端可视锚点的采样与插值（含传送 / 断流跳变判据）。 |
-| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成世界位姿矩阵。装配体之外的对象，`ArmsCore` 不持有它，改为逐 Part 渲染时整体删除。 |
-| `client/MechaModelRenderer.java` | 每客户端 tick 采样位姿并驱动动画体，在 `AFTER_ENTITIES` 阶段渲染机体模型；同时画胶囊外接盒与朝向线段作对位参考（`DRAW_DEBUG_CAPSULE_BOX`）。 |
+| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成模型矩阵（`getModelSpaceMatrix` 供挂在宿主实体上的绘制，`getWorldPositionMatrix` 满足接口契约）。装配体之外的对象，`ArmsCore` 不持有它，改为逐 Part 渲染时整体删除。 |
+| `client/MechaPlayerRenderer.java` | 客户机体的持有、驱动与绘制：按装配体 UUID 缓存 `MechaAnimatable`、每客户端 tick 推进动画、在 `RenderPlayerEvent.Pre` 取消玩家模型并就地画出机体。有机体时玩家模型连同其 RenderLayer（护甲 / 手持物 / 披风 / 鞘翅）与阴影全部让位，名称牌不受影响。 |
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进 KCC（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避方向（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
@@ -90,7 +95,8 @@
 ## 代码风格与依赖
 
 - 使用 **Lombok**：`@Getter` / `@Setter` 注解已启用，主源码集与测试源码集各声明一次（`repositories.gradle:127-133`）。字段上的 `@NotNull` / `@Nullable`（JetBrains）会被 Lombok 拷到生成的 getter 上，因此接口的返回值可空性靠字段注解维持。
-- 使用 **Mixin**（`arms_core.mixins.json`），但当前 `mixins` / `client` 数组为空；新增 Mixin 需同步写入该文件。
+- 使用 **Mixin**（`arms_core.mixins.json`），新增 Mixin 需同步写入该文件的 `mixins` 或 `client` 数组。**该文件的 `package` 是一个 Mixin 独占包**：`io.github.sweetzonzi.arms_core.mixin.*` 下的类不能在别处被直接引用（`@Mixin` 目标之外的类放进这个包会报 `cannot be referenced directly`）。
+- **Mixin 注入的成员在普通 Java 编译期不存在于目标类上。** 调用方必须写成 `((IArmsHost) player).applyPose(...)` 或 `player instanceof IArmsHost host` 后经 `host` 调用；`player.applyPose(...)` 这类直接调用**编译不过**。`common/ArmsCore.java#bindHostOf` 是这一形态的便捷封装。
 - 编码统一为 UTF-8（`build.gradle` 的 `options.encoding` 与 `ProcessResources.filteringCharset`）。
 - 包结构：`io.github.sweetzonzi.arms_core.*`，与 `mod_group_id` 一致。
 
@@ -179,5 +185,7 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | `docs/MechaControl设计文档.md` | 早期 `MechaControl` 接口设计。 |
 | `docs/下一步开发TODO.md` | 当前里程碑、逐项待办、跨线程快照决策。 |
 | `docs/ArmsCore双端权威与网络同步实现计划.md` | `ArmsCore` 的服务端权威归属、创建 / 移除协议、上下行同步通道、实施阶段与验收判据。 |
+| `docs/宿主接入与伤害管线设计.md` | 玩家宿主形态、绑定字段与 Mixin 接线、位置权威与 tick 相位、伤害管线的解析端与投递端、装配接入前的临时区域、已知风险与实施顺序。 |
+| `docs/IArmsHost宿主接口设计.md` | 宿主接口的方法集与命名约束、参数的基准与单位、玩家宿主的实现形态、绑定关系的存储与派生索引。 |
 
 - 设计文档的结论与判据以表格和「路径#符号」证据为主，改动代码后若与文档冲突，先按上节复核文档的自包含性，再决定改代码还是改文档。

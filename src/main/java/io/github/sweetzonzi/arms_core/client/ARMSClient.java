@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.client;
 
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
+import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.network.payload.MechaInputPayload;
@@ -106,7 +107,7 @@ public final class ARMSClient {
             resendRemaining = 0;
         }
 
-        UUID coreId = resolveTargetCore(level);
+        UUID coreId = resolveTargetCore(level, player);
         if (coreId == null) return;
 
         collectAndSend(player, coreId);
@@ -115,10 +116,20 @@ public final class ARMSClient {
     /**
      * 选取要控制的装配体。
      * <p>
-     * 当前维度内恰好有一个装配体时自动认领；多个时不做选择（阶段 4 会由宿主骑乘关系
-     * 给出唯一答案）。认领结果由服务端在控制权校验时确认，客户端认领失败的表现是输入被丢弃。
+     * 绑定字段是唯一判据：创建包携带 {@code hostEntityId}，客户端只在它等于本地玩家实体 id 时
+     * 建立绑定，因此这里直接读本地玩家承载的那一个。
+     * <p>
+     * 绑定为空时回落到「当前维度内恰好有一个装配体就自动认领」，只为保留调试路径（{@code /arms spawn}
+     * 会绑定，但手工构造的、{@code hostEntityId} 为
+     * {@link io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload#NO_HOST_ENTITY}
+     * 的装配体没有宿主）。多个装配体且都没有绑定本地玩家时不做选择。
      */
-    private static UUID resolveTargetCore(Level level) {
+    private static UUID resolveTargetCore(Level level, LocalPlayer player) {
+        ArmsCore bound = ((IArmsHost) player).getControlledArmsCore();
+        if (bound != null && MechaCoreRegistry.get(level, bound.getAssemblyId()) != null) {
+            targetCoreId = bound.getAssemblyId();
+            return targetCoreId;
+        }
         UUID current = targetCoreId;
         if (current != null && MechaCoreRegistry.get(level, current) != null) {
             return current;

@@ -42,13 +42,14 @@ import java.util.Map;
  *
  * <h3>位姿来源</h3>
  * 客户端不为 {@code ArmsCore} 重建物理体（计划 D18），位姿只有同步来的 {@code DATA_POS} /
- * {@code DATA_YAW}。采样与插值复用 {@link ClientMechaAnchor}（含传送 / 断流跳变判据），
- * 本类只负责把它的结果组装成 {@link #getWorldPositionMatrix(Number)}——
- * Spark-Core 的渲染入口只认这一个出口（{@code IGeoRenderer.kt:25}）。朝向按
- * {@code rotateY(π − yaw)} 组装，与 Spark-Core 自己的实体公式同式（{@code IEntityAnimatable.kt:31-35}）。
+ * {@code DATA_YAW}。采样与插值复用 {@link ClientMechaAnchor}（含传送 / 断流跳变判据），本类负责把它的
+ * 结果组装成模型矩阵：{@link #getModelSpaceMatrix(Number, double, double, double, float)} 供"画在宿主
+ * 实体上"那条路径使用（锚点就地，位置由实体提供），{@link #getWorldPositionMatrix(Number)} 是接口
+ * 要求的绝对位姿版本，按同步位姿组装。朝向按 {@code rotateY(π − yaw)} 组装，与 Spark-Core 自己的实体
+ * 公式同式（{@code IEntityAnimatable.kt:31-35}）。
  *
  * <h3>生命周期与线程</h3>
- * 由 {@link MechaModelRenderer} 在主线程按装配体 UUID 创建并驱动（一个客户端实例只在一个维度，
+ * 由 {@link MechaPlayerRenderer} 在主线程按装配体 UUID 创建并驱动（一个客户端实例只在一个维度，
  * 与 {@code MechaCoreRegistry} 的客户端表同寿命）：每客户端 tick 采样一次
  * （{@link #clientTick(long)}）并调 {@code AnimController.tick()} 发布骨骼姿态，渲染在同一线程读取。
  * 当前没有动画层，{@code AnimController.physTick()} 不需要调用（无活跃层时它立即返回），
@@ -98,8 +99,12 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     /** 同步位姿的采样与插值状态 */
     private final ClientMechaAnchor anchor = new ClientMechaAnchor();
 
-    /** 组装世界矩阵用的复用缓冲，避免渲染期分配位置对象 */
-    private final Vector3f scratchPos = new Vector3f();
+    /**
+     * 同步插值位姿的复用缓冲。
+     * <p>
+     * 只服务于世界阶段那条路径的调试绘制；模型画在宿主实体上时不用它，因为那条路径的位置来自实体自身。
+     */
+    private final Vector3f worldScratchPos = new Vector3f();
 
     /**
      * 为一个客户端装配体建立动画体。
@@ -156,31 +161,6 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     }
 
     // ==========================================
-    // 位姿：采样与组装
-    // ==========================================
-
-    /** 是否已收到过至少一次同步采样。 */
-    public boolean hasSample() {
-        return anchor.hasSample();
-    }
-
-    /**
-     * 取插值后的锚点位置（胶囊中心）。
-     *
-     * @param clientTick  当前客户端 tick
-     * @param partialTick 渲染部分 tick
-     * @param dest        输出缓冲
-     */
-    public void lerpPosition(long clientTick, float partialTick, Vector3f dest) {
-        anchor.lerpPosition(clientTick, partialTick, dest);
-    }
-
-    /** 取插值后的偏航角（度）。 */
-    public float lerpYaw(long clientTick, float partialTick) {
-        return anchor.lerpYaw(clientTick, partialTick);
-    }
-
-    // ==========================================
     // IAnimatable<ArmsCore>
     // ==========================================
 
@@ -191,11 +171,12 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     }
 
     /**
-     * 世界位姿矩阵：把模型空间换算到世界空间。
+     * 世界位姿矩阵：把模型空间换算到世界空间，锚点是<b>胶囊中心</b>（同步来的 {@code DATA_POS}）。
      * <p>
-     * 组装顺序为「先按 yaw 旋转、再按模型尺度缩放、最后平移到锚点并对齐底面」，
-     * 与 joml 的调用序一致（{@code translate(...).scale(...).rotateY(...)} 右起作用于顶点）。
-     * 偏移与缩放的取值见 {@link MechaModelPreset}。
+     * 这是 {@code IAnimatable} 要求的绝对位姿出口，{@code IGeoRenderer.kt:25} 一类通用渲染路径会调它。
+     * <b>本模组当前的绘制不走这条路</b>：模型挂在宿主实体的渲染事件上，位置由实体提供、朝向取
+     * {@code yBodyRot}，走 {@link #getModelSpaceMatrix}。保留本方法是为了满足接口契约，也为了将来
+     * 出现"没有宿主实体可挂"的渲染需求（远景 LOD、镜像、剪影）时有现成出口。
      * <p>
      * 每次调用返回新矩阵：Spark-Core 会在拿到结果后继续 {@code mul}（{@code BonePose.kt:77-88}），
      * 复用同一个实例会被就地改写。
@@ -204,12 +185,36 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     public @NotNull Matrix4f getWorldPositionMatrix(@NotNull Number partialTicks) {
         float partial = partialTicks.floatValue();
         long clientTick = animatable.getLevel().getGameTime();
-        anchor.lerpPosition(clientTick, partial, scratchPos);
-        float yaw = anchor.lerpYaw(clientTick, partial);
+        anchor.lerpPosition(clientTick, partial, worldScratchPos);
+        return getModelSpaceMatrix(partial,
+                worldScratchPos.x, worldScratchPos.y, worldScratchPos.z,
+                anchor.lerpYaw(clientTick, partial));
+    }
+
+    /**
+     * 模型空间矩阵：锚点就地，只做「平移 → 缩放 → 偏航旋转」。
+     * <p>
+     * 由 {@code client/MechaPlayerRenderer.java} 使用：那条路径的 {@code PoseStack} 已经位于宿主实体的
+     * 渲染原点，而宿主实体的位置<b>就是</b>胶囊中心（{@code common/ArmsCoreServerEvents.java#applyPoseToHost}
+     * 每 tick 写入 {@code 胶囊中心 − HALF_TOTAL}，玩家渲染再按 {@code y + 0.0} 平移，即实体位置本身），
+     * 因此那里传 {@code (0, 0, 0)}，位置不会被计入两遍。
+     * <p>
+     * 收益是模型跟着<b>实体自身</b>的插值走（原版对实体位置与 {@code yBodyRot} 都做相邻 tick 插值），
+     * 而不是跟着 {@code DATA_POS} 的同步延迟走。
+     *
+     * @param partialTicks 渲染部分 tick
+     * @param x            锚点相对宿主渲染原点的偏移 X；画在宿主身上时传 {@code 0}
+     * @param y            同上，Y
+     * @param z            同上，Z
+     * @param yawDeg       宿主实体本帧的偏航（度）；画在宿主身上时传实体自己的朝向插值结果
+     * @return 形如 {@code translate(...).scale(...).rotateY(π − yaw)} 的新矩阵
+     */
+    public @NotNull Matrix4f getModelSpaceMatrix(@NotNull Number partialTicks,
+                                                 double x, double y, double z, float yawDeg) {
         return new Matrix4f()
-                .translate(scratchPos.x, scratchPos.y + MechaModelPreset.FRAME_RENDER_Y_OFFSET, scratchPos.z)
+                .translate((float) x, (float) (y + MechaModelPreset.FRAME_RENDER_Y_OFFSET), (float) z)
                 .scale(MechaModelPreset.FRAME_RENDER_SCALE)
-                .rotateY((float) (Math.PI - Math.toRadians(yaw)));
+                .rotateY((float) (Math.PI - Math.toRadians(yawDeg)));
     }
 
     /**

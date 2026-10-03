@@ -1,10 +1,11 @@
 package io.github.sweetzonzi.arms_core.common;
 
-import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.network.payload.MechaInputPayload;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Map;
@@ -37,9 +38,6 @@ public final class MechaInputHandler {
     private MechaInputHandler() {
     }
 
-    /** 装配体 UUID → 该装配体当前控制者 */
-    private static final Map<UUID, UUID> CONTROLLERS = new ConcurrentHashMap<>();
-
     /** 装配体 UUID → 已投递过的最大事件序号 */
     private static final Map<UUID, Integer> LAST_EVENT_SEQ = new ConcurrentHashMap<>();
 
@@ -48,55 +46,49 @@ public final class MechaInputHandler {
     // ==========================================
 
     /**
-     * 指定控制者。
+     * 判断玩家是否有权写入该装配体的输入。
      * <p>
-     * 控制者变更时重置该装配体的输入状态，否则状态机会卡在上一帧
-     * （例如 {@code jumpHeld = true} 永久蓄力，计划 §3.11、R11）。
+     * 判据是「该玩家的绑定字段是不是这个装配体」（{@link IArmsHost#getControlledArmsCore}），
+     * 绑定关系本身由 {@link IArmsHost#setControlledArmsCore} 维护。
      */
-    public static void setController(ArmsCore core, @Nullable UUID controller) {
-        UUID coreId = core.getAssemblyId();
-        UUID previous;
-        if (controller == null) {
-            previous = CONTROLLERS.remove(coreId);
-        } else {
-            previous = CONTROLLERS.put(coreId, controller);
-        }
-        if (java.util.Objects.equals(previous, controller)) return;
-        resetInput(core);
-        ARMS.LOGGER.info("[ARMS-Core] 装配体 {} 控制者 {} → {}", coreId, previous, controller);
-    }
-
-    /** 清除控制者并重置输入（断线、换维度、退出控制时调用）。 */
-    public static void releaseController(ArmsCore core) {
-        CONTROLLERS.remove(core.getAssemblyId());
-        resetInput(core);
-    }
-
-    /** 该装配体当前登记的控制者。 */
-    public static @Nullable UUID controllerOf(UUID coreId) {
-        return CONTROLLERS.get(coreId);
-    }
-
-    /** 判断玩家是否有权写入该装配体的输入。 */
     public static boolean isController(ArmsCore core, UUID playerId) {
-        UUID controller = CONTROLLERS.get(core.getAssemblyId());
-        return controller != null && controller.equals(playerId);
+        ServerPlayer player = resolveServerPlayer(playerId);
+        return player instanceof IArmsHost host && host.getControlledArmsCore() == core;
     }
 
     /**
      * 把该装配体的输入重置为空快照并清空待消费事件。
      * <p>
-     * 用于断开连接 / 换维度 / 失去控制的路径。
+     * 用于断开连接 / 换维度 / 失去控制的路径。绑定变化时由
+     * {@link IArmsHost#setControlledArmsCore} 的实现调用。
      */
     public static void resetInput(ArmsCore core) {
         core.writeConditionSnapshot(MechaConditionSnapshot.EMPTY);
         LAST_EVENT_SEQ.remove(core.getAssemblyId());
     }
 
-    /** 装配体注销时回收状态，避免控制者表随实例累积。 */
+    /**
+     * 装配体注销时回收每装配体的输入状态。
+     * <p>
+     * 绑定字段不必在这里清：装配体注销的所有路径都会先解绑宿主，见
+     * {@link MechaCoreRegistry#removeServer}。
+     */
     public static void forget(UUID coreId) {
-        CONTROLLERS.remove(coreId);
         LAST_EVENT_SEQ.remove(coreId);
+    }
+
+    /**
+     * 在服务端按 UUID 解析玩家实体。
+     * <p>
+     * 用 {@link net.neoforged.neoforge.server.ServerLifecycleHooks#getCurrentServer()} 而不是
+     * {@code Minecraft.getInstance().player}：后者在专用服务端上返回 {@code null}，在单人游戏里
+     * 返回的是客户端世界的玩家实体，而绑定字段的两端各有一份。
+     *
+     * @return 该 UUID 当前所在的服务端玩家实体；离线或尚未加入时返回 {@code null}
+     */
+    private static @Nullable ServerPlayer resolveServerPlayer(UUID playerId) {
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        return server == null ? null : server.getPlayerList().getPlayer(playerId);
     }
 
     // ==========================================
@@ -114,7 +106,7 @@ public final class MechaInputHandler {
         if (!isController(core, playerId)) {
             return;
         }
-        core.writeConditionSnapshot(merge(payload, core));
+        core.writeConditionSnapshot(merge(payload, core, playerId));
         if (payload.eventBits() != 0) {
             dispatchEvents(payload, core);
         }
@@ -122,9 +114,13 @@ public final class MechaInputHandler {
 
     /**
      * 合并上行输入与服务端本地查询的环境状态。
+     * <p>
+     * <b>环境类字段一律由服务端查询，不采信客户端上行</b>，因此这里必须解析出控制者实体。
+     * 调用方（{@link #apply}）已通过 {@link #isController} 确认发起者就是控制者，而本方法拿到的
+     * 正是同一个已登录玩家，所以解析结果不会为 {@code null}。
      */
-    private static MechaConditionSnapshot merge(MechaInputPayload payload, ArmsCore core) {
-        ServerPlayer controller = controllingPlayer(core);
+    private static MechaConditionSnapshot merge(MechaInputPayload payload, ArmsCore core, UUID playerId) {
+        ServerPlayer controller = resolveServerPlayer(playerId);
         // 用 var 而不写出 Builder 类型：Lombok 生成的 Builder 不保证是 public，
         // 显式写出类型名会让编译期去找一个不可见的类
         var builder = MechaConditionSnapshot.builder()
@@ -173,13 +169,5 @@ public final class MechaInputHandler {
                 core.postEvent(event);
             }
         }
-    }
-
-    private static @Nullable ServerPlayer controllingPlayer(ArmsCore core) {
-        UUID controller = CONTROLLERS.get(core.getAssemblyId());
-        if (controller == null) return null;
-        net.minecraft.server.MinecraftServer server =
-                net.neoforged.neoforge.server.ServerLifecycleHooks.getCurrentServer();
-        return server == null ? null : server.getPlayerList().getPlayer(controller);
     }
 }

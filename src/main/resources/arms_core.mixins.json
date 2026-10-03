@@ -4,6 +4,7 @@
   "package": "io.github.sweetzonzi.arms_core.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "PlayerHostMixin"
   ],
   "client": [
   ],
