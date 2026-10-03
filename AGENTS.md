@@ -22,8 +22,11 @@
 # 数据生成（输出到 src/generated/resources）
 .\gradlew runData
 
-# GameTest 服务器
+# GameTest 服务器（真服务端；无需客户端，跑完自动退出）
 .\gradlew runGameTestServer
+
+# 重新生成 GameTest 场地结构模板（改了场地几何后才需要）
+.\gradlew generateGameTestStructure
 
 # 单元测试（纯逻辑层；不需要启动 Minecraft）
 .\gradlew test
@@ -38,6 +41,35 @@
 - 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaCharacterWalkPhysicsTest`、`MechaCharacterStepTest`、`MechaCharacterFacingTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 会搭真实 `PhysicsSpace` 并按 100 Hz 步进 KCC，断言的是力学结果（稳态速率、转向速率、跳跃继承、越障阈值）。
 - **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
+
+### 两条测试车道
+
+| 车道 | 命令 | 能覆盖什么 |
+|------|------|-----------|
+| JUnit | `.\gradlew test` | 纯逻辑与力学：不需要活着的世界，可搭裸 `PhysicsSpace` 步进 KCC。快（十余秒） |
+| GameTest | `.\gradlew runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环：`ArmsCore` 与 KCC 的构造、注册、位移摄入、命令（`/tp`）等整条管线。跑完自动退出 |
+
+- GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前唯一一处是 `common/gametest/ArmsCoreGameTest.java`。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
+- **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
+- `.vscode/launch.json` 已有 `GameTestServer` 启动项，依赖 `build/moddev/gameTestServerRunProgramArgs.txt`（由 `gradlew prepareGameTestServerRun` 生成）。
+
+### 开发期 mod 目录（两个）
+
+开发期用的第三方 jar 都放在 `../Machine-Max` 下，按「哪些 run 需要它」分两个目录：
+
+| 目录 | 内容 | 在 Machine-Max | 在本仓库 |
+|------|------|----------------|----------|
+| `../Machine-Max/mods/` | 双端都要：Curios、SuperbWarfare | 四个 run 全加载 | 四个 run 全加载 |
+| `../Machine-Max/client_mods/` | 仅客户端：DistantHorizons、Iris、Sodium | 只有 `runClient` 加载 | 只有 `runClient` 加载 |
+
+投放方式两侧一致：双端的那批经本仓库的私有配置 `devSharedMods` 挂到四个 run 的 `<run>AdditionalRuntimeClasspath`，仅客户端的那批经一条文件依赖挂到 `clientAdditionalRuntimeClasspath`（`../Machine-Max/client_mods`）。因此 `runServer` / `runGameTestServer` / `runData` 看得到 Curios 与 SuperbWarfare，看不到 DistantHorizons / Iris / Sodium。
+
+- **不能写进 `runtimeOnly`**：那是所有 run 共用的基类路径。DistantHorizons 会在 `ServerAboutToStart` 里把服务器强转 `DedicatedServer`，而 `GameTestServer` 不是该类型，进程会在启动阶段以 `ClassCastException` 退出。
+- **GeckoLib 与 Spark 不放 `mods/`**：它们的 jar 与其它来源的同名模块同时在类路径上时，ModLauncher 在模块解析阶段直接中止，服务端根本起不来：
+  `java.lang.module.ResolutionException: Modules geckolib and geckolib.neoforge export package … to module mixinextras.neoforge`。
+  GeckoLib 由 Spark-Core 与 Machine-Max 各自的 Maven 依赖 `software.bernie.geckolib:geckolib-neoforge-<mc>:<geckolib_version>` 提供，不需要 jar；Spark 那一条尚未查清第二个模块的来源，jar 现被移出 `mods/`（它本来也不在运行期 Maven 依赖里）。两份 jar 都保留在 `../Machine-Max/mods-disabled/`。
+- 核对办法是直接看 `build/moddev/*LegacyClasspath.txt`（它列出每个 run 实际加载的 jar）。改 Machine-Max 那边之后要重跑 `gradlew prepareXxxRun` 才会刷新这份渲染。
+- 目录不存在时这一步为空，不影响其它 run。
 
 ## 复合构建依赖（极易踩坑）
 
@@ -73,6 +105,7 @@
 | `mixin/PlayerHostMixin.java` | `@Mixin(Player.class) implements IArmsHost`：注入绑定字段 `armsCore$controlledCore` 并实现五个方法。绑定关系的唯一入口，负责三条换绑路径与输入重置；绑定期间通过 `neoforge:creative_flight` 属性授予飞行许可。 |
 | `common/PlayerHostEvents.java` | 双端共用的 `PlayerTickEvent.Post` 订阅者：置 `noPhysics` 与重置坠距。 |
 | `client/ClientHostPoseEvents.java` | 客户端专属（`Dist.CLIENT`）：按 `DATA_POS` 摆放本地玩家实体并清速度。`LocalPlayer` 只在客户端发行版存在，所以必须单独成类。 |
+| `common/HostPositionIntake.java` | 外部位移的摄入：作用域栈（区分「实体自身运动 / 客户端上报采纳 / 本模组运行时回写」与真正的第三方写入）+ pin（warp 落地前 `DATA_POS` 暂取的目标）。判定点是 `mixin/EntityPositionWriteMixin.java` 对 `Entity#setPos` 的注入；采纳后把落点交给 `MechaCharacter#warpTo`。 | 
 | `common/MechaCoreRegistry.java` | 装配体注册表（服务端按 `ServerLevel`、客户端单表）；服务端注册 / 注销时广播创建 / 移除包，并承载登录 / 换维度补发。注销时一并解绑宿主。 |
 | `common/MechaInputHandler.java` | 上行输入的服务端处理链：控制权校验 → 合并环境状态 → 写快照 → 按事件序号幂等投递事件。 |
 | `common/ArmsCoreServerEvents.java` | 两个相位的接线：`PhysicsLevelTickEvent.Pre` 扇出 `prePhysicsTick`，`LevelTickEvent.Post` 写 `syncedData` 并发包；以及补发、断线重置、维度卸载。 |
@@ -82,7 +115,7 @@
 | `network/ARMSNetwork.java` | 载荷注册与协议版本串；四个载荷为下行 `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` / `MechaCoreSyncPayload` 与上行 `MechaInputPayload`。 |
 | `client/ARMSClient.java` | 客户端输入采集与上行发送（`ClientTickEvent.Pre`）。客户端不构造 KCC、不跑状态机。 |
 | `client/ClientMechaAnchor.java` | 客户端可视锚点的采样与插值（含传送 / 断流跳变判据）。 |
-| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成模型矩阵（`getModelSpaceMatrix` 供挂在宿主实体上的绘制，`getWorldPositionMatrix` 满足接口契约）。装配体之外的对象，`ArmsCore` 不持有它，改为逐 Part 渲染时整体删除。 |
+| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成模型矩阵（`getModelSpaceMatrix` 供挂在宿主实体上的绘制，`getWorldPositionMatrix` 满足接口契约）。装配体之外的对象，`ArmsCore` 不持有它；阶段 4.6 改为逐 Part 渲染后整体删除。 |
 | `client/MechaPlayerRenderer.java` | 客户机体的持有、驱动与绘制：按装配体 UUID 缓存 `MechaAnimatable`、每客户端 tick 推进动画、在 `RenderPlayerEvent.Pre` 取消玩家模型并就地画出机体。有机体时玩家模型连同其 RenderLayer（护甲 / 手持物 / 披风 / 鞘翅）与阴影全部让位，名称牌不受影响。 |
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
@@ -90,7 +123,7 @@
 - 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC，作为**控制力的缩放系数**（稳态速率随之等比缩放：站立 6.0 m/s、蹲伏 1.8 m/s；不是另设一道速度上限），进入 dodge 时把水平速度**赋值**到闪避轴上（`v' = (max(v·u, 0) + Δv)·u`：垂直于轴的动量整段抹掉、反向分量截断为 0、同向分量保留并叠加 Δv）。闪避与跳跃同构地**以冲量衡量**：`Δv = I_dodge / m`（`I_dodge` 见 `common/control/MechaControl.java#DODGE_IMPULSE`，`m` 见 `common/control/MechaCharacter.java#getControllerMass`），因此同一个冲量在越重的机体上效果越小；闪避轴 `u` 由输入轴与本步朝向解出，不读当前速度，见 `common/control/MechaCharacter.java#requestDodgeImpulse`。不剥夺自主移动：dodge 的进入动作不写 `MOVE_SPEED_MODIFIER`，见 `common/control/state/graph/MechaStateActions.java#gaitPreservingModifier`。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
 - 行走力学模型（`MechaCharacter.updateWalk`）：输入施加的是**控制力**，速度按矢量积分——地面控制力全额、受抓地力 `μN` 钳制并经 `μ·g·cosθ` 抹掉侧向速度；空中控制力为 `F_max × AIR_CONTROL`（0.30）、无侧向抓地、无摩擦刹车，因此空中难变向而跳跃继承水平速度。顶速是力平衡 `v = k·v_ref` 的解，不靠速度钳制。参数与公式见 `docs/角色控制器-行走物理设计.md` §3.5–§3.9。
 - **已知缺陷：撞墙时速度不会归零。** KCC 的水平通道是「本步位移命令」，原生侧从不把实际走了多远写回，因此撞墙时 `getLinearVelocity` 仍报告那份没能执行的命令：顶墙期间它衰减到一个恒定的小推力、位置却不动，障碍一消失（例如跳过去）就在一个物理步内把位置推满，表现为「从 0 直接加到满速」。已报告上游并附实测数据（[Libbulletjme#58](https://github.com/stephengold/Libbulletjme/issues/58)）；修复方向（位置差分 + 判据取舍）记在 `common/control/MechaCharacter.java#updateWalk` 的 TODO 里，尚未实现。
-- **已知缺陷：外部位移会被两处回写抹掉。** 宿主实体的位置由 KCC 每 tick 产出并在服务端 level 相位回写（`common/ArmsCoreServerEvents.java#applyPoseToHost`），而 `/tp` 一类的本模组之外的写入只改了宿主实体。客户端那一侧：`PlayerTickEvent.Post` 上的 `client/ClientHostPoseEvents.java#applySyncedPose` 用旧 `DATA_POS` 把自己放回旧位置，而它只调 `Entity#setPos`、不写 `xo/yo/zo`（原版处理 `ClientboundPlayerPositionPacket` 时把这一族字段写成了目标），于是同一 tick 渲染出的相机按 `xo` 与当前位置插值——外观上是「闪到目标一帧」，位置其实当 tick 就被抹掉。服务端那一侧：同一 tick 的 level 相位用旧 KCC 位置覆盖实体，tick 尾相位（收到的包在 `net.minecraft.server.MinecraftServer#waitUntilNextTick` 里排空）再由客户端上报的旧位置覆盖一次。KCC 全程不知道这次位移，表现为传送瞬间到达目标、随后被吸回原位。方案（作用域栈 + 锚点的写入来源分类、KCC warp、位姿钉住；实施时服务端那次位置回写一并去掉，宿主实体位置改由客户端上报维护，乘客态位置权威在载具）见 `docs/宿主位置权威与位移摄入设计.md`，尚未实现。该文把这类写入分为四类（自身运动 / 客户端上报采纳 / 外部位移 / 服务端运行时回写），落地前必须给后两类都分类，否则回写自身会被判成外部位移。
+- **已知缺陷：外部位移会被两处回写抹掉。** 宿主实体的位置由 KCC 每 tick 产出并在服务端 level 相位回写（`common/ArmsCoreServerEvents.java#applyPoseToHost`），而 `/tp` 一类的本模组之外的写入只改了宿主实体。客户端那一侧：`PlayerTickEvent.Post` 上的 `client/ClientHostPoseEvents.java#applySyncedPose` 用旧 `DATA_POS` 把自己放回旧位置，而它只调 `Entity#setPos`、不写 `xo/yo/zo`（原版处理 `ClientboundPlayerPositionPacket` 时把这一族字段写成了目标），于是同一 tick 渲染出的相机按 `xo` 与当前位置插值——外观上是「闪到目标一帧」，位置其实当 tick 就被抹掉。服务端那一侧：同一 tick 的 level 相位用旧 KCC 位置覆盖实体，tick 尾相位（收到的包在 `net.minecraft.server.MinecraftServer#waitUntilNextTick` 里排空）再由客户端上报的旧位置覆盖一次。**摄入已落地**：`common/HostPositionIntake.java` 把外部位移转成 KCC 的 warp 并在落地前钉住 `DATA_POS`，判定点是 `mixin/EntityPositionWriteMixin.java` 对 `Entity#setPos` 的注入，三个作用域分别由该 Mixin 与 `mixin/ServerGamePacketListenerMixin.java`、`common/ArmsCoreServerEvents.java#applyPoseToHost` 提供。**仍未落地的是服务端那次每 tick 位置回写**（`docs/宿主位置权威与位移摄入设计.md` §九 第 4 步要删掉它、宿主位置改由客户端上报维护），以及乘客态与客户端那两半；已完成与未完成的逐条清单见该文 §十一。
 - 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
 - 字段表纪律：`ArmsCore` 的 `EntityDataAccessor` 只允许在末尾追加（`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.2）；改动字段表或载荷字段后必须同时提升 `ARMSNetwork.PROTOCOL_VERSION`。
 - 当前状态机与动画模块为部分实现（大量 `TODO`），新增状态机节点/子图需同时更新 `MechaLogicStateMachine` 的 `children` 映射。
@@ -199,7 +232,7 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | `docs/下一步开发TODO.md` | 当前里程碑、逐项待办、跨线程快照决策。 |
 | `docs/ArmsCore双端权威与网络同步实现计划.md` | `ArmsCore` 的服务端权威归属、创建 / 移除协议、上下行同步通道、实施阶段与验收判据。 |
 | `docs/宿主接入与伤害管线设计.md` | 玩家宿主形态、绑定字段与 Mixin 接线、位置权威与 tick 相位、伤害管线的解析端与投递端、装配接入前的临时区域、已知风险与实施顺序。 |
-| `docs/宿主位置权威与位移摄入设计.md` | 原版玩家位移路径地图（唯一权威通道、各入口调用链、不进通道的例外）、宿主实体位置的四类写入者与判据（作用域栈 + 锚点）、KCC warp 与位姿钉住、服务端不回写宿主位置、乘客态的位置权威在载具、验收矩阵与残留风险。**待实施设计**：文中描述的能力当前均未落地（§十一 逐条列出与现状的差异）。 |
+| `docs/宿主位置权威与位移摄入设计.md` | 原版玩家位移路径地图（唯一权威通道、各入口调用链、不进通道的例外）、宿主实体位置的四类写入者与判据（作用域栈 + 锚点）、KCC warp 与位姿钉住、服务端不回写宿主位置、乘客态的位置权威在载具、验收矩阵与残留风险。检测层与动作层已落地；**实现状态、与设计不同的三处（不存锚点、不做维度守卫、判据与投递同一调用栈）、以及仍未落地的四项**见该文 §十一。 |
 | `docs/IArmsHost宿主接口设计.md` | 宿主接口的方法集与命名约束、参数的基准与单位、玩家宿主的实现形态、绑定关系的存储与派生索引。 |
 
 - 设计文档的结论与判据以表格和「路径#符号」证据为主，改动代码后若与文档冲突，先按上节复核文档的自包含性，再决定改代码还是改文档。
