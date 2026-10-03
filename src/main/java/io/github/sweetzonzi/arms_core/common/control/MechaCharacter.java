@@ -280,6 +280,59 @@ public class MechaCharacter extends PhysicsCharacter {
     }
 
     /**
+     * 把控制器直接搬到目标位置 —— 外部位移的摄入落点（warp）。
+     * <p>
+     * 由 {@code common/HostPositionIntake.java#runWarpTask} 在
+     * {@code SparkLevel#submitImmediateTask} 投递的任务里调用（{@code PPhase.ALL}），因此执行线程是物理线程
+     * 或主线程；落在主线程时与物理步并发，写的是幽灵体变换，属既定的良性竞态
+     * （`docs/宿主位置权威与位移摄入设计.md` §6.1 第 1 行）。
+     * <p>
+     * <b>不动碰撞形状。</b> 落点写入走 {@code PhysicsCharacter#setPhysicsLocation}，它只改幽灵体的世界变换；
+     * {@code btKinematicCharacterController#preStep} 在下一次步进时用幽灵体变换刷新 {@code m_currentPosition}
+     * / {@code m_targetPosition}，因此本步内的 warp 于下一步生效，且不需要重建控制器（也就不会碰到
+     * {@link #applyPostureShape} 那条会让进程以 {@code 0xC0000409} 中止的换形状路径）。
+     * <p>
+     * <b>速度：清垂直分量、保留水平分量。</b> 保留水平动量使「跑动中传送」不丢动量；垂直分量清零是原版
+     * 传送的语义对应物（原版对实体 {@code deltaMovement} 做 {@code multiply(1, 0, 1)}），但单位不能照抄
+     * ——那个字段是每 tick 位移，与 KCC 的水平通道差 {@code 20 × physicsStepSeconds} 倍。因此这里读回
+     * 矢量、只把 Y 置零再写回，水平两个分量原样保留。
+     * <p>
+     * <b>本步遗留的施力状态全部复位。</b> 跳跃蓄力、待发闪避冲量、动画位移叠加记账与当步输入意图都属于
+     * 「上一步的落点上下文」，传送后不再成立（§6.1 第 3 行）。其中动画位移叠加记账尤其不能留：
+     * {@link #updateWalk} 下一步按 {@code (读回速度 − overlayDisp) / dt} 反解速度，留着会把动画叠加量
+     * 误读成真实动量。
+     *
+     * @param centerX 目标胶囊中心世界坐标 X
+     * @param centerY 目标胶囊中心世界坐标 Y
+     * @param centerZ 目标胶囊中心世界坐标 Z
+     */
+    public void warpTo(float centerX, float centerY, float centerZ) {
+        // ① 落点：只改幽灵体世界变换
+        setPhysicsLocation(tmp3.set(centerX, centerY, centerZ));
+
+        // ② 速度：保留水平分量、清垂直分量。KCC 的 XZ 是每物理步位移、Y 是 m/s，
+        //    但「保留哪两个分量、清哪一个」与单位无关，因此直接读回再写回
+        Vector3f velocity = getLinearVelocity(tmp1);
+        velocity.y = 0f;
+        setLinearVelocity(velocity);
+
+        // ③ 步内遗留的施力状态与影子记账
+        chargingJump = false;
+        chargeTimer = 0f;
+        dodgeImpulseX = 0f;
+        dodgeImpulseZ = 0f;
+        dodgeImpulsePending = false;
+        overlayDispX = 0f;
+        overlayDispZ = 0f;
+
+        // ④ 当步输入意图：本步的世界方向是按传送前的落点解出的，直接作废；
+        //    下一步 MechaControl 会按新落点重新写入
+        inputDirX = 0f;
+        inputDirZ = 0f;
+        inputHasMove = false;
+    }
+
+    /**
      * 设置移动意图（本体坐标系，即玩家视角相对量）。
      * <p>
      * 行走方向的「移动意图 → 世界方向」变换在本方法内完成：意图按 {@link #currentYaw} 旋转后

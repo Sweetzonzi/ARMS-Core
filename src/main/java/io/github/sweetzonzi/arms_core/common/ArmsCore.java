@@ -186,6 +186,18 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 是否已加入物理空间（避免重复 addCollisionObject） */
     private final AtomicBoolean inPhysicsSpace = new AtomicBoolean(false);
 
+    /**
+     * 宿主位置写入的来源分类与位移摄入（作用域栈 + 锚点 + pin）。
+     * <p>
+     * 由 {@code mixin/EntityPositionWriteMixin} 的判定点写入、{@link #applyExternalDisplacement} 采纳，
+     * 并在 {@code common/ArmsCoreServerEvents.java#syncToClients} 的位姿采样处消费 pin。两端各持有一份：
+     * 客户端实例也持有它，因为客户端玩家实体走的是同一条 {@code Entity#setPos} 注入链。
+     * <p>
+     * 判据与状态机见 `docs/宿主位置权威与位移摄入设计.md` §5、§6。
+     */
+    @Getter
+    private final HostPositionIntake positionIntake;
+
     // ==========================================
     // 构造
     // ==========================================
@@ -220,6 +232,9 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             this.mechaControl = null;
         }
         this.syncedData = buildSyncedData(this);
+        // 放在最后：HostPositionIntake 的判据会读 level 与 authoritative，两者此时都已就位。
+        // 不以字段初始化器写在声明处，那样会在 level 赋值之前构造它
+        this.positionIntake = new HostPositionIntake(this);
     }
 
     /**
@@ -379,6 +394,34 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      */
     public void setHost(@Nullable IArmsHost host) {
         this.host = host;
+    }
+
+    /**
+     * 采纳一次外部位移：改写 {@code DATA_POS} 的来源并提交任务改写 KCC 物理位置。
+     * <p>
+     * 由 {@code mixin/EntityPositionWriteMixin} 与 {@code mixin/ServerGamePacketListenerMixin} 在「作用域栈
+     * 已回到空」的那一次写入之后调用。分类判据（栈空不空）在 {@link HostPositionIntake#isInScope()}，
+     * 采纳与投递在 {@link HostPositionIntake#intake}，本方法只负责把实体当前位置取出来。
+     * <p>
+     * 摄入成立时发生三件事：
+     * <ol>
+     *   <li><b>pin</b> —— 在 warp 真正落地之前，{@code ArmsCoreServerEvents#syncToClients} 用目标填
+     *       {@code DATA_POS}，客户端因此不会被旧的 KCC 位置拉回旧处；</li>
+     *   <li><b>KCC warp</b> —— 经 {@code SparkLevel#submitImmediateTask} 投递
+     *       {@link MechaCharacter#warpTo}，位置落到目标（保留水平动量、清垂直分量、复位本步遗留的施力状态）；</li>
+     *   <li><b>待投递落点</b> —— 落点先写进 {@code HostPositionIntake} 的字段，同一 tick 内多次摄入按最后
+     *       写入者生效。</li>
+     * </ol>
+     * 客户端实例同样走这条路径：它没有 KCC，投递的任务是空操作，但 pin 照常武装，客户端手里的
+     * {@code DATA_POS} 因此与实体位置一致。
+     *
+     * @param host 宿主实体（调用方已确认非空）
+     * @return 已采纳时返回判定结果（目标 + 判定路径）；未采纳时为 {@code null}
+     */
+    public @Nullable HostPositionIntake.Decision applyExternalDisplacement(IArmsHost host) {
+        if (host == null) return null;
+        Entity entity = host.getHostEntity();
+        return positionIntake.intake(entity.getX(), entity.getY(), entity.getZ(), host);
     }
 
     /**

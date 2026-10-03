@@ -1,0 +1,461 @@
+package io.github.sweetzonzi.arms_core.common;
+
+import cn.solarmoon.spark_core.api.SparkLevel;
+import cn.solarmoon.spark_core.util.PPhase;
+import com.jme3.math.Vector3f;
+import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.Locale;
+
+/**
+ * 外部位移的摄入 —— {@code docs/宿主位置权威与位移摄入设计.md} §5、§6 的落地。
+ * <p>
+ * <b>它回答两个问题</b>：这一次 {@code net.minecraft.world.entity.Entity#setPos} 是不是外部位移，
+ * 以及采纳之后要把 KCC 搬到哪、在它落地之前 {@code DATA_POS} 取什么。
+ * <p>
+ * <b>分类靠一个深度计数。</b> 位置写入只有三类已知来源：实体自身运动（{@code Entity#move}）、采纳客户端
+ * 上报（{@code ServerGamePacketListenerImpl#handleMovePlayer}）、以及本模组自己的运行时回写
+ * （{@code ArmsCoreServerEvents#applyPoseToHost}）。三者各被一个作用域包住，作用域非空就一律不摄入，
+ * 栈空才是外部位移候选。用栈而不是布尔，是因为两个作用域会嵌套（{@code handleMovePlayer} 内先调
+ * {@code Entity#move}、后写 {@code absMoveTo}），布尔会被内层的退出提前清零。栈顶的类别码只用于日志。
+ * <p>
+ * <b>不存坐标历史。</b> 判定与采纳都在 {@code setPos} 的注入点当场完成：目标就是那次调用写下去的坐标，
+ * 直接从实体读，不需要与上一次的值比较。唯一留在字段里的是 {@link #getPin() pin 的目标} ——
+ * 它要被 {@code ArmsCoreServerEvents#syncToClients} 在<b>同一 tick 稍后</b>（乃至下一个物理步）读到，
+ * 那时 {@code setPos} 的栈帧早已退出。那是「跨相位传递一个待消费的值」，不是历史记录。
+ * <p>
+ * <b>为什么需要 pin。</b> 服务端 tick 内命令相位早于 level 相位（§1.2）：`/tp` 在命令相位把实体写到目标，
+ * 摄入在此发生；而 {@code syncToClients} 在 level 相位才采样 KCC，此刻 KCC 还停在旧位置。没有 pin，
+ * 这一拍的 {@code DATA_POS} 就是旧值 —— 客户端把自己放回旧处、上报旧值、服务端采纳，传送被整条回路吃掉
+ * （§3.3）。有了它，客户端被钉在目标上，直到 KCC 的 warp 真正落地。
+ * <p>
+ * <b>不承担生命周期。</b> 跨维度的搬迁由装配体重建承担（{@code docs/宿主接入与伤害管线设计.md} §3.1.3：
+ * 「换维度（非重生）」判为重建），因此本类不做维度守卫，也不保存任何等级引用。
+ * <p>
+ * <b>线程模型</b>：作用域栈、pin 的目标与剩余 tick 都是主线程的普通字段（位置写入、包处理、同步写包都在
+ * 主线程）。跨线程的只有两项：待投递的落点（{@link #intake} 在主线程写，{@link #runWarpTask} 在物理线程
+ * 读）与 pin 的落地标志（物理线程写、主线程读）。落点走「先写字段、再投递只读字段的任务」，与既有的
+ * {@code common/MechaCoreRegistry.java#enterPhysicsSpace} 同形。
+ * <p>
+ * <b>为什么单独成类。</b> 作用域栈与 pin 都是「一个装配体一份」的状态，与 {@code ArmsCore} 的生命周期
+ * 完全一致：本类由 {@link ArmsCore} 在自己的构造末尾持有，作用域与 pin 都跟着装配体生灭。独立成类只是
+ * 为了让这份状态有自己的文件与 Javadoc，不引入任何额外的抽象层。验证走 GameTest 车道
+ * （{@code common/gametest/ArmsCoreGameTest.java}）：那里能拿到真的 {@link ArmsCore}，比测试替身更接近
+ * 实际调用路径。
+ *
+ * @author Sweetzonzi
+ */
+public final class HostPositionIntake {
+
+    // ═══════════════════════════════════════════════
+    // 作用域类别码（取设计文档 §5.1 的行号，只用于日志）
+    // ═══════════════════════════════════════════════
+
+    /** 第 1 类「自身运动」：{@code Entity#move} 的两条分支，tick 内发生、随即被基准复位抹掉 */
+    public static final byte SCOPE_SELF_MOTION = 1;
+
+    /** 第 2 类「客户端上报采纳」：{@code ServerGamePacketListenerImpl#handleMovePlayer} 的目标写入与回声 */
+    public static final byte SCOPE_CLIENT_REPORT = 2;
+
+    /** 第 3 类「外部位移」：栈空时的候选，见 {@link #isInScope()} 与 {@link #intake} */
+    public static final byte SCOPE_EXTERNAL = 3;
+
+    /** 第 4 类「服务端运行时回写」：{@code ArmsCoreServerEvents#applyPoseToHost} */
+    public static final byte SCOPE_SERVER_WRITEBACK = 4;
+
+    // ═══════════════════════════════════════════════
+    // 常量
+    // ═══════════════════════════════════════════════
+
+    /** 作用域栈容量：最大嵌套是 2（{@code handleMovePlayer} → {@code Entity#move}），8 层留足余量 */
+    private static final int SCOPE_CAPACITY = 8;
+
+    /**
+     * pin 的 tick 预算。
+     * <p>
+     * 兜底用：物理线程未运行、维度正在卸载等情形下，KCC 侧的 warp 永远不会把落地标志翻起来，若不设上限
+     * 就会把 {@code DATA_POS} 钉在一个永不生效的目标上。取 40 tick（2 s）——正常路径下 warp 在下一物理步
+     * 就执行，这个预算只用来兜底。
+     */
+    private static final int PIN_TICK_BUDGET = 40;
+
+    /** 摄入日志的打印上限，超出后只累计不打印，避免每 tick 刷屏 */
+    private static final int INTAKE_LOG_LIMIT = 8;
+
+    /** 位置比较容差 (m)：只用于 pin 的幂等判据，为 float32 往返留余量 */
+    private static final float POSITION_EPSILON = 1.0e-4f;
+
+    // ═══════════════════════════════════════════════
+    // 身份
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 本份分类状态所属的装配体。
+     * <p>
+     * 判据用到的只有 {@code authoritative}、{@code assemblyId} 与 {@code getKcc()}，而「一个装配体一份
+     * 分类状态」这条不变量本来就要求它跟着装配体走。
+     */
+    private final ArmsCore core;
+
+    // ═══════════════════════════════════════════════
+    // 作用域栈
+    // ═══════════════════════════════════════════════
+
+    /** 各层作用域的类别码，{@code reasons[i]} 是第 {@code i + 1} 层（最内层是 {@code depth - 1}） */
+    private final byte[] reasons = new byte[SCOPE_CAPACITY];
+
+    /** 当前作用域深度；{@code 0} 表示栈空、这次写入是外部位移候选 */
+    private int depth;
+
+    // ═══════════════════════════════════════════════
+    // pin：warp 落地前 DATA_POS 暂取的值
+    // ═══════════════════════════════════════════════
+
+    /** 是否有生效的 pin；读取入口是 {@link #isPinActive()} 与 {@link #getPin()}。 */
+    private boolean pinActive;
+
+    /** pin 的目标（胶囊中心），仅在 {@link #pinActive} 为真时有效 */
+    private final Vector3f pinTarget = new Vector3f();
+
+    /** pin 的剩余 tick 预算 */
+    private int pinTicksLeft;
+
+    /** 物理线程已执行 KCC 侧 warp；由 {@link #markPinLanded()} 写、{@link #getPin()} 读 */
+    private volatile boolean pinLanded;
+
+    // ═══════════════════════════════════════════════
+    // 待投递的 warp 落点
+    // ═══════════════════════════════════════════════
+
+    /** 是否有待执行的 warp */
+    private volatile boolean warpPending;
+
+    /**
+     * 待执行的 warp 落点（胶囊中心，世界坐标）。
+     * <p>
+     * 落点先写字段、再投递一个只读字段的任务，与 {@code MechaCoreRegistry#enterPhysicsSpace} 同形。
+     * 同一 tick 内的多次摄入按<b>最后写入者</b>生效：先投递的任务取到的是最终值，后投递的任务读到
+     * {@link #warpPending} 已为假而直接返回。
+     */
+    private volatile float warpX;
+    private volatile float warpY;
+    private volatile float warpZ;
+
+    // ═══════════════════════════════════════════════
+    // 统计
+    // ═══════════════════════════════════════════════
+
+    /** 已采纳的摄入次数（诊断） */
+    private int intakeCount;
+    /** 已打印的日志行数 */
+    private int loggedCount;
+
+    /**
+     * 由 {@link ArmsCore} 在自己的构造末尾创建。
+     * <p>
+     * 注入体构造不到本类：{@code mixin/EntityPositionWriteMixin} 与
+     * {@code mixin/ServerGamePacketListenerMixin} 不实例化它，只经 {@link ArmsCore#getPositionIntake()}
+     * 取到 {@code ArmsCore} 持有的那一份。构造器保持包私有，与「一个装配体一份分类状态」这条不变量同形。
+     *
+     * @param core 本份状态所属的装配体
+     */
+    HostPositionIntake(ArmsCore core) {
+        this.core = core;
+    }
+
+    // ═══════════════════════════════════════════════
+    // 作用域栈
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 进入一个已知镜像作用域，返回进入前的深度。
+     * <p>
+     * 调用方必须把返回值交给 {@link #exitScope(int)}：只有回到深度 0 的那一次退出才是「一次写入跳变结束」，
+     * 摄入判定就挂在那一处（{@link #leaveAndIntake}）。作用域的平衡由 {@code @WrapMethod} 包装体与
+     * {@code applyPoseToHost} 的 {@code try/finally} 保证，本类不设「按 tick 清深度」的兜底 ——
+     * 那会把状态错误藏起来，且清理时机晚于同 tick 的命令相位。
+     *
+     * @param reason 类别码，取本类的 {@code SCOPE_*} 常量
+     * @return 进入前的深度
+     */
+    public int enterScope(byte reason) {
+        if (depth < SCOPE_CAPACITY) {
+            reasons[depth] = reason;
+        }
+        // 溢出时只继续计数、不再记类别：判定只看深度非零，因此不受影响
+        return depth++;
+    }
+
+    /**
+     * 退出一个作用域。
+     *
+     * @param outerDepth {@link #enterScope(byte)} 返回的深度
+     */
+    public void exitScope(int outerDepth) {
+        // 只读断言式的下溢处理：写入发生在实体 tick 的调用链里，抛异常会把异常带进原版流程。
+        // 真正的不平衡由 ArmsCoreServerEvents 的每 tick 深度断言暴露
+        depth = Math.max(0, Math.min(outerDepth, depth));
+    }
+
+    /**
+     * 作用域退出处的公共收尾：弹栈，若已回到栈空则做摄入判定。
+     * <p>
+     * 两个 {@code @WrapMethod} 包装体的 {@code finally} 都只调这一个方法。判定的目标取实体<b>当前</b>
+     * 的位置：作用域内的写入都已经执行完，而各种作用域的出参是「相对上一位置的增量」而不是绝对目标。
+     * <p>
+     * 嵌套情形下内层退出时深度仍非零，于是不判定；只有最外层那一次退出才判定，那也正是「一次写入跳变
+     * 结束」的时点。
+     *
+     * @param core       宿主实体承载的装配体（调用方已确认非空）
+     * @param host       宿主实体
+     * @param outerDepth {@code enterScope} 返回的深度
+     * @return 已采纳时返回判定结果；未到栈空、或未采纳时为 {@code null}
+     */
+    public static @Nullable Decision leaveAndIntake(ArmsCore core, IArmsHost host, int outerDepth) {
+        HostPositionIntake intake = core.getPositionIntake();
+        intake.exitScope(outerDepth);
+        if (intake.isInScope()) return null;
+        return core.applyExternalDisplacement(host);
+    }
+
+    /** 当前是否在某个已知镜像作用域内；{@code false} 表示这次写入是外部位移候选。 */
+    public boolean isInScope() {
+        return depth > 0;
+    }
+
+    /**
+     * 清空全部分类状态：解绑时调用，让下一次绑定从干净的栈开始。
+     * <p>
+     * 作用域栈与 pin 都属于<b>这一次</b>绑定：留着一个未解除的 pin，下一个宿主的第一拍 {@code DATA_POS}
+     * 就会取到上一个宿主的目标值。
+     */
+    public void reset() {
+        depth = 0;
+        warpPending = false;
+        clearPin();
+    }
+
+    /** 当前作用域深度；{@code 0} 表示栈空。 */
+    public int getScopeDepth() {
+        return depth;
+    }
+
+    /**
+     * 栈顶类别码 —— 这次写入属于哪一类已知镜像。
+     *
+     * @return 类别码；栈空时返回 {@link #SCOPE_EXTERNAL}
+     */
+    public byte topScopeReason() {
+        if (depth <= 0) return SCOPE_EXTERNAL;
+        return reasons[Math.min(depth, SCOPE_CAPACITY) - 1];
+    }
+
+    /**
+     * 把一个类别码转成可读标签，供日志使用。
+     *
+     * @param reason 类别码
+     * @return 中文标签
+     */
+    public static String scopeName(byte reason) {
+        return switch (reason) {
+            case SCOPE_SELF_MOTION -> "1/自身运动";
+            case SCOPE_CLIENT_REPORT -> "2/客户端上报采纳";
+            case SCOPE_SERVER_WRITEBACK -> "4/服务端运行时回写";
+            default -> "3/外部位移";
+        };
+    }
+
+    // ═══════════════════════════════════════════════
+    // 动作层：摄入
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 一次摄入判定的结果。
+     *
+     * @param target 目标（胶囊中心，世界坐标）
+     * @param report 判定路径的文字说明，供逐次日志使用
+     */
+    public record Decision(Vector3f target, String report) {
+    }
+
+    /**
+     * 摄入一次外部位移：把宿主实体的位置写入转成对 KCC 的位置写入，并在 warp 落地前钉住对外位姿。
+     * <p>
+     * 调用方必须已经确认「这次写入不在任何已知镜像作用域内」（{@link #isInScope()} 为假），见
+     * {@link #leaveAndIntake}。
+     * <p>
+     * 两条守卫：
+     * <ol>
+     *   <li><b>绑定</b> —— 宿主引用为空则不摄入；</li>
+     *   <li><b>幂等</b> —— 目标与当前 pin 的落点相同则不重复采纳（实体正在追平一个已在途的目标）。</li>
+     * </ol>
+     * 「重断言当前位置」那一族写入（起床、骑乘、连接相位的基准复位）不需要守卫：它们全部落在作用域内，
+     * 已被栈拦在 {@link #isInScope()} 那一步。
+     * <p>
+     * 通过则按 §6.2 钉住 {@code DATA_POS}，并把落点交给 {@code SparkLevel#submitImmediateTask} 投递
+     * （{@code PPhase.ALL}）。投递与判据同处一个调用栈：落点先写进 {@link #warpPending} 与三个落点字段，
+     * 任务只取它们，因此同一 tick 内的多次摄入按最后写入者生效。
+     *
+     * @param feetX 实体当前 X（包围盒底面基准）
+     * @param feetY 实体当前 Y
+     * @param feetZ 实体当前 Z
+     * @param host  宿主实体
+     * @return 已采纳时返回判定结果；未采纳时为 {@code null}
+     */
+    public @Nullable Decision intake(double feetX, double feetY, double feetZ, IArmsHost host) {
+        if (host == null) return null;
+
+        float targetX = (float) feetX;
+        float targetY = (float) (feetY + MechaBodyPreset.HALF_TOTAL);
+        float targetZ = (float) feetZ;
+
+        // 幂等：目标与当前 pin 的落点相同。此时实体正在追平一个已在途的目标，不重复投递
+        if (pinActive && samePosition(pinTarget.x, pinTarget.y, pinTarget.z,
+                targetX, targetY, targetZ)) {
+            return null;
+        }
+
+        pinActive = true;
+        pinTarget.set(targetX, targetY, targetZ);
+        pinTicksLeft = PIN_TICK_BUDGET;
+        // 先清落地标志再武装：上一次的残留会让新 pin 在第一次 syncToClients 就被误判为已落地
+        pinLanded = false;
+
+        warpX = targetX;
+        warpY = targetY;
+        warpZ = targetZ;
+        warpPending = true;
+        SparkLevel.submitImmediateTask(core.getLevel(), PPhase.ALL, this::runWarpTask);
+
+        intakeCount++;
+        String report = "栈空且不在任何已知镜像作用域内（"
+                + "不在自身运动 / 客户端上报 / 服务端回写三类作用域内）";
+        logIntake(targetX, targetY, targetZ, report);
+        return new Decision(new Vector3f(targetX, targetY, targetZ), report);
+    }
+
+    /** 位置是否等同（三个分量逐个比较，为 float32 往返留一个容差）。 */
+    private static boolean samePosition(float ax, float ay, float az, float bx, float by, float bz) {
+        return Math.abs(ax - bx) < POSITION_EPSILON
+                && Math.abs(ay - by) < POSITION_EPSILON
+                && Math.abs(az - bz) < POSITION_EPSILON;
+    }
+
+    // ═══════════════════════════════════════════════
+    // 动作层：pin
+    // ═══════════════════════════════════════════════
+
+    /**
+     * pin 的只读视图。
+     *
+     * @param x         目标胶囊中心 X
+     * @param y         目标胶囊中心 Y
+     * @param z         目标胶囊中心 Z
+     * @param landed    物理线程是否已执行 KCC 侧 warp
+     * @param ticksLeft 剩余 tick 预算
+     */
+    public record PinView(float x, float y, float z, boolean landed, int ticksLeft) {
+    }
+
+    /**
+     * 当前 pin；没有生效的 pin 时返回 {@code null}。
+     * <p>
+     * {@code syncToClients} 用它的目标填 {@code DATA_POS}，并在 {@code landed} 为真时解除；物理线程完成
+     * warp 后经 {@link #markPinLanded()} 把 {@code landed} 翻起来。
+     *
+     * @return pin 的只读视图；无 pin 时为 {@code null}
+     */
+    public @Nullable PinView getPin() {
+        if (!pinActive) return null;
+        return new PinView(pinTarget.x, pinTarget.y, pinTarget.z, pinLanded, pinTicksLeft);
+    }
+
+    /**
+     * 每个服务端 tick 调一次，递减 pin 的 tick 预算。
+     * <p>
+     * 兜底：物理线程未运行、维度正在卸载等情形下落地标志永远不会翻起来，超过 {@link #PIN_TICK_BUDGET}
+     * 就直接解除，避免钉在一个永不生效的目标上。
+     */
+    public void tickPinBudget() {
+        if (!pinActive) return;
+        if (--pinTicksLeft <= 0) {
+            ARMS.LOGGER.warn("[ARMS-Core] {} 的位移 pin 超过 {} tick 未落地，按兜底解除；目标=({}, {}, {})",
+                    core.getAssemblyId(), PIN_TICK_BUDGET,
+                    fmt(pinTarget.x), fmt(pinTarget.y), fmt(pinTarget.z));
+            clearPin();
+        }
+    }
+
+    /** 物理线程：KCC 侧 warp 已执行，主线程下一次 {@code syncToClients} 可解除 pin。 */
+    public void markPinLanded() {
+        if (pinActive) {
+            pinLanded = true;
+        }
+    }
+
+    /** 解除 pin（落地、超预算、解绑）。 */
+    public void clearPin() {
+        pinActive = false;
+        pinLanded = false;
+        pinTicksLeft = 0;
+    }
+
+    /** 是否有生效的 pin。 */
+    public boolean isPinActive() {
+        return pinActive;
+    }
+
+    // ═══════════════════════════════════════════════
+    // 动作层：执行 warp
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 物理线程（或主线程）执行 KCC 侧 warp。
+     * <p>
+     * {@code PPhase.ALL} 的任务在执行点有两处（物理线程的 {@code prePhysicsTick} / {@code physicsTick} 与
+     * 主线程的 {@code LevelTickEvent.Pre/Post}），落在主线程时与物理步并发，写的是幽灵体变换，属既定的
+     * 良性竞态（`docs/宿主位置权威与位移摄入设计.md` §6.1 第 1 行）。
+     * <p>
+     * 只对权威实例生效：客户端实例不持有 KCC、没有物理空间。非权威实例仍然武装 pin，因为客户端那一侧的
+     * {@code DATA_POS} 由同一条写入产生。
+     */
+    private void runWarpTask() {
+        if (!warpPending) return;
+        warpPending = false;
+        if (!core.isAuthoritative()) return;
+        core.getKcc().warpTo(warpX, warpY, warpZ);
+        markPinLanded();
+    }
+
+    // ═══════════════════════════════════════════════
+    // 诊断
+    // ═══════════════════════════════════════════════
+
+    /** 已采纳的摄入次数。 */
+    public int getIntakeCount() {
+        return intakeCount;
+    }
+
+    private void logIntake(float x, float y, float z, String report) {
+        if (loggedCount >= INTAKE_LOG_LIMIT) return;
+        loggedCount++;
+        ARMS.LOGGER.info("[ARMS-Core] {} 摄入一次外部位移：目标胶囊中心=({}, {}, {})，判定={}",
+                core.getAssemblyId(), fmt(x), fmt(y), fmt(z), report);
+    }
+
+    private static String fmt(float value) {
+        return String.format(Locale.ROOT, "%.3f", value);
+    }
+
+    @Override
+    public String toString() {
+        return "HostPositionIntake[depth=" + depth
+                + ", pin=" + (pinActive
+                        ? "(" + fmt(pinTarget.x) + ", " + fmt(pinTarget.y) + ", " + fmt(pinTarget.z) + ")"
+                                + (pinLanded ? "/已落地" : "/在途")
+                        : "无")
+                + ", intake=" + intakeCount + "]";
+    }
+}

@@ -95,6 +95,10 @@ public class PlayerHostMixin implements IArmsHost {
             core.setHost(this);
         } else {
             MechaInputHandler.resetInput(previous);
+            if (previous != null) {
+                // 解绑时清空分类状态：作用域栈与 pin 都属于这一次绑定，不该留给下一次
+                previous.getPositionIntake().reset();
+            }
         }
         armsCore$syncFlightAbility(core != null);
     }

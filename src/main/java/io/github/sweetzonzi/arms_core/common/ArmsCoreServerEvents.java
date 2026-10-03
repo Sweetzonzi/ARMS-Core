@@ -21,6 +21,7 @@ import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Locale;
@@ -111,8 +112,17 @@ public final class ArmsCoreServerEvents {
 
         // 位姿与速度：每次读都取新对象，不能把复用缓冲直接交给 set
         // （DataItem.setValue 直接存引用，复用会让已入队的旧值被改写）
-        Vector3f position = kcc.getPhysicsLocation(null);
+        Vector3f kccPosition = kcc.getPhysicsLocation(null);
         Vector3f velocity = kcc.getLinearVelocity(null);
+
+        // pin：外部位移被采纳之后、KCC 的 warp 真正落地之前，DATA_POS 取 pin 的目标而不是 KCC 位置。
+        // 没有这一笔，客户端会在 warp 生效前收到旧位置并把自己放回旧处（§3.1）；这也是 DATA_POS 的第二
+        // 个取值来源（`docs/ArmsCore双端权威与位移摄入设计.md` §6.2）。
+        HostPositionIntake.PinView pin = core.getPositionIntake().getPin();
+        Vector3f position = kccPosition;
+        if (pin != null) {
+            position = new Vector3f(pin.x(), pin.y(), pin.z());
+        }
         core.getSyncedData().set(ArmsCore.DATA_POS, toJoml(position));
         core.getSyncedData().set(ArmsCore.DATA_VEL, toJoml(velocity));
 
@@ -121,7 +131,7 @@ public final class ArmsCoreServerEvents {
         core.getSyncedData().set(ArmsCore.DATA_YAW,
                 new Rotations(0f, (float) Math.toDegrees(kcc.getCurrentYaw()), 0f));
 
-        applyPoseToHost(core, kcc, position, velocity);
+        applyPoseToHost(core, kcc, kccPosition, velocity);
 
         // 逻辑层五项：主线程不得读 StateVariableContainer，只读物理线程发布的不可变快照
         MechaControl.LogicStateSnapshot state = core.getLogicState();
@@ -137,6 +147,47 @@ public final class ArmsCoreServerEvents {
         if (dirty != null && !dirty.isEmpty()) {
             PacketDistributor.sendToPlayersInDimension((ServerLevel) core.getLevel(),
                     new MechaCoreSyncPayload(core.getAssemblyId(), dirty));
+        }
+
+        // pin 的生命周期收尾：warp 已落地（或超预算）就解除，下一 tick 起 DATA_POS 回到 KCC 位置
+        releaseLandedPin(core, pin);
+
+        // 只读断言：作用域深度必须归零。非零说明某个注入点的压栈没配对，不修改任何状态
+        assertScopeBalanced(core);
+    }
+
+    /**
+     * 解除已落地的 pin。
+     * <p>
+     * {@code landed} 由物理线程在 warp 执行后置起；主线程在本次采样里观察到它就解除，因此 pin 的实际
+     * 存活窗口是「采纳的那一 tick」加「warp 执行所在的物理步」，正常路径下不超过两个 tick。
+     * <p>
+     * 解除后 {@code DATA_POS} 回到 KCC 位置，两者此时是同一个值（warp 已把 KCC 放到 pin 的目标上），
+     * 因此不会产生「目标 → 回退 → 目标」的抖动。
+     */
+    private static void releaseLandedPin(ArmsCore core, HostPositionIntake.@Nullable PinView pin) {
+        HostPositionIntake intake = core.getPositionIntake();
+        intake.tickPinBudget();
+        if (pin != null && pin.landed()) {
+            intake.clearPin();
+        }
+    }
+
+    /**
+     * 每 tick 的只读断言：作用域深度必须归零。
+     * <p>
+     * 作用域的平衡本来由两个 {@code @WrapMethod} 包装体与 {@code applyPoseToHost} 的 {@code try/finally}
+     * 保证（§5.2），因此这里只报告、不清状态。清理会把「某个注入点没配对」这个状态错误藏起来，而它的
+     * 后果是此后<b>每一次</b>位置写入都被当作已知镜像、外部位移永远不再被摄入。
+     */
+    private static void assertScopeBalanced(ArmsCore core) {
+        HostPositionIntake intake = core.getPositionIntake();
+        int depth = intake.getScopeDepth();
+        if (depth != 0) {
+            ARMS.LOGGER.warn("[ARMS-Core] {} 的作用域栈在本 tick 结束时深度为 {}（栈顶类别={}）；"
+                            + "说明某个位置写入的作用域压栈没配对，此后的外部位移将不再被摄入",
+                    core.getAssemblyId(), depth,
+                    HostPositionIntake.scopeName(intake.topScopeReason()));
         }
     }
 
@@ -168,7 +219,17 @@ public final class ArmsCoreServerEvents {
         if (host == null) return;
         Vec3 entityBefore = host.getHostEntity().position();
         float yRot = (float) Math.toDegrees(kcc.getCurrentYaw());
-        host.applyPose(new Vec3(position.x, position.y, position.z), yRot, yRot);
+        // 第 4 类作用域（服务端运行时回写）：本模组自己写的这一笔不能被判成外部位移，否则每 tick 一次误判。
+        // 用 try/finally 而不是「每个返回点各注入一次」——异常路径也要把栈弹干净
+        // （`docs/宿主位置权威与位移摄入设计.md` §5.2）。
+        // 类别码只影响日志标注：判定只看栈空不空，见 common/HostPositionIntake.java#isInScope
+        int outerDepth = core.getPositionIntake()
+                .enterScope(HostPositionIntake.SCOPE_SERVER_WRITEBACK);
+        try {
+            host.applyPose(new Vec3(position.x, position.y, position.z), yRot, yRot);
+        } finally {
+            core.getPositionIntake().exitScope(outerDepth);
+        }
         host.applyVelocity(new Vec3(velocity.x, velocity.y, velocity.z), core.physicsStepSeconds());
         logHostDrift(core, host, entityBefore, position, velocity);
     }
