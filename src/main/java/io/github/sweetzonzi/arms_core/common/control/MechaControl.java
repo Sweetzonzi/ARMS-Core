@@ -340,12 +340,13 @@ public class MechaControl {
     /**
      * 把逻辑层本帧的产出落到 KCC 上。
      * <p>
-     * 在此之前，状态机产出的 {@code POSTURE} / {@code GAIT} / {@code MOVE_SPEED_MODIFIER}
-     * 只是变量容器里的值，KCC 完全不看它们，因此蹲伏、卧倒、闪避在物理上没有任何效果。
-     * 本方法承担那条缺失的链路，共三项：
+     * 在同一个物理步内，本方法之前状态机产出的 {@code POSTURE} / {@code GAIT} /
+     * {@code MOVE_SPEED_MODIFIER} 还只是变量容器里的值，KCC 不看它们；本方法就是把它们变成
+     * 物理效果的链路，共三项：
      * <ol>
      *   <li><b>速度倍率</b> —— {@code MOVE_SPEED_MODIFIER}（= posture.speedModifier ×
-     *       gait.baseSpeedModifier）写进 KCC，乘在行走净力上</li>
+     *       gait.baseSpeedModifier）写进 KCC，作为控制力的缩放系数（稳态速率随之等比缩放，
+     *       不是另设一道速度上限；见 `docs/角色控制器-行走物理设计.md` §3.6、§3.8.1）</li>
      *   <li><b>胶囊尺寸</b> —— 按 posture 换碰撞形状；蹲伏 / 卧倒压低轮廓</li>
      *   <li><b>闪避冲量</b> —— 进入 dodge 状态的那一帧施加一次性冲量并开启无敌窗口</li>
      * </ol>
@@ -424,9 +425,11 @@ public class MechaControl {
 
         variables.set(StateVariableKeys.ON_GROUND, kcc.onGround());
         float safeDt = Math.max(dt, 1.0e-6f);
-        kcc.getLinearVelocity(stateVelocity);
+        // 走 getHorizontalVelocity 而不是裸读 KCC：它会扣掉动画根运动与闪避冲量这两条
+        // 位移叠加通道，否则一次闪避冲量会让 SPEED 顶出尖峰，把 gait 误推进 drift
+        kcc.getHorizontalVelocity(stateVelocity, safeDt);
         float horizontalSpeed = (float) Math.sqrt(
-                stateVelocity.x * stateVelocity.x + stateVelocity.z * stateVelocity.z) / safeDt;
+                stateVelocity.x * stateVelocity.x + stateVelocity.z * stateVelocity.z);
         variables.set(StateVariableKeys.SPEED, horizontalSpeed);
         variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);
         variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());

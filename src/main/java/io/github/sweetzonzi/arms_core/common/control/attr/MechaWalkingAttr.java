@@ -42,8 +42,19 @@ public final class MechaWalkingAttr {
     /** 超速衰减陡度 (m/s)，§5.1 λ — 越大衰减越缓 */
     public static final float LAMBDA = 2.0f;
 
-    /** 空中控制力衰减因子，§3.7 — 地面值的 5% */
-    public static final float AIR_CONTROL = 0.05f;
+    /**
+     * 空中控制力缩放因子，§3.7 — 控制力取 {@code F_max × 本值}。
+     * <p>
+     * 0.30 对应约 3 m/s² 的水平加速度（F_max = 700 N、质量 70 kg），是地面低速加速度
+     * （约 8 m/s²）的三分之一左右：一次跳跃的滞空时间里能改变数 m/s 的水平速度，足以
+     * 修正落点，但远不足以在空中瞬间掉头——「空中难以变向」由这个量级本身给出，
+     * 不需要额外的方向限制。
+     * <p>
+     * 基准取 {@code F_max} 而不是力-速曲线：功率-力-速曲线是**蹬地推进**模型（肌肉在
+     * 身体移动时对地面做功），空中没有可蹬的反力面，控制力因此不随速率衰减——否则
+     * 高速飞行时空中控制会趋近于零，与「保留一定操作手感」相反。
+     */
+    public static final float AIR_CONTROL = 0.30f;
 
     /** 重力加速度 (m/s²) */
     public static final float GRAVITY = 9.81f;

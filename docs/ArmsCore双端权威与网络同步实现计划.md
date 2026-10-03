@@ -34,7 +34,7 @@
 | 成过包的字段 | `pos` / `vel` / `energy` / `posture` / `vertical` / `jumpCharging` | 位姿与逻辑五项都能过线；`gait` 缺项是因为该次运行全程 `gait = idle`，非未同步 |
 | 上行 → 物理 → 逻辑 → 同步整链 | 写 `jumpPressed = true` 后观察到 `jumpCharging = true`、`vertical` 非 `ground` | 阶段 2 验收的上行链路 |
 | 位姿变化进入脏批 | 5 m 显著位移在 1 个 tick 内进入同步容器 | 阶段 1 对位姿字段的采样机制 |
-| 逻辑层 → 物理：速度倍率 | 站立 40 tick 位移 `2.33 m`，蹲伏同样 40 tick 位移 `0.70 m`，比值 **0.300** | 与 `Posture.CROUCH.speedModifier()` 一致（§3.12.1） |
+| 逻辑层 → 物理：速度倍率 | 站立 40 tick 位移 `2.33 m`，蹲伏同样 40 tick 位移 `0.70 m`，比值 **0.300** | 与 `Posture.CROUCH.speedModifier()` 一致（§3.12.1）。判据是比值；位移与速率的绝对值属于这次运行时的实现。当前实现下站立稳态速率 = `v_ref` = 6.0 m/s、蹲伏 = 1.8 m/s，回归测试 `MechaCharacterWalkPhysicsTest.java#moveSpeedModifierScalesTheEquilibriumSpeed` |
 | 逻辑层 → 物理：闪避冲量 | 投递一次 `DODGE` 后水平位移 **1.24 m** | 设计值 1.2 m = 6 m/s × 0.4 s / 2（§3.12.1） |
 | 逻辑层 → 物理：姿态轮廓 | 无产出 | 蹲伏 / 卧倒的碰撞体积未实现，原因见 §3.12.2 |
 | 注册表生命周期 | 注销后该维度实例数归 0 | 阶段 1 验收的重连 / 换维度无残留 |
@@ -549,26 +549,33 @@ D20 允许 `rootSubPart == null`，代价必须登记清楚，避免验收表出
 #### 3.12.1 逻辑层产出到物理的落地
 
 本计划的阶段清单只覆盖「状态机怎么跑」与「状态怎么同步」，**不包含**「状态机的产出怎么变成物理效果」。
-这一层没有单独列项，实现它需要下面三项落地。注意 `MechaStateVariableKeys.java` 类注释里那句
-「MOVE_SPEED_MODIFIER，KCC 直接读取」描述的是设计意图而不是现存事实：该变量被写入
-（`MechaStateActions.java#gaitWithModifier`），`MechaCharacter` 本身并不读它，其行走参数取自
-`MechaWalkingAttr` / `MechaJumpAttr` 常量。因此在补齐下面三项之前，蹲伏、卧倒、闪避在物理上
-没有表现，只有状态机在变。三项的落地位置与判据如下。
+这一层没有单独列项，实现它需要下面三项落地：速度倍率与闪避冲量已落地，姿态轮廓受库约束阻塞。
+`MechaStateVariableKeys.java` 类注释里那句「MOVE_SPEED_MODIFIER，KCC 直接读取」是事实：该变量由
+`MechaStateActions.java#gaitWithModifier` 写入，由 `MechaControl.java#applyLogicOutputToKcc` 每物理步
+推给 KCC，`MechaCharacter` 据此缩放控制力。三项的落地位置与判据如下。
 
 | 产出 | 落地位置 | 语义 | 验证方式 |
 |------|----------|------|----------|
-| 速度倍率 `MOVE_SPEED_MODIFIER`（= posture.speedModifier × gait.baseSpeedModifier） | `MechaControl.java#applyLogicOutputToKcc` 读变量 → `MechaCharacter.java#setMoveSpeedModifier` 写入 → 在 `MechaCharacter.java#updateWalk` 里同时**折减力**（加速变慢）与**钳制稳态速率**（顶速变低，同处） | 蹲伏 0.3、卧倒 0.1、闪避 0、硬直 0 | 站立与蹲伏各跑 40 tick，位移比 0.300，与 `Posture.CROUCH.speedModifier()` 一致 |
-| 闪避冲量 | `MechaControl.java#applyLogicOutputToKcc` 在进入 dodge 的那一物理步调用 → `MechaCharacter.java#requestDodgeImpulse` 记录方向/初速/时长 → `MechaCharacter.java#consumeDodgeSpeed` 在 `DODGE_DURATION` 内逐物理步叠加并按线性衰减 | 单次闪避位移 = 初速 × 时长 / 2 = 6 × 0.4 / 2 = 1.2 m；同时开启 0.4 s 无敌窗口（`MechaCharacter.java#invulnerable`） | 投递 `DODGE` 事件后水平位移 1.24 m（含衰减离散化误差） |
+| 速度倍率 `MOVE_SPEED_MODIFIER`（= posture.speedModifier × gait.baseSpeedModifier） | `MechaControl.java#applyLogicOutputToKcc` 读变量 → `MechaCharacter.java#setMoveSpeedModifier` 写入 → 在 `MechaCharacter.java#updateWalk` 里经 `MechaCharacter.java#controlForceScale` **缩放控制力**（地面与空中同一套系数） | 蹲伏 0.3、卧倒 0.1、闪避 0、硬直 0；稳态速率随倍率等比缩放（§3.12.1 下段） | 蹲伏倍率 0.3 下稳态速率 = 0.3 × 站立稳态速率 = 1.8 m/s，见 `MechaCharacterWalkPhysicsTest.java#moveSpeedModifierScalesTheEquilibriumSpeed` |
+| 闪避冲量 | `MechaControl.java#applyLogicOutputToKcc` 在进入 dodge 的那一物理步调用 → `MechaCharacter.java#requestDodgeImpulse` 记录方向/初速/时长 → `MechaCharacter.java#consumeDodgeSpeed` 在 `DODGE_DURATION` 内逐物理步叠加并按线性衰减 | 单次闪避位移 = 初速 × 时长 / 2 = 6 × 0.4 / 2 = 1.2 m；同时开启 0.4 s 无敌窗口（`MechaCharacter.java#invulnerable`） | `MechaCharacterWalkPhysicsTest.java#dodgeImpulseMovesTheDesignDistance`（实测约 1.23 m，含离散化误差） |
 | 姿态轮廓（蹲伏 / 卧倒的胶囊尺寸） | **未落地**；原因与两条走不通的路径见 §3.12.2 | — | 无 |
 
-**只折减力是不够的。** 力-速曲线的均衡点几乎正好落在 `v_rated` 上，乘以倍率只是让**加速**变慢，
-最终仍会走到同一个顶速：实测蹲伏倍率 0.3 而稳态速率反而略高于站立。真正的「蹲着走得慢」必须是
-**速度上限**：`MechaCharacter.java#currentTargetSpeed` 解出倍率为 1.0 时的均衡速率
-（含抓地力上限钳制），再乘以本帧倍率作为上限。
+**倍率必须乘在驱动力上，不能乘在净力上。** 均衡条件是「控制力 = 阻力之和」：乘在**净力**上不改变
+`F_net = 0` 的位置，均衡点仍在同一个顶速，只是加速变慢（倍率 0.3 的蹲伏会得到与站立几乎相同的稳态
+速率）。乘在**驱动力**上则让 `k × P/v = c₀ × m × g`，解出 `v = k × v_ref`——倍率直接缩放顶速，
+`MechaCharacter.java#controlForceScale` 就是这个系数的唯一入口。
 
-**闪避冲量不能一次性注入速度。** `MechaCharacter.updateWalk` 每物理步重写速度矢量，一次性注入
-最多活一个物理步（实测 6 m/s 只走出 0.06 m）。必须按窗口逐步积分，因此冲量持有剩余时长并在
-`updateKcc` 之外的位置（`updateWalk` 内）逐帧消费。
+**顶速由力平衡给出，不另设速度上限。** 沿向分量上控制力与阻力相等即到顶：
+`v = k × P_base / (c₀ × m × g)`，平地裸机 = `v_ref` = 6.0 m/s（`MechaWalkingAttr.java#V_REF`）。
+抓地力 `μ × N` 钳制的是控制力本身（起步与转向的能力），不是顶速：匀速时控制力只需抵消约 19% 的
+F_max，远在抓地力上限之下。`MechaCharacter.java#equilibriumSpeed` 解同一个方程，供诊断
+（`MechaCharacter.java#debugGripTarget`）与空中天花板复用。完整模型见
+`docs/角色控制器-行走物理设计.md` §3.5–§3.9。
+
+**闪避冲量走位移叠加通道，按窗口逐步积分。** 冲量写入 KCC 水平通道的是**位移**（m/tick），与物理
+位移共用同一个通道，因此读速度时必须由 `MechaCharacter.java#overlayDispX` 记下并在下一步扣掉：
+不扣的话冲量会被当成速度读回来并逐帧复利（实测设计值 1.2 m 会滚成 56 m）。窗口积分保证闪避距离
+与地面 μ、姿态倍率、当前速率都无关——闪避永远是同一段距离。
 
 #### 3.12.2 姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）为什么按姿态切换不了
 
@@ -804,7 +811,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |------|------|
 | `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_JUMP_CHARGING`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace` |
 | 逻辑状态跨线程出口 | `common/control/MechaControl.java#LogicStateSnapshot`、`#snapshotLogicState` |
-| 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#requestDodgeImpulse`、`#consumeDodgeSpeed`、`#updateWalk`（稳态速率上限那段）、`#currentTargetSpeed` |
+| 逻辑层产出到物理的落地（速度倍率 / 闪避冲量） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#controlForceScale`、`#requestDodgeImpulse`、`#consumeDodgeSpeed`、`#updateWalk`（沿向/侧向分解与三个机制）、`#overlayDispX`、`#getHorizontalVelocity`、`#equilibriumSpeed` |
 | 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_CAPSULE_HEIGHT`、`#capsuleHeightFor`、`#halfTotalFor`、`#newCapsuleShape` |
 | 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape` |
 | 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |

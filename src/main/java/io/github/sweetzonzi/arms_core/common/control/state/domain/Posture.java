@@ -8,7 +8,8 @@ package io.github.sweetzonzi.arms_core.common.control.state.domain;
  * 碰撞体尺寸、跳跃开关、基础移动速度上限、步高等。
  *
  * <p>
- * 最终移动速度修正系数 = {@code posture.speedModifier() × gait.baseSpeedModifier()}。
+ * 最终移动速度修正系数 = {@code posture.speedModifier() × gait.baseSpeedModifier()}，
+ * 它是**控制力的缩放系数**（行走物理设计 §3.8.1）：稳态速率随之等比缩放，不是另设一道速度上限。
  * 例如：crouch(=0.3) + creep(=0.4) → 0.12，stand(=1.0) + sprint(=1.6) → 1.6。
  * KCC 直接读取 {@code ctrl.move_speed_modifier}，不需要查询 posture 或 gait。
  *
@@ -23,8 +24,15 @@ public enum Posture {
     /** 站立 — 默认姿态，1.8m 胶囊，全行动能力 */
     STAND("stand", 1.0f),
 
-    /** 空中 — 离地状态，1.8m 胶囊，极小地面摩擦 */
-    AIR("air", 0.05f),
+    /**
+     * 空中 — 离地状态，1.8m 胶囊。
+     * <p>
+     * 空中倍率取中性 1.0：空中的控制力强度由 {@code MechaWalkingAttr.AIR_CONTROL}（§3.7）单独
+     * 给出，姿态这里再压一次会把两者相乘（0.05 × 0.30 = 1.5%），空中彻底失去操作。
+     * 空中相对地面的差异来自行走物理模型的分支（无侧向抓地、无摩擦刹车、控制力换成
+     * {@code F_max × AIR_CONTROL}），不来自姿态倍率。
+     */
+    AIR("air", 1.0f),
 
     /** 水中 — 浸水状态，无地面摩擦，浮力接管 */
     WATER("water", 0.5f),

@@ -148,8 +148,9 @@ public class MechaCharacter extends PhysicsCharacter {
      * 逻辑层给出的移动速度修正系数（0.0 ~ 1.8）。
      * <p>
      * 由 {@code MechaControl} 每物理步从状态变量 {@code MOVE_SPEED_MODIFIER} 读入，
-     * 等于 {@code posture.speedModifier() × gait.baseSpeedModifier()}。它乘在行走净力上：
-     * 蹲伏、卧倒、闪避、硬直都会通过它改变实际速度。
+     * 等于 {@code posture.speedModifier() × gait.baseSpeedModifier()}。它乘在**控制力**上：
+     * 蹲伏、卧倒、闪避、硬直都会按比例改变稳态速率（§3.6 的力平衡给出 {@code v ∝ 倍率}），
+     * 同时也在空中限制控制力不得超过地面同倍率下的顶速。
      * <p>
      * 默认 1.0 表示「逻辑层尚未写入时的中性值」，与完全不接逻辑层时的行为一致。
      * 写入侧只接受非负值，钳制规则见 {@link #setMoveSpeedModifier(float)}。
@@ -183,6 +184,16 @@ public class MechaCharacter extends PhysicsCharacter {
     private boolean invulnerable;
 
     // ── 物理线程独占状态 ──
+
+    /**
+     * 上一步作为「位移叠加」写进 KCC 的水平位移 (m/tick)。
+     * <p>
+     * 动画根运动与闪避冲量都是叠加在物理位移之上的**位移**，不是速度；但它们和物理位移一起
+     * 写进 KCC 的同一个水平通道（§11），下一步读回来时会被当成速度。若不扣掉，叠加量会逐帧
+     * 复利：实测一次设计值 1.2 m 的闪避冲量会滚成 56 m。读速度时减去本字段即恢复真实速度。
+     */
+    private float overlayDispX;
+    private float overlayDispZ;
 
     /** 是否正在蓄力跳跃（KCC 权威状态，vertical 子机镜像它） */
     @Getter
@@ -384,20 +395,49 @@ public class MechaCharacter extends PhysicsCharacter {
 
 
     /**
-     * 诊断用：当前抓地力上限 (N) 与由它反推出的速率上限 (m/s)。
+     * 诊断用：地面控制力的抓地力上限 (N) 与由力平衡解出的稳态速率 (m/s)。
      * <p>
-     * 力-速曲线给出的均衡速率只有在摩擦力撑得住那个驱动力时才成立；抓地力不足时真实顶速
-     * 远低于曲线值。这个方法把那个上限暴露出来，便于在没有可视化的情况下定位
+     * 稳态速率不是被钳制出来的，而是沿向力平衡的解
+     * {@code k·min(P/v, F_max)·exp(−(v−v_rated)/λ) = (c₀ + sinθ)·m·g}（{@code k} 取中性值 1）。
+     * 抓地力上限 {@code μ·N} 只钳制**控制力**，不直接决定顶速：只有当它低于阻力总和时，
+     * 角色才连匀速都维持不住。这个方法把两者同时暴露出来，便于在没有可视化时定位
      * 「为什么顶速只有 xx」。
      *
-     * @return {@code [抓地力上限 N, 抓地力速率上限 m/s]}
+     * @return {@code [抓地力上限 N, 稳态速率 m/s]}
      */
     public float[] debugGripTarget() {
         float slopeCos = Math.abs(groundNormal.y);
-        float mu = getEffectiveFriction();
-        float normalForce = getControllerMass() * MechaWalkingAttr.GRAVITY * slopeCos;
-        float fEffective = Math.min(computeDriveForce(0f), mu * normalForce);
-        return new float[]{fEffective, MechaWalkingAttr.P_BASE / Math.max(fEffective, EPSILON)};
+        float sinTheta = (float) Math.sqrt(Math.max(0f, 1f - slopeCos * slopeCos));
+        float mass = getControllerMass();
+        float normalForce = mass * MechaWalkingAttr.GRAVITY * slopeCos;
+        float traction = Math.min(computeDriveForce(0f), getEffectiveFriction() * normalForce);
+        float holdForce = (MechaWalkingAttr.C0 + sinTheta) * mass * MechaWalkingAttr.GRAVITY;
+        return new float[]{traction, equilibriumSpeed(holdForce)};
+    }
+
+    /**
+     * 解出力平衡给出的稳态速率 (m/s)，即 {@code computeDriveForce(v) == holdForce} 的根。
+     * <p>
+     * 力-速曲线对速率单调不增，因此直接二分。速率区间上界取 {@code 4 × v_rated}：
+     * 超速衰减区里曲线按 {@code exp(−Δ/λ)} 退场，四个额定速度之外已低于任何可用的阻力。
+     *
+     * @param holdForce 需要被控制力抵消的阻力总和 (N)：内阻 + 坡度分量
+     * @return 稳态速率 (m/s)；阻力大到起步力都撑不住时返回 0
+     */
+    private float equilibriumSpeed(float holdForce) {
+        if (holdForce <= EPSILON) return MechaWalkingAttr.V_RATED;
+        float lo = 0f;
+        float hi = MechaWalkingAttr.V_RATED * 4f;
+        if (computeDriveForce(lo) <= holdForce) return 0f;
+        for (int i = 0; i < 24; i++) {
+            float mid = 0.5f * (lo + hi);
+            if (computeDriveForce(mid) > holdForce) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return 0.5f * (lo + hi);
     }
 
     /**
@@ -531,189 +571,188 @@ public class MechaCharacter extends PhysicsCharacter {
     // ═══════════════════════════════════════════════
 
     /**
-     * 计算行走净力并施加位移（物理线程），支持多通道合成。
+     * 计算行走控制力并施加位移（物理线程），支持多通道合成。
      * <p>
-     * 流程：读取 KCC 当前速度 → 驱动力 → 抓地力钳制 → 空中衰减 → 内阻/坡度扣除
-     * → 净力 → inputScale 调制 → 逻辑层速度倍率调制 → 分离距离折减 → 加速度积分
-     * → 闪避冲量叠加 → setLinearVelocity（含 animDelta 叠加）。
+     * <b>模型是控制力，不是速度。</b>输入只决定控制力的方向与大小，本步能改变多少水平速度
+     * 由 {@code a = F/m} 决定，因此速度是一个有惯性的矢量：加速要时间、转向要先把侧向动量
+     * 抵消掉、起跳时水平速度原样带走。每物理步的流程：
+     * <ol>
+     *   <li>读 KCC 水平速度矢量，按<b>输入方向</b>分解为「沿向分量」与「侧向分量」</li>
+     *   <li>解出控制力：地面 {@code min(力-速曲线, μN)}，空中 {@code F_max × AIR_CONTROL}
+     *       （§3.5、§3.7）</li>
+     *   <li>沿向分量：控制力积分 {@code v += (F/m)·dt}，再扣内阻与坡度分量（§3.6，不反向）</li>
+     *   <li>侧向分量：地面摩擦按 {@code μ·g·cosθ} 抵消（§3.5 的抓地力在侧向上的表现）；
+     *       空中不抵消——这正是「空中难以变向」的力学来源</li>
+     *   <li>空中另受「不可加速」约束（§3.7）：控制力可以转向、可以减速，但水平速率不会
+     *       超过地面同倍率下能维持的顶速，超出时按比例缩回（方向仍然转过去了）</li>
+     *   <li>合成回速度矢量 → {@code setLinearVelocity}（叠加上动画根运动与闪避冲量）</li>
+     * </ol>
      * <p>
-     * 粘滞阻尼（c₁）由 KCC 内部 {@code setLinearDamping} 自动处理，
-     * 我们不手动乘衰减因子——有输入时 netForce 与阻尼抗衡达稳态，
-     * 无输入时沿用当前 KCC 速度作为 walk direction，KCC 阻尼自然衰减至零。
+     * 稳态速率不是被钳制出来的，而是力平衡的自然结果：沿向分量上
+     * {@code k·min(P/v, F_max)·exp(−(v−v_rated)/λ) = c₀·m·g + m·g·sinθ}，
+     * 解出 {@code v = k·P/(c₀·m·g)}（{@code k} 见 {@link #controlForceScale()}）。
+     * 因此缩放控制力就缩放了顶速：蹲伏 0.3 → 1.8 m/s、站立 1.0 → 6 m/s（v_ref）。
+     * <p>
+     * 粘滞阻尼（c₁）由 KCC 内部 {@code setLinearDamping} 自动处理，不在此处手动乘衰减因子。
      * <p>
      * 动画根运动叠加：物理位移（m/tick）与 animDelta（m/tick）直接相加写入 XZ；
      * Y 分量 animDeltaY 需 /dt 转为 m/s 写入 KCC 垂直速度。
      */
     private void updateWalk(float dt) {
-        // 快照 volatile 输入
+        // ── 快照 volatile 输入与调制量 ──
         boolean hasInput = inputHasMove;
         float dirX = inputDirX;
         float dirZ = inputDirZ;
-
-        // 快照动画位移与调制参数
         float adx = animDeltaX;
         float ady = animDeltaY;
         float adz = animDeltaZ;
-        float inScale = inputScale;
-        float sepDist = separationDistance;
-        float speedMod = moveSpeedModifier;
+        float mu = getEffectiveFriction();
+        float mass = getControllerMass();
+        float slopeCos = Math.abs(groundNormal.y); // cos(θ)
+        float sinTheta = (float) Math.sqrt(Math.max(0f, 1f - slopeCos * slopeCos));
 
         // 闪避冲量：本步速率由 consumeDodgeSpeed 推进衰减，整个窗口逐步积分
         float dodgeSpeed = consumeDodgeSpeed(dt);
-        float dodgeX = dodgeDirX;
-        float dodgeZ = dodgeDirZ;
+        float dodgeDisp = dodgeSpeed * dt;
+        float extraX = dodgeDirX * dodgeDisp;
+        float extraZ = dodgeDirZ * dodgeDisp;
 
-        // 从 KCC 读取当前速度：XZ ÷ dt → m/s，Y 已是 m/s
+        // ── 读 KCC 当前水平速度矢量：XZ 是位移 (m/tick)，÷dt → m/s；Y 已是 m/s ──
+        // 位移叠加通道（动画根运动 / 闪避冲量）要先扣掉：它是位移，不是速度
         Vector3f vel = getLinearVelocity(tmp1);
-        float hSpeed = (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z) / dt;
-        float verticalVel = vel.y; // KCC Y 分量即 m/s 速度，无动画位移时透传以免重置重力累积
+        float vx = (vel.x - overlayDispX) / dt;
+        float vz = (vel.z - overlayDispZ) / dt;
+        float hSpeed = (float) Math.sqrt(vx * vx + vz * vz);
+        float verticalVel = vel.y; // 无动画位移时透传，以免重置重力累积
+
+        // Y 分量：动画位移需 /dt 转为 m/s
+        float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
 
         if (hasInput) {
-            // ── 更新爬坡角 ──
-            float mu = getEffectiveFriction();
-            setMaxSlope((float) Math.atan(mu));
-
-            // ── 驱动力（定制点，含多源叠加与力-速曲线）──
-            float fDrive = computeDriveForce(hSpeed);
-
-            // ── 地面抓地力钳制 ──
-            float slopeCos = Math.abs(groundNormal.y); // cos(θ)
-            float normalForce = getControllerMass() * MechaWalkingAttr.GRAVITY * slopeCos;
-            float fEffective;
-            if (grounded) {
-                fEffective = Math.min(fDrive, mu * normalForce);
-            } else {
-                // 空中衰减
-                fEffective = fDrive * MechaWalkingAttr.AIR_CONTROL;
-            }
-
-            // ── 内阻 ──
-            float fResist = MechaWalkingAttr.C0 * getControllerMass() * MechaWalkingAttr.GRAVITY;
-
-            // ── 坡度重力分量 = m·g·sin(θ) ──
-            float sinTheta = (float) Math.sqrt(Math.max(0, 1 - slopeCos * slopeCos));
-            float fSlope = getControllerMass() * MechaWalkingAttr.GRAVITY * sinTheta;
-
-            float fNet = fEffective - fResist - fSlope;
-            if (fNet < 0) fNet = 0;
-
-            // ── inputScale 调制净力（MoLang ctrl.set_input_scale）──
-            fNet *= inScale;
-
-            // ── 蓄力期间行走速度折减 ──
-            if (chargingJump) {
-                float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
-                fNet *= (1.0f - ratio * MechaJumpAttr.CHARGE_WALK_PENALTY);
-            }
-
-            // ── 分离距离保护：行走力随分离距离折减 ──
-            float sepFactor = 1.0f - sepDist / MechaWalkingAttr.SEP_MAX;
-            if (sepFactor < 0) sepFactor = 0;
-            fNet *= sepFactor;
-
-            // ── 逻辑层速度倍率：限制稳态速率 ──
-            // 只折减力是不够的：力-速曲线的均衡点几乎正好落在 v_rated 上，
-            // 折减力只是让加速变慢，最终仍会走到同一个顶速（蹲伏因此看起来没效果）。
-            // 真正的「蹲着走得慢」是一个速度上限，所以这里解出倍率为 1.0 时的均衡速率，
-            // 再乘以本帧倍率作为上限。用 max 组合：倍率 > 1（冲刺）时不会把冲刺压回常速。
-            //
-            // 上限必须把闪避冲量算进去：冲量是设计上「不受姿态倍率折减」的位移，
-            // 若只钳到 hSpeed × speedMod，蹲伏（倍率 0.3）下冲量会被立刻削掉，
-            // 实际只走出 0.06 m 而不是设计值的 2.4 m。
-            float baseTarget = currentTargetSpeed(fResist + fSlope, fEffective);
-            float cappedSpeed = Math.max(baseTarget * speedMod, hSpeed * speedMod) + dodgeSpeed;
-            fNet *= speedMod;
-
-            // ── 手动积分 → setLinearVelocity（含动画根运动叠加）──
-            // 粘滞阻尼由 KCC setLinearDamping 内部处理，不在此处手动乘衰减因子
-            float accel = fNet / getControllerMass();
-            float newSpeed = hSpeed + accel * dt;
-            if (newSpeed > cappedSpeed) newSpeed = cappedSpeed;
-            float dispXZ = newSpeed * dt; // m/s × s → m，即 KCC XZ 位移量 (m/tick)
-
             // dirX / dirZ 已经是世界方向（setMoveIntent 内按本步 currentYaw 解出），
             // 这里再旋转一次就会把朝向计入两遍
 
-            // ── 闪避冲量：一次性叠加到水平位移（m/tick），不受行走力折减影响 ──
-            float dodgeDisp = dodgeSpeed * dt;
-            float extraX = dodgeX * dodgeDisp;
-            float extraZ = dodgeZ * dodgeDisp;
+            // ── 按输入方向分解当前速度：沿向 + 侧向 ──
+            float vAlong = vx * dirX + vz * dirZ;
+            float latX = vx - vAlong * dirX;
+            float latZ = vz - vAlong * dirZ;
 
-            // Y 分量：动画位移需 /dt 转为 m/s；无动画位移时透传 KCC 垂直速度以免重置重力累积
-            float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
+            // ── 控制力的大小（沿输入方向）──
+            float forceScale = controlForceScale();
+            float fControl;
+            float airCeiling = 0f; // > 0 表示本步在空中，按此速率上限约束控制力
+            if (grounded) {
+                setMaxSlope((float) Math.atan(mu)); // §8.1：有输入时爬坡角随 μ 更新
+                // 力-速曲线（定制点，含多源叠加），再按抓地力钳制
+                float fDrive = computeDriveForce(hSpeed) * forceScale;
+                fControl = Math.min(fDrive, mu * mass * MechaWalkingAttr.GRAVITY * slopeCos);
+            } else {
+                // 空中：控制力取 F_max 的一个比例，不扣内阻/坡度——没有蹬地反力，
+                // 内阻与坡度都是地面接触现象，扣掉它们会让空中控制力恒为零
+                fControl = MechaWalkingAttr.F_MAX * MechaWalkingAttr.AIR_CONTROL * forceScale;
+                // §3.7「不可加速」：地面能维持的顶速是本步空中控制力的速率天花板
+                float groundHold = (MechaWalkingAttr.C0 + sinTheta) * mass * MechaWalkingAttr.GRAVITY;
+                airCeiling = equilibriumSpeed(groundHold) * forceScale;
+            }
 
-            setLinearVelocity(tmp2.set(
-                    dirX * dispXZ + adx + extraX, yVel, dirZ * dispXZ + adz + extraZ));
+            // ── ① 控制力积分：v += (F/m)·dt ──
+            vAlong += (fControl / mass) * dt;
 
-        } else {
-            // ── 无输入制动 ──
+            if (grounded) {
+                // ── ② 内阻与坡度：抵消沿向运动，不反向 ──
+                // F_resist = c₀·m·g（§3.6）、F_slope = m·g·sinθ；合成减速度 (c₀ + sinθ)·g
+                // 与质量无关，但均衡速率 v = k·P/(c₀·m·g) 随质量下降——「越重越慢」在此体现
+                float holdDecel = (MechaWalkingAttr.C0 + sinTheta) * MechaWalkingAttr.GRAVITY;
+                float alongAbs = Math.abs(vAlong);
+                if (alongAbs > EPSILON) {
+                    float reduced = alongAbs - Math.min(alongAbs, holdDecel * dt);
+                    vAlong = vAlong < 0f ? -reduced : reduced;
+                } else {
+                    vAlong = 0f;
+                }
+
+                // ── ③ 侧向抓地：静摩擦把「不沿输入方向」的速度按 μ·g·cosθ 抵消 ──
+                // 只作用于侧向分量，沿向的稳态速率因此仍由力平衡决定，不被摩擦污染；
+                // 预算与无输入刹车同一个减速度（§3.9），不另设参数
+                float latSpeed = (float) Math.sqrt(latX * latX + latZ * latZ);
+                if (latSpeed > EPSILON) {
+                    float keep = (latSpeed - Math.min(latSpeed, mu * MechaWalkingAttr.GRAVITY * slopeCos * dt))
+                            / latSpeed;
+                    latX *= keep;
+                    latZ *= keep;
+                } else {
+                    latX = 0f;
+                    latZ = 0f;
+                }
+            }
+            // 空中不抵消侧向分量：水平动量原样保留，转向只能靠上面那点控制力慢慢掰
+
+            vx = vAlong * dirX + latX;
+            vz = vAlong * dirZ + latZ;
+
+            if (airCeiling > 0f) {
+                // 空中天花板只压「加速」，不压转向：超限时按比例缩回，方向仍然转了
+                // （速率保持，矢量朝输入方向旋转）；已高于天花板的动量原样保留，
+                // 闪避冲量与被击飞的速度因此不会被空中控制吃掉
+                float ceiling = Math.max(airCeiling, hSpeed);
+                float speedNow = (float) Math.sqrt(vx * vx + vz * vz);
+                if (speedNow > ceiling && speedNow > EPSILON) {
+                    float keep = ceiling / speedNow;
+                    vx *= keep;
+                    vz *= keep;
+                }
+            }
+
+        } else if (grounded) {
+            // ── 无输入制动（仅地面）──
             // 主动摩擦刹车：减速度 = μ × g × cos(θ)，与质量无关。
             // μ 高（粗糙地面）→ 急停，μ 低（冰面）→ 长距离滑行。
             // 粘滞阻尼 c₁ 由 KCC setLinearDamping 叠加提供空气阻力级衰减。
-            // 动画位移依然叠加（如受击后仰动画），无动画时透传 KCC 垂直速度。
-            // 闪避冲量同样叠加：闪避不需要按住方向键，这正是它的用途。
-            float slopeCos = Math.abs(groundNormal.y);
-            float brakeDecel = getEffectiveFriction() * MechaWalkingAttr.GRAVITY * slopeCos;
+            // 空中不做任何水平制动：没有地面接触就没有摩擦，水平速度原样保留
+            // （跳跃因此继承起跳时的水平速度，落点可预测）。
+            float brakeDecel = mu * MechaWalkingAttr.GRAVITY * slopeCos;
             float newSpeed = hSpeed - brakeDecel * dt;
-            if (newSpeed < 0) newSpeed = 0;
-
-            float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
-
-            float dodgeDisp = dodgeSpeed * dt;
-            float extraX = dodgeX * dodgeDisp;
-            float extraZ = dodgeZ * dodgeDisp;
-
             if (newSpeed > EPSILON) {
-                // 刹车后的速度沿当前实际方向
-                float invSpeed = 1f / hSpeed; // hSpeed > EPSILON 保证非零
-                float dispXZ = newSpeed * dt;
-                setLinearVelocity(tmp2.set(
-                        vel.x * invSpeed * dispXZ + adx + extraX, yVel, vel.z * invSpeed * dispXZ + adz + extraZ));
+                float keep = newSpeed / hSpeed; // hSpeed > EPSILON 保证非零
+                vx *= keep;
+                vz *= keep;
             } else {
-                setLinearVelocity(tmp2.set(adx + extraX, yVel, adz + extraZ));
+                vx = 0f;
+                vz = 0f;
             }
         }
+        // 空中且无输入：不施加任何水平力，速度矢量原样带入下一物理步
+
+        // 闪避冲量与动画位移都是叠加在水平位移上的**位移**（m/tick），不属于速度积分：
+        // 物理位移 (m/s → m/tick) 与它们直接相加。记下本步的叠加量，下一步读速度时扣掉，
+        // 否则叠加量会被当成速度逐帧复利
+        overlayDispX = adx + extraX;
+        overlayDispZ = adz + extraZ;
+        setLinearVelocity(tmp2.set(
+                vx * dt + overlayDispX, yVel, vz * dt + overlayDispZ));
     }
 
     /**
-     * 解出当前阻力下、移动速度倍率为 1.0 时的均衡速率 (m/s)。
+     * 本步控制力的总缩放系数。
      * <p>
-     * 均衡条件是驱动力等于阻力之和：{@code min(P/v, F_max) · exp(−(v−v_rated)/λ) = fResistTotal}。
-     * {@code v ≤ v_rated} 区间内指数项为 1，因此先试 {@code v = P / fResistTotal}：
+     * 四个来源相乘，全部作用在<b>控制力</b>上（而不是净力），因此它们缩放的是稳态速率本身：
+     * 均衡条件 {@code k·min(P/v, F_max) = c₀·m·g + m·g·sinθ} 给出 {@code v ∝ k}。
      * <ul>
-     *   <li>该值落在 {@code [P/F_max, v_rated]} 内时，它就是均衡速率（低速区力-速曲线为
-     *       {@code F = P/v}，恰好与阻力相交于 {@code v = P / 阻力}）</li>
-     *   <li>否则说明均衡点在超速衰减区，用对数反解</li>
+     *   <li>{@link #inputScale} —— MoLang {@code ctrl.set_input_scale}，0 = 全锁</li>
+     *   <li>跳跃蓄力折减 —— 蓄力比线性折减，见 {@link MechaJumpAttr#CHARGE_WALK_PENALTY}</li>
+     *   <li>分离距离折减 —— {@link #separationDistance}，见 {@link MechaWalkingAttr#SEP_MAX}</li>
+     *   <li>{@link #moveSpeedModifier} —— 逻辑层姿态/步态倍率</li>
      * </ul>
-     * 结果再按抓地力上限钳制：摩擦力不足以支撑那么大驱动力时，真实顶速更低。
-     *
-     * @param fResistTotal 需要被驱动力抵消的阻力总和 (N)：内阻 + 坡度分量
-     * @param fEffective   当前抓地力上限 (N)
-     * @return 均衡速率 (m/s)
      */
-    private float currentTargetSpeed(float fResistTotal, float fEffective) {
-        if (fResistTotal <= EPSILON) {
-            // 无阻力时力-速曲线本身就限制了速率
-            return MechaWalkingAttr.V_RATED;
+    private float controlForceScale() {
+        float scale = inputScale;
+        if (chargingJump) {
+            float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
+            scale *= 1.0f - ratio * MechaJumpAttr.CHARGE_WALK_PENALTY;
         }
-        float vLow = MechaWalkingAttr.P_BASE / fResistTotal;
-        float vFMax = MechaWalkingAttr.P_BASE / MechaWalkingAttr.F_MAX;
-        float target;
-        if (vLow <= MechaWalkingAttr.V_RATED && vLow >= vFMax) {
-            target = vLow;
-        } else {
-            // 超速衰减区：P/v · exp(−(v−v_rated)/λ) = fResistTotal
-            float allowed = fResistTotal / MechaWalkingAttr.F_MAX;
-            target = allowed <= 0f
-                    ? 0f
-                    : MechaWalkingAttr.V_RATED - MechaWalkingAttr.LAMBDA * (float) Math.log(allowed);
-        }
-        // 抓地力上限：阻力很小时 v_low 会很大，但摩擦力撑不住那个驱动力
-        if (fEffective > 0f) {
-            float gripTarget = MechaWalkingAttr.P_BASE / fEffective;
-            if (gripTarget < target) return gripTarget;
-        }
-        return target;
+        float sepFactor = 1.0f - separationDistance / MechaWalkingAttr.SEP_MAX;
+        if (sepFactor < 0f) sepFactor = 0f;
+        return scale * sepFactor * moveSpeedModifier;
     }
 
     // ═══════════════════════════════════════════════
@@ -844,9 +883,33 @@ public class MechaCharacter extends PhysicsCharacter {
     // 查询
     // ═══════════════════════════════════════════════
 
-    /** 当前水平速率 (m/s)，从 KCC 速度读取，调试用 */
-    public float getHSpeed() {
-        Vector3f vel = getLinearVelocity(tmp3);
-        return (float) Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+    /**
+     * 当前水平速度 (m/s)，写入 {@code storeResult} 的 x / z；y 原样保留 KCC 的垂直速度。
+     * <p>
+     * KCC 的水平通道存的是**每物理步位移** (m/tick)，且其中混有动画根运动与闪避冲量这两条
+     * 「位移叠加」通道（见 {@link #overlayDispX}）。本方法把叠加量扣掉再除以 dt，因此给出的是
+     * 真正参与控制力积分的速度——逻辑层看到的 {@code SPEED} 不该被一次性冲量顶出尖峰。
+     *
+     * @param storeResult 存放结果的向量（不为 null）
+     * @param dt          物理步长 (s)
+     */
+    public void getHorizontalVelocity(Vector3f storeResult, float dt) {
+        getLinearVelocity(storeResult);
+        storeResult.x = (storeResult.x - overlayDispX) / dt;
+        storeResult.z = (storeResult.z - overlayDispZ) / dt;
+    }
+
+    /**
+     * 当前水平速率 (m/s)，从 KCC 速度读取，调试用。
+     * <p>
+     * 必须由调用方给出物理步长：KCC 的 XZ 分量是**每物理步的位移** (m/tick)，除以 dt 才是
+     * 速率（`docs/角色控制器-行走物理设计.md` §11）。
+     *
+     * @param dt 物理步长 (s)
+     * @return 水平速率 (m/s)
+     */
+    public float getHSpeed(float dt) {
+        getHorizontalVelocity(tmp3, dt);
+        return (float) Math.sqrt(tmp3.x * tmp3.x + tmp3.z * tmp3.z);
     }
 }

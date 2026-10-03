@@ -35,7 +35,7 @@
 .\gradlew clean
 ```
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaCharacterWalkPhysicsTest`、`MechaCharacterStepTest`、`MechaCharacterFacingTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 会搭真实 `PhysicsSpace` 并按 100 Hz 步进 KCC，断言的是力学结果（稳态速率、转向速率、跳跃继承、越障阈值）。
 - **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
@@ -67,7 +67,7 @@
 | `Config.java` | 示例配置（当前为占位），实际逻辑待扩展。 |
 | `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。服务端构造 KCC，客户端经 `newClientInstance` 构造且不持有 KCC。 |
 | `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → KCC 物理积分；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
-| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、行走力、跳跃蓄力、动画根位移合成。 |
+| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、控制力积分（地面全额 + 侧向抓地 / 空中缩放）、跳跃蓄力、动画根位移合成。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
 | `common/IArmsHost.java` | 宿主接口：绑定关系的读写（`getControlledArmsCore` / `setControlledArmsCore`）、`getHostEntity`、位置与速度的落地入口（`applyPose` / `applyVelocity`）。玩家经 Mixin 实现它，Doll / AI 敌人可直接实现。 |
 | `mixin/PlayerHostMixin.java` | `@Mixin(Player.class) implements IArmsHost`：注入绑定字段 `armsCore$controlledCore` 并实现五个方法。绑定关系的唯一入口，负责三条换绑路径与输入重置；绑定期间通过 `neoforge:creative_flight` 属性授予飞行许可。 |
@@ -87,7 +87,8 @@
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进 KCC（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避方向（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
-- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC 并**钳制稳态速率**（只折减力不够，均衡点仍在同一顶速），进入 dodge 时施加按窗口积分的冲量。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
+- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC，作为**控制力的缩放系数**（稳态速率随之等比缩放：站立 6.0 m/s、蹲伏 1.8 m/s；不是另设一道速度上限），进入 dodge 时施加按窗口积分的冲量。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
+- 行走力学模型（`MechaCharacter.updateWalk`）：输入施加的是**控制力**，速度按矢量积分——地面控制力全额、受抓地力 `μN` 钳制并经 `μ·g·cosθ` 抹掉侧向速度；空中控制力为 `F_max × AIR_CONTROL`（0.30）、无侧向抓地、无摩擦刹车，因此空中难变向而跳跃继承水平速度。顶速是力平衡 `v = k·v_ref` 的解，不靠速度钳制。参数与公式见 `docs/角色控制器-行走物理设计.md` §3.5–§3.9。
 - 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
 - 字段表纪律：`ArmsCore` 的 `EntityDataAccessor` 只允许在末尾追加（`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.2）；改动字段表或载荷字段后必须同时提升 `ARMSNetwork.PROTOCOL_VERSION`。
 - 当前状态机与动画模块为部分实现（大量 `TODO`），新增状态机节点/子图需同时更新 `MechaLogicStateMachine` 的 `children` 映射。
