@@ -36,7 +36,8 @@ public enum Gait {
     DRIFT("drift", 0f),
 
     /**
-     * 闪避 — 一次速度阶跃（冲量）+ 短暂无敌帧（翻滚、推进器、空中 dash 等）。
+     * 闪避 — 一次速度矢量赋值（把水平速度赋值到闪避轴上，见
+     * {@code MechaCharacter#requestDodgeImpulse}）+ 短暂无敌帧（翻滚、推进器、空中 dash 等）。
      * <p>
      * {@code baseSpeedModifier} 对本状态<b>没有消费者</b>：dodge 的进入动作刻意不写
      * {@code move_speed_modifier}（见 {@code MechaStateActions#gaitPreservingModifier}），因此闪避

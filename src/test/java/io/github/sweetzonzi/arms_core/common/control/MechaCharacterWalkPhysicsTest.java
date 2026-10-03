@@ -89,6 +89,15 @@ class MechaCharacterWalkPhysicsTest {
         return kcc.getLinearVelocity(null).z / DT;
     }
 
+    /**
+     * 一次闪避在默认素体质量下给出的速度增量 {@code Δv = I_dodge / m} (m/s)。
+     * <p>
+     * 闪避以冲量衡量，期望值必须经质量换算，不能直接拿 {@code DODGE_IMPULSE} 当速率用。
+     */
+    private float dodgeDv() {
+        return MechaControl.DODGE_IMPULSE / kcc.getControllerMass();
+    }
+
     // ═══════════════════════════════════════════════
     // KCC 速度读回的语义（模型依赖它做反馈）
     // ═══════════════════════════════════════════════
@@ -310,19 +319,19 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     // ═══════════════════════════════════════════════
-    // 闪避冲量（速度阶跃，由通用力模型接管）
+    // 闪避（冲量 → Δv = I/m 的速度矢量赋值，由通用力模型接管）
     // ═══════════════════════════════════════════════
 
     /**
-     * 一次闪避 = 一次水平速度阶跃 Δv，并被<b>同一步</b>的地面制动力削减，此后按同一减速度继续衰减。
+     * 一次闪避 = 一次水平速度矢量赋值，并被<b>同一步</b>的地面制动力削减，此后按同一减速度继续衰减。
      * <p>
-     * 判据分两段，合起来钉住「冲量进了速度通道，并且与普通动量共用同一份力学预算」：
+     * 从静止闪避时赋值结果就是 {@code Δv = I_dodge / m}，因此本条同时是「赋值进了速度通道而不是位移
+     * 叠加通道」的判据。分两段，合起来钉住「闪避与普通动量共用同一份力学预算」：
      * <ul>
-     *   <li>施加冲量后的第一步位移对应的步首速率 ≈ {@code Δv}：本步位移
+     *   <li>施加闪避后的第一步位移对应的步首速率 ≈ {@code Δv}：本步位移
      *       {@code = (Δv − μ·g·dt)·dt}，因此反解出 {@code Δv} 只需补回那一步的摩擦量。
-     *       若冲量走的是位移叠加通道（旧实现），同样的反解会得到 {@code μ·g·dt} 那一档，
-     *       而不是 6 m/s；</li>
-     *   <li>此后每步按 {@code μ·g} 递减，与无输入刹车的减速度一致——即冲量没有自己的衰减曲线。</li>
+     *       若闪避走的是位移叠加通道，同样的反解会得到 {@code μ·g·dt} 那一档，而不是 Δv；</li>
+     *   <li>此后每步按 {@code μ·g} 递减，与无输入刹车的减速度一致——即闪避没有自己的衰减曲线。</li>
      * </ul>
      */
     @Test
@@ -330,48 +339,163 @@ class MechaCharacterWalkPhysicsTest {
         kcc.setMoveIntent(0f, 0f);
 
         Vector3f before = kcc.getPhysicsLocation(null);
-        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
                 MechaControl.DODGE_INVULNERABLE_SECONDS);
         step(1);
         Vector3f after = kcc.getPhysicsLocation(null);
 
         float brakePerStep = MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * DT;
         assertEquals(0f, (after.x - before.x) / DT, 1.0e-3f, "冲量方向是 +Z，X 分量应保持 0");
-        assertEquals(MechaControl.DODGE_IMPULSE_SPEED, (after.z - before.z) / DT + brakePerStep, 0.02f,
+        assertEquals(dodgeDv(), (after.z - before.z) / DT + brakePerStep, 0.02f,
                 "闪避本步的位移应等于 Δv 减去同一步的摩擦量，反解出 Δv");
 
         step(10); // 0.1 s
-        assertEquals(MechaControl.DODGE_IMPULSE_SPEED
-                        - brakePerStep - MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * 0.1f,
-                hSpeed(), 0.05f, "冲量带来的速度此后应由地面摩擦按 μ·g 衰减，没有独立曲线");
+        assertEquals(dodgeDv() - brakePerStep - MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * 0.1f,
+                hSpeed(), 0.05f, "闪避带来的速度此后应由地面摩擦按 μ·g 衰减，没有独立曲线");
     }
 
     /**
-     * 闪避冲量注入的是速度，因此它<b>会改变</b>已有的动量——同向叠加，可加速也可抵消。
+     * 闪避以冲量衡量：同一个 {@code I_dodge} 在越重的机体上得到越小的 Δv。
      * <p>
-     * 期望：先以 {@code v} 平移，再施加同向 {@code DODGE_IMPULSE_SPEED}，速率应约为
-     * {@code v + DODGE_IMPULSE_SPEED}。若冲量走的是位移叠加通道，速率会保持在 {@code v}
-     * 不动（旧实现即如此），本条会失败。
+     * 与跳跃同构（{@code v_takeoff = I_jump / m}）：两者都在控制器内除以
+     * {@link MechaCharacter#getControllerMass()}。这里用两倍素体质量的控制器跑同一次闪避，判据取
+     * 「动量守恒」——同一份冲量下 {@code m × Δv} 两边相等，而速率一边是一边的一半。
+     * 若 Δv 是与质量无关的常数，两边的速率会相同、动量差一倍。
      */
     @Test
-    void dodgeImpulseAddsToExistingMomentum() {
+    void dodgeImpulseIsDividedByTheControllerMass() {
+        float doubleMass = 2f * MechaWalkingAttr.MASS;
+        PhysicsSpace heavySpace = new PhysicsSpace(
+                new Vector3f(-500f, -500f, -500f), new Vector3f(500f, 500f, 500f));
+        heavySpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
+        MechaCharacter heavy = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), heavySpace) {
+            @Override
+            protected float getControllerMass() {
+                return doubleMass;
+            }
+        };
+        heavy.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
+        heavySpace.addCollisionObject(heavy);
+
+        float brakePerStep = MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * DT;
+
+        // 对照组：素体质量
+        kcc.setMoveIntent(0f, 0f);
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+        float lightDv = vz() + brakePerStep; // 反解回赋值速率
+
+        // 两倍质量：同一份冲量
+        heavy.setMoveIntent(0f, 0f);
+        heavy.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        heavy.prePhysicsTick(DT);
+        heavySpace.update(DT, 0, 0x0);
+        float heavyDv = heavy.getLinearVelocity(null).z / DT + brakePerStep;
+
+        assertEquals(MechaWalkingAttr.MASS * lightDv, doubleMass * heavyDv, 12f,
+                "同一份冲量下两边动量相等：m × Δv = I_dodge");
+        assertEquals(lightDv / 2f, heavyDv, 0.1f, "两倍质量得到一半的 Δv");
+    }
+
+    /**
+     * 闪避沿原方向时保留全部同向动量并叠加 Δv。
+     * <p>
+     * 期望：先以 {@code v} 平移，再沿同一方向闪避，赋值结果是 {@code max(v·u, 0) + Δv = v + Δv}。
+     * 若闪避走的是位移叠加通道，速率会保持在 {@code v} 不动；若赋值是无条件归零（连同向分量也丢掉），
+     * 速率会回到 {@code Δv}。
+     */
+    @Test
+    void dodgeKeepsTheSameDirectionComponentAndAddsTheImpulse() {
         kcc.setMoveIntent(0f, 0f);
         setHorizontalVelocity(0f, 4f);
 
-        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
                 MechaControl.DODGE_INVULNERABLE_SECONDS);
         step(1);
 
-        assertEquals(4f + MechaControl.DODGE_IMPULSE_SPEED, vz(), 0.1f,
-                "同向闪避应在已有速度上叠加 Δv");
+        assertEquals(4f + dodgeDv(), vz(), 0.1f,
+                "同向闪避应在已有的同向速度上叠加 Δv");
+    }
+
+    /**
+     * 闪避把速度赋值到闪避轴上：垂直于闪避方向的动量被整段抹掉。
+     * <p>
+     * 以 9.6 m/s（sprint 顶速 {@code 1.6 × v_ref}）沿 +Z 进入，向 +X 闪避（轴与运动方向垂直）。
+     * 赋值结果是 {@code (max(v·u, 0) + Δv)·u = Δv·u}，即 +X 方向的 Δv，+Z 的方向上不应留下任何
+     * 残余。本步同时受无输入制动 {@code μ·g·dt} 削减，因此沿轴速率要反解补回那一步。
+     */
+    @Test
+    void dodgeAssignsTheVelocityVectorOntoTheDodgeAxis() {
+        kcc.setMoveIntent(0f, 0f);
+        setHorizontalVelocity(0f, 9.6f);
+
+        kcc.requestDodgeImpulse(1f, 0f, MechaControl.DODGE_IMPULSE,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+
+        float brakePerStep = MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * DT;
+        assertEquals(0f, vz(), 0.02f, "垂直于闪避轴的动量应被抹掉");
+        assertEquals(dodgeDv(), vx() + brakePerStep, 0.05f,
+                "沿轴速率应等于 Δv（本步再被 μ·g 削减一步）");
+    }
+
+    /**
+     * 闪避方向与运动方向相反时，结果是干净的 Δv 反向位移，而不是「抵消旧动量后剩下的残余」。
+     * <p>
+     * 以 9.6 m/s 沿 +Z 进入、向 −Z 闪避：赋值把沿轴的负分量截断为 0 再叠加 Δv，因此得到 −Δv。
+     * 若闪避是把 Δv 加到旧动量上，这里会剩下 {@code 9.6 − Δv}，人仍在朝原方向运动。
+     */
+    @Test
+    void dodgeReversesTheVelocityWhenItOpposesTheMotion() {
+        kcc.setMoveIntent(0f, 0f);
+        setHorizontalVelocity(0f, 9.6f);
+
+        kcc.requestDodgeImpulse(0f, -1f, MechaControl.DODGE_IMPULSE,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+
+        float brakePerStep = MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * DT;
+        assertEquals(-(dodgeDv() - brakePerStep), vz(), 0.05f,
+                "反向闪避应得到 Δv 大小的反向速度，不留旧方向的残余");
+    }
+
+    /**
+     * 空中闪避同样把速度赋值到闪避轴上，且赋值结果成为空中天花板本身。
+     * <p>
+     * 进入速率 9.6 m/s 与闪避轴垂直：赋值后沿轴 Δv、垂直分量归零，因此本步的
+     * {@code hSpeed = max(airCeiling, Δv) = Δv}——空中天花板取的是赋值后的速率，赋值结果被原样保留，
+     * 而进入时的 9.6 m/s 不会把天花板抬到更高的那一档。
+     */
+    @Test
+    void airDodgeAssignsTheVelocityAndTakesOverTheCeiling() {
+        kcc.setMoveIntent(0f, 1f);
+        step(2);
+        kcc.setJumpInput(true, false);
+        step(2);
+        kcc.setJumpInput(false, true);
+        step(1);
+        assertFalse(kcc.onGround(), "先决条件：应已离地");
+
+        // 输入沿 +Z（闪避轴同向），进入速度沿 +X：赋值把 +X 的分量整段抹掉
+        kcc.setMoveIntent(1f, 0f);
+        setHorizontalVelocity(9.6f, 0f);
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+
+        assertEquals(dodgeDv(), vz(), 0.05f,
+                "空中闪避应完整保留赋值后的速率");
+        assertEquals(0f, vx(), 0.02f, "垂直于闪避轴的动量应被抹掉，空中没有摩擦也一样");
     }
 
     /**
      * 空中闪避不被「不可加速」天花板吃掉（§3.7）。
      * <p>
-     * 这条钉住注入顺序：{@code hSpeed} 必须在冲量之后读，否则 {@code ceiling = max(airCeiling,
-     * hSpeed)} 拿到的是不含冲量的旧速率（空中约 0.47 m/s），冲量会被 {@code ceiling/speedNow}
-     * 静默缩掉——量级 6 → 0.47，且不会报任何错。用一个极小的冲量把它与"被缩掉"区分开：
+     * 这条钉住赋值顺序：{@code hSpeed} 必须在赋值之后读，否则 {@code ceiling = max(airCeiling,
+     * hSpeed)} 拿到的是不含本次闪避的旧速率（空中约 0.47 m/s），赋值后的速率会被 {@code ceiling/speedNow}
+     * 静默缩掉——量级 6 → 0.47，且不会报任何错。用一个极小的闪避把它与"被缩掉"区分开：
      * 期望读回 ≈ Δv，而被缩掉时只剩 0.47 m/s。
      */
     @Test
@@ -385,14 +509,16 @@ class MechaCharacterWalkPhysicsTest {
         step(1);
         assertFalse(kcc.onGround(), "先决条件：应已离地");
 
-        kcc.setMoveIntent(0f, 0f); // 松开输入：唯一会改变速率的就是这次冲量
+        kcc.setMoveIntent(0f, 0f); // 松开输入：唯一会改变速率的就是这次闪避
         setHorizontalVelocity(0f, 0f);
 
-        kcc.requestDodgeImpulse(0f, 1f, 1f, MechaControl.DODGE_INVULNERABLE_SECONDS);
+        // 取一份恰好给出 Δv = 1 m/s 的冲量，这样「被缩掉」时的 0.47 m/s 与 Δv 差一个量级
+        kcc.requestDodgeImpulse(0f, 1f, 1f * MechaWalkingAttr.MASS,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
         step(1);
 
         assertEquals(1f, vz(), 0.1f,
-                "空中没有摩擦，冲量应被完整保留（被天花板缩掉时会降到约 0.47 m/s）");
+                "空中没有摩擦，赋值结果应被完整保留（被天花板缩掉时会降到约 0.47 m/s）");
     }
 
     /**
@@ -405,9 +531,9 @@ class MechaCharacterWalkPhysicsTest {
     void dodgeGoesFartherInTheAirThanOnTheGround() {
         // 地面：无输入，制动按 μ·g 磨
         Vector3f groundFrom = kcc.getPhysicsLocation(null);
-        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
                 MechaControl.DODGE_INVULNERABLE_SECONDS);
-        step(100); // 1 s：足够把冲量磨完
+        step(100); // 1 s：足够把赋值带来的速率磨完
         Vector3f groundTo = kcc.getPhysicsLocation(null);
         float groundMoved = groundTo.z - groundFrom.z;
 
@@ -423,14 +549,14 @@ class MechaCharacterWalkPhysicsTest {
         kcc.setMoveIntent(0f, 0f);
         setHorizontalVelocity(0f, 0f);
         Vector3f airFrom = kcc.getPhysicsLocation(null);
-        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE,
                 MechaControl.DODGE_INVULNERABLE_SECONDS);
         step(1);
         float airStep = (kcc.getPhysicsLocation(null).z - airFrom.z) / DT;
 
         assertTrue(groundMoved > 0.2f, "地面闪避应确实位移，实际 " + groundMoved + " m");
-        assertEquals(MechaControl.DODGE_IMPULSE_SPEED, airStep, 0.05f,
-                "空中闪避应完整保留冲量速度，实际 " + airStep + " m/s");
+        assertEquals(dodgeDv(), airStep, 0.1f,
+                "空中闪避应完整保留赋值后的速率，实际 " + airStep + " m/s");
         assertTrue(airStep > groundMoved, "空中闪避的瞬时速率应高于被摩擦磨过的地面闪避");
     }
 }

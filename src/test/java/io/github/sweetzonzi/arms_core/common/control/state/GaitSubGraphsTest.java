@@ -210,7 +210,7 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
     /**
      * 进入 dodge 不改变 {@code MOVE_SPEED_MODIFIER}。
      * <p>
-     * 倍率缩放的是标准 WASD 控制力，而闪避是一次速度阶跃（{@code MechaCharacter.requestDodgeImpulse}），
+     * 倍率缩放的是标准 WASD 控制力，而闪避是一次速度矢量赋值（{@code MechaCharacter.requestDodgeImpulse}），
      * 两者量纲不同、互不干涉。因此冲刺中闪避必须保留 1.6 而不是掉到 0：掉到 0 会让闪避期间无法用
      * 方向键移动，也会让闪避窗口内的稳态速率塌回常速。
      * <p>

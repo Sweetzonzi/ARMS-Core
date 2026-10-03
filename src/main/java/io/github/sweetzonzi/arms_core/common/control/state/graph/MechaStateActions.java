@@ -133,7 +133,7 @@ public final class MechaStateActions {
      * 只写入 gait 枚举与 one-hot 布尔，<b>不动</b> {@code MOVE_SPEED_MODIFIER}。
      * <p>
      * 供 dodge 使用：倍率缩放的是标准 WASD 控制力（{@code MechaCharacter#controlForceScale()}），
-     * 而闪避是一次速度阶跃（{@code MechaCharacter#requestDodgeImpulse}），两者量纲不同、互不干涉。
+     * 而闪避是一次速度矢量赋值（{@code MechaCharacter#requestDodgeImpulse}），两者量纲不同、互不干涉。
      * 因此进入 dodge 时保留进入前的倍率——冲刺中闪避不会掉回常速、站立闪避照常是全速，而闪避
      * 期间仍然可以正常使用方向键（dodge 不是「夺取控制权」的状态；{@code stun} / {@code hard_land}
      * 才是，它们另有 {@link #disableGaitInput()}）。

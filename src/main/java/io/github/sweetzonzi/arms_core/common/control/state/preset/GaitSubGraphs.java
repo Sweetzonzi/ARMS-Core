@@ -23,7 +23,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  * 最终由 KCC 直接读取，无需关心各层枚举值。
  * <p>
  * <b>dodge 是唯一不写该键的状态</b>：它保留进入前的倍率，因为倍率缩放的是 WASD 控制力，而闪避是
- * 一次速度阶跃，两者互不干涉——闪避因此不剥夺自主移动能力。见
+ * 一次速度矢量赋值，两者互不干涉——闪避因此不剥夺自主移动能力。见
  * {@link MechaStateActions#gaitPreservingModifier}。
  *
  * <pre>
@@ -177,7 +177,7 @@ public final class GaitSubGraphs {
         var setJog      = MechaStateActions.gaitWithModifier(Gait.JOG, jogMod);
         var setSprint   = MechaStateActions.gaitWithModifier(Gait.SPRINT, sprintMod);
         var setDrift    = MechaStateActions.gaitWithModifier(Gait.DRIFT, 0f);
-        // dodge 刻意不写 MOVE_SPEED_MODIFIER：倍率缩放的是 WASD 控制力，闪避是一次速度阶跃，
+        // dodge 刻意不写 MOVE_SPEED_MODIFIER：倍率缩放的是 WASD 控制力，闪避是一次速度矢量赋值，
         // 两者互不干涉。闪避因此保留进入前的倍率，并且期间仍可正常使用方向键
         // （见 MechaStateActions.gaitPreservingModifier）
         var setDodge    = MechaStateActions.gaitPreservingModifier(Gait.DODGE);
