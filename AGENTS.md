@@ -47,7 +47,7 @@
 | 车道 | 命令 | 能覆盖什么 |
 |------|------|-----------|
 | JUnit | `.\gradlew test` | 纯逻辑与力学：不需要活着的世界，可搭裸 `PhysicsSpace` 步进 KCC。快（十余秒） |
-| GameTest | `.\gradlew runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环：`ArmsCore` 与 KCC 的构造、注册、位移摄入、命令（`/tp`）等整条管线。跑完自动退出 |
+| GameTest | `.\gradlew runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前只有「物理空间就绪且 `ArmsCore` 构造得出来」这一条探针；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
 
 - GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前唯一一处是 `common/gametest/ArmsCoreGameTest.java`。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
 - **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
@@ -234,5 +234,6 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | `docs/宿主接入与伤害管线设计.md` | 玩家宿主形态、绑定字段与 Mixin 接线、位置权威与 tick 相位、伤害管线的解析端与投递端、装配接入前的临时区域、已知风险与实施顺序。 |
 | `docs/宿主位置权威与位移摄入设计.md` | 原版玩家位移路径地图（唯一权威通道、各入口调用链、不进通道的例外）、宿主实体位置的四类写入者与判据（作用域栈 + 锚点）、KCC warp 与位姿钉住、服务端不回写宿主位置、乘客态的位置权威在载具、验收矩阵与残留风险。检测层与动作层已落地；**实现状态、与设计不同的三处（不存锚点、不做维度守卫、判据与投递同一调用栈）、以及仍未落地的四项**见该文 §十一。 |
 | `docs/IArmsHost宿主接口设计.md` | 宿主接口的方法集与命名约束、参数的基准与单位、玩家宿主的实现形态、绑定关系的存储与派生索引。 |
+| `docs/GameTest车道指南.md` | `runGameTestServer` 起的是什么、一条用例从结构方块到 `succeed()` 的完整链路、场地坐标系（随机原点、网格几何、相对坐标换算）、三条硬限制（随机原点、单精度物理的 ULP 界、单世界共享网格）、控制落点的可选路径。 |
 
 - 设计文档的结论与判据以表格和「路径#符号」证据为主，改动代码后若与文档冲突，先按上节复核文档的自包含性，再决定改代码还是改文档。
