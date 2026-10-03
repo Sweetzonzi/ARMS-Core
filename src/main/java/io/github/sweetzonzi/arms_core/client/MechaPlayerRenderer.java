@@ -57,7 +57,8 @@ import java.util.UUID;
  * <p>
  * 另一个理由是位姿精度：世界阶段渲染必须自己给出模型的世界坐标，而客户端唯一能拿到的独立位姿是同步来的
  * {@code DATA_POS} / {@code DATA_YAW}，它落后服务端一至两个 tick。搬进玩家渲染后，位置取宿主的渲染原点、
- * 朝向取 {@code yBodyRot}，两者都由原版按部分 tick 插值，模型因此不会与实体自身的插值打架。这正是
+ * 朝向取宿主的<b>头朝向</b>（本机玩家即 {@code getYRot()}，他人为 {@code yHeadRot} 的相邻 tick 插值），
+ * 两者都由原版按部分 tick 插值，模型因此不会与实体自身的插值打架。这正是
  * "玩家位置即 KCC 位置"（{@code common/ArmsCoreServerEvents.java#applyPoseToHost}）在渲染侧的收益：
  * 实体在哪，模型就在哪，两者之间没有第三个位姿来源。
  *
@@ -145,11 +146,19 @@ public final class MechaPlayerRenderer {
         event.setCanceled(true);
 
         float partialTick = event.getPartialTick();
-        // 身体偏航取实体自身并做相邻 tick 插值：玩家朝向的权威就在这个字段上（客户端上行 viewYaw
-        // 读的也是它），因此这里不存在"写回朝向"那条反馈环的顾虑。
-        float bodyYaw = Mth.rotLerp(partialTick, player.yBodyRotO, player.yBodyRot);
+        // 机体朝向取「头朝向 / 视线」，不是身体朝向。KCC 的朝向权威来自上行载荷的 viewYaw，而客户端
+        // 上行读的就是 Entity#getYRot()（玩家的 yHeadRot 在服务端被 Player#serverAiStep 置为同一个值）。
+        // yBodyRot 是原版按**移动方向**推进、并把头身夹角夹在 ±50° 的那个角（LivingEntity#tick →
+        // LivingEntity#tickHeadTurn）：横移停在该夹角的饱和值上，原地转视角时几乎不动，都不等于视线。
+        //
+        // 本机玩家直接读 getYRot()：它与上行同源、零延迟。yHeadRot 在本机是服务端按
+        // ClientboundRotateHeadPacket 回传、再经 lerpHeadTo(…, 3) 三步插值的结果，会多出一个往返的
+        // 滞后；它只在观察他人时用——那正是原版渲染他人头部所用的字段。
+        float facingYaw = player == Minecraft.getInstance().player
+                ? player.getYRot()
+                : Mth.rotLerp(partialTick, player.yHeadRotO, player.yHeadRot);
         renderModel(event.getPoseStack(), event.getMultiBufferSource(), level, animatable,
-                player, bodyYaw, partialTick);
+                player, facingYaw, partialTick);
     }
 
     /**
@@ -165,7 +174,7 @@ public final class MechaPlayerRenderer {
      */
     private static void renderModel(PoseStack poseStack, MultiBufferSource buffers, ClientLevel level,
                                     MechaAnimatable animatable, Player player,
-                                    float bodyYaw, float partialTick) {
+                                    float facingYaw, float partialTick) {
         ModelInstance model = animatable.getModelController().getModel();
         if (model == null) return;
         OModel origin = model.getOrigin();
@@ -184,7 +193,7 @@ public final class MechaPlayerRenderer {
 
         poseStack.pushPose();
         poseStack.translate(0.0, MechaBodyPreset.HALF_TOTAL, 0.0);
-        poseStack.mulPose(animatable.getModelSpaceMatrix(partialTick, 0.0, 0.0, 0.0, bodyYaw));
+        poseStack.mulPose(animatable.getModelSpaceMatrix(partialTick, 0.0, 0.0, 0.0, facingYaw));
         for (OBone bone : origin.getBones().values()) {
             boolean glow = bone.getShouldGlow();
             if (glow && glowing == null) {

@@ -174,9 +174,9 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * 世界位姿矩阵：把模型空间换算到世界空间，锚点是<b>胶囊中心</b>（同步来的 {@code DATA_POS}）。
      * <p>
      * 这是 {@code IAnimatable} 要求的绝对位姿出口，{@code IGeoRenderer.kt:25} 一类通用渲染路径会调它。
-     * <b>本模组当前的绘制不走这条路</b>：模型挂在宿主实体的渲染事件上，位置由实体提供、朝向取
-     * {@code yBodyRot}，走 {@link #getModelSpaceMatrix}。保留本方法是为了满足接口契约，也为了将来
-     * 出现"没有宿主实体可挂"的渲染需求（远景 LOD、镜像、剪影）时有现成出口。
+     * <b>本模组当前的绘制不走这条路</b>：模型挂在宿主实体的渲染事件上，位置由实体提供、朝向取宿主的
+     * <b>头朝向</b>（{@code client/MechaPlayerRenderer.java#onRenderPlayerPre}），走 {@link #getModelSpaceMatrix}。
+     * 保留本方法是为了满足接口契约，也为了将来出现"没有宿主实体可挂"的渲染需求（远景 LOD、镜像、剪影）时有现成出口。
      * <p>
      * 每次调用返回新矩阵：Spark-Core 会在拿到结果后继续 {@code mul}（{@code BonePose.kt:77-88}），
      * 复用同一个实例会被就地改写。
@@ -199,14 +199,16 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * 每 tick 写入 {@code 胶囊中心 − HALF_TOTAL}，玩家渲染再按 {@code y + 0.0} 平移，即实体位置本身），
      * 因此那里传 {@code (0, 0, 0)}，位置不会被计入两遍。
      * <p>
-     * 收益是模型跟着<b>实体自身</b>的插值走（原版对实体位置与 {@code yBodyRot} 都做相邻 tick 插值），
+     * 收益是模型跟着<b>实体自身</b>的插值走（原版对实体位置与头朝向都做相邻 tick 插值），
      * 而不是跟着 {@code DATA_POS} 的同步延迟走。
      *
      * @param partialTicks 渲染部分 tick
      * @param x            锚点相对宿主渲染原点的偏移 X；画在宿主身上时传 {@code 0}
      * @param y            同上，Y
      * @param z            同上，Z
-     * @param yawDeg       宿主实体本帧的偏航（度）；画在宿主身上时传实体自己的朝向插值结果
+     * @param yawDeg       宿主实体本帧的朝向（度）；画在宿主身上时传宿主的头朝向（本机玩家为
+     *                     {@code getYRot()}，他人为 {@code yHeadRot} 的插值结果），它也是 KCC
+     *                     {@code currentYaw} 的来源
      * @return 形如 {@code translate(...).scale(...).rotateY(π − yaw)} 的新矩阵
      */
     public @NotNull Matrix4f getModelSpaceMatrix(@NotNull Number partialTicks,
