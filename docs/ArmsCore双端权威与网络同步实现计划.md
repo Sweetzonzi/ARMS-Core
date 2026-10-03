@@ -14,7 +14,7 @@
 | 阶段 1：服务端权威 + 下行通道 | 已落地 | `ARMSNetworkCodecTest` 的编解码往返；专用服务端实测（见下方「验证记录」） |
 | 阶段 2：客户端输入上行 | 已落地 | 服务端实测中的输入写入链路；服务端合并与序号幂等由 `MechaInputHandler` 实现 |
 | 阶段 3：同步通道完善 | 待执行 | — |
-| 阶段 4：宿主与装配体接入 | 待执行 | — |
+| 阶段 4：宿主与装配体接入 | 部分落地 | 宿主接口（4.1）、宿主引用（4.2）、渲染侧（`client/MechaPlayerRenderer.java`）已落地；装备接入、素体定义与伤害管线未落地，逐项见 §10.1 与 `docs/宿主接入与伤害管线设计.md` §十 |
 
 **不在阶段清单内但已补齐的一项**：状态机产出到物理的落地（速度倍率、闪避、姿态轮廓）。
 本计划的分阶段只覆盖「状态机怎么跑」与「状态怎么同步」，不含「产出怎么变成物理效果」；
@@ -189,7 +189,7 @@ variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
 
 | accessor 常量 | 类型 | 序列化器 | 内容与语义 |
 |---------------|------|----------|------------|
-| `DATA_POS` | `org.joml.Vector3f` | `VECTOR3` | KCC 物理位置（世界坐标，胶囊中心）。它是角色控制器自身的位置，不等于根 SubPart 的位置，也不等于宿主实体的位置（§3.14） |
+| `DATA_POS` | `org.joml.Vector3f` | `VECTOR3` | KCC 物理位置（世界坐标，胶囊中心）。它是角色控制器自身的位置，不等于根 SubPart 的位置，也不等于宿主实体的位置（§3.14）。**一个例外**：`docs/宿主位置权威与位移摄入设计.md` §6.2 的 pin 生效期间它填的是该次摄入的目标值（对外声称的权威位姿），pin 解除后回到 KCC 位置 |
 | `DATA_VEL` | `org.joml.Vector3f` | `VECTOR3` | KCC 线速度。**水平与垂直分量单位不同**（§3.10）：水平为每物理步位移，垂直为 m/s。它用于未来本地插值 / 本地物理查询，当前阶段只做透传 |
 | `DATA_YAW` | `net.minecraft.core.Rotations` | `ROTATIONS` | `MechaCharacter.currentYaw`，即 KCC 的**绝对** Y 朝向，单位**度**，仅偏航有效。它与躯干朝向解耦（§1.1、D16、D17）：躯干朝向由 SubPart 通道承载，是受约束牵引的下游量，可以落后、可以倾斜，RAGDOLL 后完全独立 |
 | `DATA_POSTURE` | `String` | `STRING` | `Posture.molangName()` |
@@ -726,7 +726,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 2.2 | 客户端采集与发送 | `ClientTickEvent.Pre` 采集 WASD / 跳跃 / 冲刺 / 蹲伏 / 视角，打包上行；仅值变化、`eventBits` 非空、或距上次发包 > 1 s 时发送（§3.11） |
 | 2.3 | 事件序号与重发窗口 | 客户端维护 `eventSeq` 与未确认 `eventBits`，连续 N 个包（建议 3）携带同一对；服务端记录 `lastEventSeq`，仅在新序号时投递 `MechaEvent`，重复到达不重复投递（D7、§3.11） |
 | 2.4 | 服务端合并与写入 | 按 §3.11 的处理链合并"上行输入 + 本地环境"后 `writeConditionSnapshot`；环境类字段此时仍由服务端临时从控制者实体查询（阶段 4 移交给 `IArmsHost`） |
-| 2.5 | 控制权校验（最小版） | 阶段 2 先以"`ArmsCore` 记录的创建者 / 调试命令指定的控制者"为准；阶段 4 换为宿主实体链（`getControllingPassenger()`） |
+| 2.5 | 控制权校验（最小版） | 阶段 2 先以"`ArmsCore` 记录的创建者 / 调试命令指定的控制者"为准；阶段 4 换为宿主实体链（`getControllingPassenger()`）。**已落地的是第三条路径**：控制权由绑定字段派生（`common/MechaInputHandler.java#isController`），既不用创建者字段也不读 `getControllingPassenger()` |
 | 2.6 | 控制权转移与断线重置 | 断开 / 换维度 / 失去控制时服务端 `writeConditionSnapshot(EMPTY)` 并清空事件（§3.11） |
 | 2.7 | 服务端调试输入源收窄 | 正常输入路径接收 `MechaInputPayload`；阶段 1.17 的服务端直写只在单人调试构建中保留，用于不启动客户端时驱动状态机 |
 
@@ -751,13 +751,13 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | # | 任务 | 说明 |
 |---|------|------|
-| 4.1 | 引入 `IArmsHost` | 宿主上下文接口：`getLevel()`、`getHostEntity()`、伤害转发。设计文档 `docs/总体设计文档.md` §2.1 已给出原始设定；本仓库尚无任何实现 |
-| 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标 |
+| 4.1 | 引入 `IArmsHost` | 宿主上下文接口。**已落地**，接口面与本文设想不同：`common/IArmsHost.java` 只承载绑定关系与位姿入口（`getHostEntity`、`getControlledArmsCore`、`setControlledArmsCore`、`applyPose`、`applyVelocity`），不含 `getLevel()` 与伤害转发；玩家宿主经 `mixin/PlayerHostMixin.java` 实现。逐条理由见 `docs/IArmsHost宿主接口设计.md` |
+| 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标。**已落地**：`common/ArmsCore.java#getHost` / `#setHost` / `#bindHostOf`，创建包与移除包的实现见 `network/payload/ArmsCoreCreatePayload.java#handle`、`network/payload/ArmsCoreRemovePayload.java#handle` |
 | 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 15 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `sprintPressed` / `walkKeyPressed`）、视角（`viewYaw` / `viewPitch`）、环境（`sneaking` / `inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
 | 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java#pendingEventBuffer`、`#postEvent`） |
 | 4.5 | `rootSubPart` 与 `Part` 装配接入 | 补 `getRootSubPart()`；接 `ArmsCore.prePhysicsTick()` 第 ① 步（§3.6）；同时启用 `extractAnimRootDelta()` 的真实实现，`DATA_YAW` 从本阶段起才有验收意义（§3.12） |
 | 4.6 | `mech_chassis.json` / `MechAttr` | 落地素体定义与 `getAttr()`，替换阶段 0 定义的临时胶囊参数（该组值同时需要补进 `docs/角色控制器-行走物理设计.md` 的 §5.1 参数表）；回归一次手感 |
-| 4.7 | 位姿权威迁移（可选） | 按 §3.13 的迁移路径，把位置传输交给宿主 / 代理实体，`DATA_POS` 降级为对账通道 |
+| 4.7 | 位姿权威迁移（可选） | 按 §3.13 的迁移路径，把位置传输交给宿主 / 代理实体，`DATA_POS` 降级为对账通道。**当前决定**：这一迁移由 `docs/宿主位置权威与位移摄入设计.md` 承接（外部写入的摄入 + 服务端不再每 tick 回写位置），`DATA_POS` 在该设计里仍是宿主位置的传送带，其降级不在该文范围 |
 
 **验收**：同一份 `ArmsCore` 代码在两种以上宿主形态下工作，宿主实现中不出现对环境字段的赋值；`DATA_YAW` 随动画转身正确变化。
 

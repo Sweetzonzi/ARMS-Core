@@ -70,6 +70,8 @@ public interface IArmsHost {
 
 `net.minecraft.world.entity.Entity#position` 的语义是**包围盒底面中心（脚底）**，而胶囊中心比胶囊底面高 `HALF_TOTAL`。写位置时必须明确是哪一个：把胶囊中心直接写进 `net.minecraft.world.entity.Entity#setPos` 会把宿主整体抬高 `HALF_TOTAL`（当前素体取值下为 `1.2 m`），这是本项目已经登记过一次的"差一个身高的经典错误"（`docs/ArmsCore双端权威与网络同步实现计划.md` §3.14）。
 
+**`capsuleCenter` 这一行的时效。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，届时 `applyPose` 失去调用方（当前唯一调用点是 `common/ArmsCoreServerEvents.java#applyPoseToHost`），位置基准随之下沉到「客户端按 `DATA_POS` 摆放实体」那一条路径（换算见 `client/ClientHostPoseEvents.java#applySyncedPose`）。接口是否保留一个位置落地入口供非玩家宿主使用，在该设计的实现阶段一并定；本行在此之前仍然成立。
+
 基准由原版的两处实现共同确定：`setPos` 把分量存进 `position` 后以它为原点重建包围盒，重建由 `net.minecraft.world.entity.EntityDimensions#makeBoundingBox` 完成，形状是 `AABB(x − 宽/2, y, z − 宽/2, x + 宽/2, y + 高, z + 宽/2)`；交叉验证是 `net.minecraft.world.entity.player.Player#DEFAULT_EYE_HEIGHT` 为 `1.62`，只有在"`position.y` 是脚底"的语义下才等于"脚上 1.62 m"。
 
 ### 2.2 调用约束
@@ -140,8 +142,9 @@ public interface IArmsHost {
 - `getHostEntity()` 返回 `this`。
 - `applyPose(capsuleCenter, yRot, yHeadRot)` 写位置。参数是**胶囊中心**，而实体位置字段的语义是包围盒底面，因此实现必须先换算：`setPos(capsuleCenter.x, capsuleCenter.y − MechaBodyPreset.HALF_TOTAL, capsuleCenter.z)`（§2.1）。玩家实体的包围盒底面与胶囊底面因此对齐，**不**直接把 `capsuleCenter` 写进去。
 - **`yRot` / `yHeadRot` 不写。** 朝向的权威在客户端：视野偏航由客户端上行，服务端 `MechaControl#applyFacing` 把它绝对赋值给 KCC 的 `currentYaw`，`common/ArmsCore.java#DATA_YAW` 只是这个值的下行回显（消费者是渲染路径）。若把它写回宿主实体的 `yRot`，而客户端下一次上行读的又正是这个字段（`client/ARMSClient.java#collectAndSend`），两点之间就构成「本机视角 → 上行 → 服务端 → 下行 → 本机视角」的滞后反馈环，表现为**视角持续抖动**。位置没有这个问题：客户端上行的位置被服务端采纳后立即被本轮 KCC 的产物覆盖，是单向下行。
-- `applyVelocity(velocity, physicsStepSeconds)` 写 `deltaMovement`，**必须先做 §2.1 的两条换算**（水平 `× 20 × physicsStepSeconds`、垂直 `÷ 20`）：入参是 KCC 的原生单位，而 `deltaMovement` 三个分量统一是每 tick 位移，直接透传会同时错两次。`physicsStepSeconds` 由调用方传入而不是在宿主里写死，因为服务端 100 Hz 与客户端 60 Hz 的因子不同。`noPhysics` 为真时该值不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实速度，因此不与位置回写构成第二个运动权威。
-- 位置回写后调用 `net.minecraft.world.entity.Entity#resetFallDistance`——实体被外部搬动时原版会按位置差累计坠落距离，不重置会让玩家持续受到坠落伤害。
+- `applyVelocity(velocity, physicsStepSeconds)` 写 `deltaMovement`，**必须先做 §2.1 的两条换算**（水平 `× 20 × physicsStepSeconds`、垂直 `÷ 20`）：入参是 KCC 的原生单位，而 `deltaMovement` 三个分量统一是每 tick 位移，直接透传会同时错两次。`physicsStepSeconds` 由调用方传入而不是在宿主里写死，因为服务端 100 Hz 与客户端 60 Hz 的因子不同。`noPhysics` 为真时该值不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实速度。
+- **位置回写是过渡态。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，只留速度那一笔：位置由客户端上报与 §5 的位移摄入通道维护。理由是每 tick 的位置回写会覆盖同一 tick 的外部位移，使控制器不知道 `/tp` 一类的写入发生过。
+- 位置回写后调用 `net.minecraft.world.entity.Entity#resetFallDistance`——实体被外部搬动时原版会按位置差累计坠落距离，不重置会让玩家持续受到坠落伤害。位置回写移除之后，这一职责要重新指派：当前它是服务端唯一的坠距重置点（`common/PlayerHostEvents.java#onPlayerTickPost` 走的是 `Player#tick` 末尾的玩家 tick 事件，服务端玩家不在该路径上），可选落点是对账用的 `net.minecraft.server.network.ServerGamePacketListenerImpl#handleMovePlayer` 采纳分支。
 - 绑定字段的每一次变化都要重置输入状态，否则状态机会卡在上一帧（例如 `jumpPressed` 永久为真，`docs/ArmsCore双端权威与网络同步实现计划.md` R11）。`common/MechaInputHandler.java#resetInput` 已提供该动作，绑定实现调用它即可。
 - `setControlledArmsCore` 是绑定关系的**唯一入口**，两个方向的一致性由它负责，三条换绑路径都要覆盖：写入新值前解除本宿主此前承载的装配体；新装配体此前承载于别的宿主时，先解除那一侧的绑定；同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃蓄力凭空消失。单宿主唯一性与「同一装配体换宿主」都收敛在这一处，调用方只需回答「这个宿主现在承载谁」。
 - 绑定期间授予飞行许可，解除时收回，并调用 `net.minecraft.server.level.ServerPlayer#onUpdateAbilities` 同步给客户端：`docs/宿主接入与伤害管线设计.md` §5.2 末段的「飞行过久」检测在 `noPhysics` 为真时不再有脚下碰撞支撑，悬停与滑翔会被踢。**用 `NeoForgeMod#CREATIVE_FLIGHT` 属性上的修饰符，不要直写 `net.minecraft.world.entity.player.Abilities#mayfly`**——该字段已被 NeoForge 标记为 `@Deprecated` 并明确劝阻直写，许可的正确判据是 `IPlayerExtension#mayFly`（游戏模式或属性值大于 0 二者之一）。修饰符 id 固定（`arms_core:mecha_flight`），因此重复绑定不叠加、收回只撤掉自己那一个，不会覆盖别的模组或游戏模式给出的许可。
