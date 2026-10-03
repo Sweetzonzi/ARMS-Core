@@ -9,8 +9,10 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.GAIT;
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.GAIT_CAN_JUMP;
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.GAIT_CAN_MOVE;
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.MOVE_SPEED_MODIFIER;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GaitSubGraphsTest extends LogicStateMachineTestSupport {
 
@@ -199,5 +201,34 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
 
         assertEquals(Gait.STUN, variables.get(GAIT));
         assertFalse(variables.get(GAIT_CAN_MOVE));
+    }
+
+    // ═══════════════════════════════════════════════
+    // dodge 不写倍率：闪避不剥夺自主移动能力
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 进入 dodge 不改变 {@code MOVE_SPEED_MODIFIER}。
+     * <p>
+     * 倍率缩放的是标准 WASD 控制力，而闪避是一次速度阶跃（{@code MechaCharacter.requestDodgeImpulse}），
+     * 两者量纲不同、互不干涉。因此冲刺中闪避必须保留 1.6 而不是掉到 0：掉到 0 会让闪避期间无法用
+     * 方向键移动，也会让闪避窗口内的稳态速率塌回常速。
+     * <p>
+     * 对照组是同一个图里的 stun：它写 0 且 {@code disableGaitInput()}，才是真正夺取控制权的状态。
+     */
+    @Test
+    void dodgePreservesTheSpeedModifierAndKeepsMoving() {
+        enterSprint();
+        float sprintModifier = variables.get(MOVE_SPEED_MODIFIER);
+        assertEquals(Gait.SPRINT, variables.get(GAIT));
+        assertTrue(sprintModifier > 1f, "先决条件：冲刺倍率应大于常速，实际 " + sprintModifier);
+
+        machine.broadcastEvent("dodge");
+
+        assertEquals(Gait.DODGE, variables.get(GAIT));
+        assertEquals(sprintModifier, variables.get(MOVE_SPEED_MODIFIER), 1.0e-6f,
+                "dodge 必须保留进入前的倍率");
+        assertTrue(variables.get(GAIT_CAN_MOVE), "dodge 期间仍应允许自主移动");
+        assertTrue(variables.get(GAIT_CAN_JUMP), "dodge 不禁用跳跃");
     }
 }

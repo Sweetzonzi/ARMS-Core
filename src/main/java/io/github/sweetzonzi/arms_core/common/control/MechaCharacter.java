@@ -160,16 +160,19 @@ public class MechaCharacter extends PhysicsCharacter {
 
     // ── 闪避冲量 ──
 
-    /** 闪避冲量方向 X（世界坐标，已归一化的水平方向） */
-    private volatile float dodgeDirX;
-    /** 闪避冲量方向 Z */
-    private volatile float dodgeDirZ;
-    /** 闪避冲量初速度 (m/s) */
-    private volatile float dodgeSpeed;
-    /** 闪避冲量剩余时长 (s)；> 0 期间每步都叠加冲量位移 */
-    private volatile float dodgeRemaining;
-    /** 闪避冲量总时长 (s)，用于速度随时间线性衰减 */
-    private volatile float dodgeTotal;
+    /**
+     * 待施加的闪避冲量 —— 水平速度增量 (Δvx, Δvz)，单位 m/s。
+     * <p>
+     * {@link #requestDodgeImpulse} 累加写入、{@link #updateWalk} 在下一步消费一次即清零，因此它是
+     * 「一次速度阶跃」的暂存区，不随时间衰减。同一步内多次请求会矢量累加（连按两次闪避得到两倍 Δv）。
+     * <p>
+     * 只由物理线程读写：写入方是 {@code MechaControl.applyLogicOutputToKcc}，读方是
+     * {@code updateWalk}，两者同线程，因此不需要 {@code volatile}。
+     */
+    private float dodgeImpulseX;
+    private float dodgeImpulseZ;
+    /** 是否存在待施加的冲量；为 false 时上面两个分量视为 0 */
+    private boolean dodgeImpulsePending;
 
     /** 闪避无敌剩余时长 (s)，物理线程递减 */
     private float dodgeInvulnerableTimer;
@@ -188,9 +191,12 @@ public class MechaCharacter extends PhysicsCharacter {
     /**
      * 上一步作为「位移叠加」写进 KCC 的水平位移 (m/tick)。
      * <p>
-     * 动画根运动与闪避冲量都是叠加在物理位移之上的**位移**，不是速度；但它们和物理位移一起
-     * 写进 KCC 的同一个水平通道（§11），下一步读回来时会被当成速度。若不扣掉，叠加量会逐帧
-     * 复利：实测一次设计值 1.2 m 的闪避冲量会滚成 56 m。读速度时减去本字段即恢复真实速度。
+     * 动画根运动是叠加在物理位移之上的**位移**，不是速度；但它和物理位移共用 KCC 的同一个水平
+     * 通道（§11），下一步读回来时会被当成速度。若不扣掉，叠加量会逐帧复利。读速度时减去本字段
+     * 即恢复真实速度。
+     * <p>
+     * <b>闪避冲量不在本通道内。</b> 冲量是速度增量，直接加进 {@link #dodgeImpulseX} 参与速度
+     * 合成，不写成位移，因此不参与这份记账。
      */
     private float overlayDispX;
     private float overlayDispZ;
@@ -441,52 +447,60 @@ public class MechaCharacter extends PhysicsCharacter {
     }
 
     /**
-     * 施加一次闪避冲量。
+     * 施加一次闪避冲量 —— 一次<b>水平速度阶跃</b>（Δv），不是一段位移。
      * <p>
-     * 由上层控制编排在闪避状态进入的那一物理步调用。冲量在 {@link #dodgeDuration} 内持续叠加
-     * 到 KCC 的每步位移上，速度随时间线性衰减到 0；方向已归一化，长度为零时忽略本次请求。
+     * 由上层控制编排在闪避状态进入的那一物理步调用。冲量累加进
+     * {@link #dodgeImpulseX} / {@link #dodgeImpulseZ}，{@link #updateWalk} 在下一步把它加进
+     * 水平速度矢量，并从那一刻起由通用的力模型接管（地面摩擦按 μ·g 把它磨掉、空中没有摩擦因此
+     * 原样保留、侧向抓地把不属于本步输入方向的部分抹掉）。方向已归一化，长度为零或速度非正时
+     * 忽略本次请求。
      * <p>
-     * <b>为什么不是一次性注入速度</b>：KCC 每步都会被 {@link #updateWalk} 重写速度矢量，
-     * 一次性注入最多活一个物理步（实测 6 m/s 只走出 0.06 m），随后就被行走/制动逻辑覆盖。
-     * 要让「闪避 = 一段位移」成立，冲量必须在整个窗口内逐步积分。
+     * <b>为什么是速度阶跃而不是一次性写速度。</b> 水平通道的语义是「本步速度的最终表达式」，由
+     * {@link #updateWalk} 每步 read-modify-write 维护：它先读回上一步的值，再重算并覆写。因此
+     * 写进这个表达式的 Δv 会被下一步当作真实动量读回并继续参与积分，不会被丢弃；而位移叠加量
+     * 则必须另立一份记账（{@link #overlayDispX}）才能在读速度时扣掉。冲量走速度通道因此更简单，
+     * 也让它与抓地力、内阻、空中天花板共用同一份预算。
+     * <p>
+     * <b>方向与当前速度无关。</b> 调用方（{@code MechaControl.resolveDodgeDirection}）只按输入轴与
+     * 本步朝向解出方向，不读速度，因此右平移中按「左 + 闪避」得到的是向左的 Δv：它会先把向右的
+     * 动量抵消掉，剩余的才变成向左的运动——闪避因此可以用于急停与变向。
+     * <p>
+     * <b>速度改变量就是全部。</b> 单次闪避的位移不再是设计常量，而是由 Δv 与当时的摩擦/输入/
+     * 空中与否共同决定的派生量：地面有输入时约 {@code Δv/(c₀·g)} 量级的滑行，空中没有摩擦因此
+     * 更远。调参时应当调 Δv 本身。
+     * <p>
+     * TODO 持续推力：当前只实现瞬时冲量。要做出「短促爆发 vs 长时平稳加速」的第二种手感，需要
+     * 在 {@link #updateWalk} 的同一个注入点再支持一条「窗口内恒定的加速度」（推力），而不是把它
+     * 做成随时间衰减的位移。设计约束见 `docs/角色控制器-行走物理设计.md` §3.8。
      *
-     * @param dirX          世界坐标 X 方向（水平，已归一化）
-     * @param dirZ          世界坐标 Z 方向（水平，已归一化）
-     * @param speed         冲量初速度 (m/s)
+     * @param dirX          世界坐标 X 方向（水平，无需预先归一化）
+     * @param dirZ          世界坐标 Z 方向（水平，无需预先归一化）
+     * @param speed         冲量大小，即速度改变量 Δv (m/s)
      * @param invulnerableS 无敌时长 (s)
-     * @param dodgeDuration 冲量作用时长 (s)
      */
     public void requestDodgeImpulse(float dirX, float dirZ, float speed,
-                                    float invulnerableS, float dodgeDuration) {
+                                    float invulnerableS) {
         float len = (float) Math.sqrt(dirX * dirX + dirZ * dirZ);
-        if (len < 0.001f || speed <= 0f || dodgeDuration <= 0f) return;
-        this.dodgeDirX = dirX / len;
-        this.dodgeDirZ = dirZ / len;
-        this.dodgeSpeed = speed;
-        this.dodgeTotal = dodgeDuration;
-        this.dodgeRemaining = dodgeDuration;
+        if (len < 0.001f || speed <= 0f) return;
+        float scale = speed / len;
+        this.dodgeImpulseX += dirX * scale;
+        this.dodgeImpulseZ += dirZ * scale;
+        this.dodgeImpulsePending = true;
         this.dodgeInvulnerableTimer = invulnerableS;
     }
 
     /**
-     * 当前闪避冲量在本步的水平速率 (m/s)，并推进衰减。
+     * 取走本步待施加的闪避冲量并清零（一次性）。
      * <p>
-     * 线性衰减：起点 {@code dodgeSpeed}，终点 0，因此整个窗口的累计位移是
-     * {@code dodgeSpeed × dodgeDuration / 2}。
+     * 只由 {@link #updateWalk} 调用一次，因此同一份冲量不会在两个物理步里重复施加。
      *
-     * @param dt 物理步长 (s)
-     * @return 本步要叠加到水平位移上的速率 (m/s)；无冲量时为 0
+     * @return {@code true} 表示本步有冲量要加；返回后 {@link #dodgeImpulseX} /
+     * {@link #dodgeImpulseZ} 已清零，调用方应立即读走它们
      */
-    private float consumeDodgeSpeed(float dt) {
-        if (dodgeRemaining <= 0f || dodgeTotal <= 0f) return 0f;
-        float ratio = dodgeRemaining / dodgeTotal;
-        float current = dodgeSpeed * ratio;
-        dodgeRemaining -= dt;
-        if (dodgeRemaining <= 0f) {
-            dodgeRemaining = 0f;
-            dodgeSpeed = 0f;
-        }
-        return current;
+    private boolean consumeDodgeImpulse() {
+        if (!dodgeImpulsePending) return false;
+        dodgeImpulsePending = false;
+        return true;
     }
 
     // ═══════════════════════════════════════════════
@@ -577,6 +591,7 @@ public class MechaCharacter extends PhysicsCharacter {
      * 由 {@code a = F/m} 决定，因此速度是一个有惯性的矢量：加速要时间、转向要先把侧向动量
      * 抵消掉、起跳时水平速度原样带走。每物理步的流程：
      * <ol>
+     *   <li>取走本步的闪避冲量（若有），与读回的水平速度<b>相加</b>成「本步的起始动量」</li>
      *   <li>读 KCC 水平速度矢量，按<b>输入方向</b>分解为「沿向分量」与「侧向分量」</li>
      *   <li>解出控制力：地面 {@code min(力-速曲线, μN)}，空中 {@code F_max × AIR_CONTROL}
      *       （§3.5、§3.7）</li>
@@ -585,8 +600,13 @@ public class MechaCharacter extends PhysicsCharacter {
      *       空中不抵消——这正是「空中难以变向」的力学来源</li>
      *   <li>空中另受「不可加速」约束（§3.7）：控制力可以转向、可以减速，但水平速率不会
      *       超过地面同倍率下能维持的顶速，超出时按比例缩回（方向仍然转过去了）</li>
-     *   <li>合成回速度矢量 → {@code setLinearVelocity}（叠加上动画根运动与闪避冲量）</li>
+     *   <li>合成回速度矢量 → {@code setLinearVelocity}（动画根运动作为位移叠加在 XZ 上）</li>
      * </ol>
+     * <p>
+     * <b>闪避冲量在第 1 步注入，而不是作为位移叠加。</b> 它是速度增量 Δv：注入后与本步的抓地力、
+     * 内阻、空中天花板共用同一份预算，因此地面摩擦会按 μ 把它磨掉、空中因为没有摩擦而原样保留
+     * （空中闪避因此比地面更远），侧向抓地会把不属于本步输入方向的那部分抹掉。注入点必须在
+     * {@code hSpeed} 计算之前，否则空中天花板会按不含冲量的旧速率把它缩回去。
      * <p>
      * 稳态速率不是被钳制出来的，而是力平衡的自然结果：沿向分量上
      * {@code k·min(P/v, F_max)·exp(−(v−v_rated)/λ) = c₀·m·g + m·g·sinθ}，
@@ -597,6 +617,18 @@ public class MechaCharacter extends PhysicsCharacter {
      * <p>
      * 动画根运动叠加：物理位移（m/tick）与 animDelta（m/tick）直接相加写入 XZ；
      * Y 分量 animDeltaY 需 /dt 转为 m/s 写入 KCC 垂直速度。
+     * <p>
+     * <b>TODO 已知缺陷：撞墙时速度不会归零。</b> KCC 的水平通道是「本步位移命令」，原生侧从不把
+     * 实际走了多远写回 {@code m_walkDirection}——{@code btKinematicCharacterController.cpp#stepForwardAndStrafe}
+     * 只改 {@code m_currentPosition} / {@code m_targetPosition}，{@code #getLinearVelocity} 是纯字段读出，
+     * JNI 也只是转发。因此上面读回的 {@code vx} / {@code vz} 在撞墙时仍是一份没能执行的命令：角色顶在
+     * 墙上时它按地面摩擦逐帧衰减到一个恒定的小推力，位置却一步都不动；障碍一消失（例如跳过去），
+     * 这份被完整保留的命令会在<b>一个物理步内</b>把位置推满，表现为「从 0 直接加到满速」。
+     * <p>
+     * 已向上游报告并附实测数据：`https://github.com/stephengold/Libbulletjme/issues/58`。修复方向是
+     * 用<b>位置差分</b>观测引擎实际达成的水平位移，把没能兑现的那部分从幽灵速度里扣掉；需要注意
+     * 判据不能只看「位移变小」——自动上台阶由 {@code #stepUp} 先抬高胶囊再做水平 sweep，越障成功时
+     * 水平位移是全量的，因此「位移短少」才是有区分度的信号（贴墙时短少为 100%）。
      */
     private void updateWalk(float dt) {
         // ── 快照 volatile 输入与调制量 ──
@@ -611,17 +643,24 @@ public class MechaCharacter extends PhysicsCharacter {
         float slopeCos = Math.abs(groundNormal.y); // cos(θ)
         float sinTheta = (float) Math.sqrt(Math.max(0f, 1f - slopeCos * slopeCos));
 
-        // 闪避冲量：本步速率由 consumeDodgeSpeed 推进衰减，整个窗口逐步积分
-        float dodgeSpeed = consumeDodgeSpeed(dt);
-        float dodgeDisp = dodgeSpeed * dt;
-        float extraX = dodgeDirX * dodgeDisp;
-        float extraZ = dodgeDirZ * dodgeDisp;
+        // > 0 表示本步在空中，按此速率上限约束控制力（在空中且有输入的分支里赋值）
+        float airCeiling = 0f;
+
+        // 闪避冲量（速度阶跃）：在下面读速度之前取走，与「上一步遗留的动量」同等对待——
+        // 它要参与本步的分解、抓地、内阻、空中天花板，与普通动量走同一份预算
+        boolean dodgeThisStep = consumeDodgeImpulse();
+        float dodgeDvx = dodgeThisStep ? dodgeImpulseX : 0f;
+        float dodgeDvz = dodgeThisStep ? dodgeImpulseZ : 0f;
+        if (dodgeThisStep) {
+            dodgeImpulseX = 0f;
+            dodgeImpulseZ = 0f;
+        }
 
         // ── 读 KCC 当前水平速度矢量：XZ 是位移 (m/tick)，÷dt → m/s；Y 已是 m/s ──
-        // 位移叠加通道（动画根运动 / 闪避冲量）要先扣掉：它是位移，不是速度
+        // 位移叠加通道（动画根运动）要先扣掉：它是位移，不是速度
         Vector3f vel = getLinearVelocity(tmp1);
-        float vx = (vel.x - overlayDispX) / dt;
-        float vz = (vel.z - overlayDispZ) / dt;
+        float vx = (vel.x - overlayDispX) / dt + dodgeDvx;
+        float vz = (vel.z - overlayDispZ) / dt + dodgeDvz;
         float hSpeed = (float) Math.sqrt(vx * vx + vz * vz);
         float verticalVel = vel.y; // 无动画位移时透传，以免重置重力累积
 
@@ -640,7 +679,9 @@ public class MechaCharacter extends PhysicsCharacter {
             // ── 控制力的大小（沿输入方向）──
             float forceScale = controlForceScale();
             float fControl;
-            float airCeiling = 0f; // > 0 表示本步在空中，按此速率上限约束控制力
+            // > 0 表示本步在空中，按此速率上限约束控制力；0 表示不施加天花板
+            // （地面，或无输入——无输入时控制力为 0，没有需要约束的加速）
+            airCeiling = 0f;
             if (grounded) {
                 setMaxSlope((float) Math.atan(mu)); // §8.1：有输入时爬坡角随 μ 更新
                 // 力-速曲线（定制点，含多源叠加），再按抓地力钳制
@@ -689,20 +730,6 @@ public class MechaCharacter extends PhysicsCharacter {
 
             vx = vAlong * dirX + latX;
             vz = vAlong * dirZ + latZ;
-
-            if (airCeiling > 0f) {
-                // 空中天花板只压「加速」，不压转向：超限时按比例缩回，方向仍然转了
-                // （速率保持，矢量朝输入方向旋转）；已高于天花板的动量原样保留，
-                // 闪避冲量与被击飞的速度因此不会被空中控制吃掉
-                float ceiling = Math.max(airCeiling, hSpeed);
-                float speedNow = (float) Math.sqrt(vx * vx + vz * vz);
-                if (speedNow > ceiling && speedNow > EPSILON) {
-                    float keep = ceiling / speedNow;
-                    vx *= keep;
-                    vz *= keep;
-                }
-            }
-
         } else if (grounded) {
             // ── 无输入制动（仅地面）──
             // 主动摩擦刹车：减速度 = μ × g × cos(θ)，与质量无关。
@@ -723,11 +750,27 @@ public class MechaCharacter extends PhysicsCharacter {
         }
         // 空中且无输入：不施加任何水平力，速度矢量原样带入下一物理步
 
-        // 闪避冲量与动画位移都是叠加在水平位移上的**位移**（m/tick），不属于速度积分：
-        // 物理位移 (m/s → m/tick) 与它们直接相加。记下本步的叠加量，下一步读速度时扣掉，
-        // 否则叠加量会被当成速度逐帧复利
-        overlayDispX = adx + extraX;
-        overlayDispZ = adz + extraZ;
+        // ── 空中天花板（在三个分支之后统一执行）──
+        // 必须排在闪避冲量注入之后：ceiling 取 max(airCeiling, hSpeed)，而 hSpeed 已含本步的
+        // Δv，因此冲量注入的速率会成为天花板本身、被原样保留。若把注入放到这里之后，下一步
+        // hSpeed 仍是不含冲量的旧值，冲量会被 ceiling/speedNow 静默缩掉（量级 6 → 0.47 m/s）。
+        // airCeiling 只压「加速」，不压转向：超限时按比例缩回，方向仍然转了（速率保持，矢量
+        // 朝输入方向旋转）；已高于天花板的动量（闪避冲量、被击飞、从高处冲下）原样保留。
+        if (airCeiling > 0f) {
+            float ceiling = Math.max(airCeiling, hSpeed);
+            float speedNow = (float) Math.sqrt(vx * vx + vz * vz);
+            if (speedNow > ceiling && speedNow > EPSILON) {
+                float keep = ceiling / speedNow;
+                vx *= keep;
+                vz *= keep;
+            }
+        }
+
+        // 动画位移是叠加在水平位移上的**位移**（m/tick），不属于速度积分：物理位移 (m/s → m/tick)
+        // 与它直接相加。记下本步的叠加量，下一步读速度时扣掉，否则它会被当成速度逐帧复利。
+        // 闪避冲量不在这里：它是速度增量，已在上面的 vx / vz 里。
+        overlayDispX = adx;
+        overlayDispZ = adz;
         setLinearVelocity(tmp2.set(
                 vx * dt + overlayDispX, yVel, vz * dt + overlayDispZ));
     }
@@ -888,7 +931,10 @@ public class MechaCharacter extends PhysicsCharacter {
      * <p>
      * KCC 的水平通道存的是**每物理步位移** (m/tick)，且其中混有动画根运动与闪避冲量这两条
      * 「位移叠加」通道（见 {@link #overlayDispX}）。本方法把叠加量扣掉再除以 dt，因此给出的是
-     * 真正参与控制力积分的速度——逻辑层看到的 {@code SPEED} 不该被一次性冲量顶出尖峰。
+     * 真正参与控制力积分的速度。
+     * <p>
+     * 闪避冲量<b>不</b>扣除：它是速度增量，本来就属于真实速度，因此逻辑层看到的 {@code SPEED}
+     * 会在闪避那一步上升，并在其后按地面摩擦衰减——这与「闪避改变了动量」这一事实一致。
      *
      * @param storeResult 存放结果的向量（不为 null）
      * @param dt          物理步长 (s)

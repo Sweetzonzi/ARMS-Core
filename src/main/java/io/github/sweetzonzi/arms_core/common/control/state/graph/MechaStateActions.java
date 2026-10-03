@@ -124,14 +124,42 @@ public final class MechaStateActions {
      * @param speedMod  姿态特化移动速度倍率（KCC 直接读取）
      */
     public static StateAction gaitWithModifier(Gait g, float speedMod) {
+        java.util.Map<StateVariableKey<?>, Object> entries = gaitEntries(g);
+        entries.put(MOVE_SPEED_MODIFIER, speedMod);
+        return new BatchWriteAction(entries);
+    }
+
+    /**
+     * 只写入 gait 枚举与 one-hot 布尔，<b>不动</b> {@code MOVE_SPEED_MODIFIER}。
+     * <p>
+     * 供 dodge 使用：倍率缩放的是标准 WASD 控制力（{@code MechaCharacter#controlForceScale()}），
+     * 而闪避是一次速度阶跃（{@code MechaCharacter#requestDodgeImpulse}），两者量纲不同、互不干涉。
+     * 因此进入 dodge 时保留进入前的倍率——冲刺中闪避不会掉回常速、站立闪避照常是全速，而闪避
+     * 期间仍然可以正常使用方向键（dodge 不是「夺取控制权」的状态；{@code stun} / {@code hard_land}
+     * 才是，它们另有 {@link #disableGaitInput()}）。
+     * <p>
+     * <b>这是 {@link #gaitWithModifier} 的不变量的唯一例外</b>，需要新增 gait 状态时不要「顺手补齐」
+     * 一个倍率写入：{@code Gait.DODGE} 的 {@code baseSpeedModifier()} 因此没有消费者。
+     *
+     * @param g 当前 gait 枚举值
+     */
+    public static StateAction gaitPreservingModifier(Gait g) {
+        return new BatchWriteAction(gaitEntries(g));
+    }
+
+    /**
+     * gait 状态进入动作的公共部分：枚举本身 + 全部 one-hot 布尔 + {@code IS_MOVING} 派生键。
+     * <p>
+     * 刻意<b>不</b>包含 {@code MOVE_SPEED_MODIFIER}：出参由调用方决定是否补上该键，见
+     * {@link #gaitPreservingModifier}。
+     */
+    private static java.util.Map<StateVariableKey<?>, Object> gaitEntries(Gait g) {
         boolean moving = g != Gait.IDLE
                 && g != Gait.STUN
                 && g != Gait.HARD_LAND
                 && g != Gait.DRIFT;
-        // 用 HashMap — Map.of() 最多只支持 10 对，gait 写入需要 11 对
         java.util.Map<StateVariableKey<?>, Object> entries = new java.util.HashMap<>();
         entries.put(GAIT, g);
-        entries.put(MOVE_SPEED_MODIFIER, speedMod);
         entries.put(IS_IDLE, g == Gait.IDLE);
         entries.put(IS_CREEPING, g == Gait.CREEP);
         entries.put(IS_JOGGING, g == Gait.JOG);
@@ -141,7 +169,7 @@ public final class MechaStateActions {
         entries.put(IS_STUNNED, g == Gait.STUN);
         entries.put(IS_HARD_LANDING, g == Gait.HARD_LAND);
         entries.put(IS_MOVING, moving);
-        return new BatchWriteAction(entries);
+        return entries;
     }
 
     // ═══════════════════════════════════════════════

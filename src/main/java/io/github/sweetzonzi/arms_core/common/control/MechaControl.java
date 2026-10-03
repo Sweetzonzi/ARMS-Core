@@ -9,7 +9,6 @@ import io.github.sweetzonzi.arms_core.common.control.state.MechaLogicStateMachin
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
-import io.github.sweetzonzi.arms_core.common.control.state.preset.GaitSubGraphs;
 import lombok.Getter;
 
 import java.util.EnumSet;
@@ -63,11 +62,14 @@ public class MechaControl {
     public static final float INITIAL_ENERGY = 100f;
 
     /**
-     * 闪避冲量的初速度 (m/s)。
+     * 闪避冲量的大小 (m/s) —— 一次闪避带来的<b>水平速度改变量</b> Δv。
      * <p>
-     * 与 {@link MechaWalkingAttr} 的量级配套：素体额定速度约 4 m/s、力上限 800 N、
-     * 质量 80 kg。冲量在 {@code GaitSubGraphs.DODGE_DURATION} 内线性衰减到 0，
-     * 因此单次闪避的位移是 {@code 速度 × 时长 / 2} = 6 × 0.4 / 2 = 1.2 m。
+     * 与 {@link MechaWalkingAttr} 的量级配套：素体额定速度 6 m/s、力上限 700 N、质量 70 kg。
+     * 它不再是「位移通道的初速度」：冲量加进速度矢量后由通用力模型接管，因此单次闪避的<b>位移是
+     * 派生量</b>——地面有输入时约 2.2 m（滑行只被内阻 {@code c₀·g ≈ 1.9 m/s²} 磨）、地面无输入时
+     * 约 1.6 m（由制动 {@code μ·g = 9.81 m/s²} 磨）、空中约 2.4 m（无摩擦，原样保留）。调参调的是
+     * 本值，不是距离。
+     * <p>
      * 取值集中在这里，待素体定义（阶段 4.6）落地后移交。
      */
     public static final float DODGE_IMPULSE_SPEED = 6f;
@@ -348,9 +350,13 @@ public class MechaControl {
      *       gait.baseSpeedModifier）写进 KCC，作为控制力的缩放系数（稳态速率随之等比缩放，
      *       不是另设一道速度上限；见 `docs/角色控制器-行走物理设计.md` §3.6、§3.8.1）</li>
      *   <li><b>胶囊尺寸</b> —— 按 posture 换碰撞形状；蹲伏 / 卧倒压低轮廓</li>
-     *   <li><b>闪避冲量</b> —— 进入 dodge 状态的那一帧施加一次性冲量并开启无敌窗口</li>
+     *   <li><b>闪避冲量</b> —— 进入 dodge 状态的那一帧施加一次速度阶跃（Δv）并开启无敌窗口</li>
      * </ol>
      * 全部在物理线程执行，符合「只允许物理线程触碰 Bullet 对象」的约定。
+     * <p>
+     * 闪避冲量只做一次注入，不进位移叠加通道，也不受 {@code MOVE_SPEED_MODIFIER} 影响：倍率缩放的
+     * 是标准 WASD 控制力（{@link MechaCharacter#controlForceScale()}），而冲量是速度增量，两者量纲
+     * 不同、互不干涉。dodge 状态因此不剥夺自主移动能力。
      */
     private void applyLogicOutputToKcc(float dt) {
         // —— ① 速度倍率 ——
@@ -370,12 +376,14 @@ public class MechaControl {
         // if (posture != null) kcc.applyPostureShape(posture);
 
         // —— ③ 闪避冲量 ——
+        // 只在「刚进入 dodge」的那一物理步投递一次：dodgingLastFrame 记录上一步是否在闪避，
+        // 因此同一次闪避不会逐步重复投递，而 dodge 退出后再次进入又会投递一次。
         Gait gait = variables.get(GAIT);
         boolean dodgingNow = gait == Gait.DODGE;
         if (dodgingNow && !dodgingLastFrame) {
             float[] dir = resolveDodgeDirection();
             kcc.requestDodgeImpulse(dir[0], dir[1], DODGE_IMPULSE_SPEED,
-                    DODGE_INVULNERABLE_SECONDS, GaitSubGraphs.DODGE_DURATION);
+                    DODGE_INVULNERABLE_SECONDS);
         }
         dodgingLastFrame = dodgingNow;
     }
@@ -425,8 +433,9 @@ public class MechaControl {
 
         variables.set(StateVariableKeys.ON_GROUND, kcc.onGround());
         float safeDt = Math.max(dt, 1.0e-6f);
-        // 走 getHorizontalVelocity 而不是裸读 KCC：它会扣掉动画根运动与闪避冲量这两条
-        // 位移叠加通道，否则一次闪避冲量会让 SPEED 顶出尖峰，把 gait 误推进 drift
+        // 走 getHorizontalVelocity 而不是裸读 KCC：它会扣掉动画根运动那条位移叠加通道，
+        // 否则动画驱动的位移会被当成速度，让 SPEED 虚高并把 gait 误推进 drift。
+        // 闪避冲量不扣——它是真实速度，见 MechaCharacter.java#getHorizontalVelocity
         kcc.getHorizontalVelocity(stateVelocity, safeDt);
         float horizontalSpeed = (float) Math.sqrt(
                 stateVelocity.x * stateVelocity.x + stateVelocity.z * stateVelocity.z);

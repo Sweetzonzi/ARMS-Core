@@ -12,7 +12,8 @@ package io.github.sweetzonzi.arms_core.common.control.state.domain;
  * <ul>
  *   <li>{@code ctrl.gait} — 本枚举值，供 MoLang 和表现层动画选择</li>
  *   <li>{@code ctrl.move_speed_modifier} — 浮点倍率（0.0~1.8），
- *       KCC 直接读取，无需关心当前 gait 名或 posture</li>
+ *       KCC 直接读取，无需关心当前 gait 名或 posture。<b>唯一的例外是 {@link #DODGE}</b>，
+ *       它保留进入前的倍率，见该常量的说明</li>
  * </ul>
  *
  * @author Sweetzonzi
@@ -34,7 +35,13 @@ public enum Gait {
     /** 惯性滑行 — 无输入但有残余水平速度（冰面、松键减速期） */
     DRIFT("drift", 0f),
 
-    /** 闪避 — 冲量驱动 + 短暂无敌帧（翻滚、推进器、空中 dash 等） */
+    /**
+     * 闪避 — 一次速度阶跃（冲量）+ 短暂无敌帧（翻滚、推进器、空中 dash 等）。
+     * <p>
+     * {@code baseSpeedModifier} 对本状态<b>没有消费者</b>：dodge 的进入动作刻意不写
+     * {@code move_speed_modifier}（见 {@code MechaStateActions#gaitPreservingModifier}），因此闪避
+     * 保留进入前的倍率，期间仍可正常使用方向键。这里的 0 只是词汇表里的占位值。
+     */
     DODGE("dodge", 0f),
 
     /** 硬直 — 受击后禁止水平输入，重力正常 */

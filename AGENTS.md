@@ -87,8 +87,9 @@
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进 KCC（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避方向（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
-- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC，作为**控制力的缩放系数**（稳态速率随之等比缩放：站立 6.0 m/s、蹲伏 1.8 m/s；不是另设一道速度上限），进入 dodge 时施加按窗口积分的冲量。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
+- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进 KCC，作为**控制力的缩放系数**（稳态速率随之等比缩放：站立 6.0 m/s、蹲伏 1.8 m/s；不是另设一道速度上限），进入 dodge 时施加一次**速度阶跃** Δv（不剥夺自主移动：dodge 的进入动作不写 `MOVE_SPEED_MODIFIER`，见 `common/control/state/graph/MechaStateActions.java#gaitPreservingModifier`）。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**：Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2。
 - 行走力学模型（`MechaCharacter.updateWalk`）：输入施加的是**控制力**，速度按矢量积分——地面控制力全额、受抓地力 `μN` 钳制并经 `μ·g·cosθ` 抹掉侧向速度；空中控制力为 `F_max × AIR_CONTROL`（0.30）、无侧向抓地、无摩擦刹车，因此空中难变向而跳跃继承水平速度。顶速是力平衡 `v = k·v_ref` 的解，不靠速度钳制。参数与公式见 `docs/角色控制器-行走物理设计.md` §3.5–§3.9。
+- **已知缺陷：撞墙时速度不会归零。** KCC 的水平通道是「本步位移命令」，原生侧从不把实际走了多远写回，因此撞墙时 `getLinearVelocity` 仍报告那份没能执行的命令：顶墙期间它衰减到一个恒定的小推力、位置却不动，障碍一消失（例如跳过去）就在一个物理步内把位置推满，表现为「从 0 直接加到满速」。已报告上游并附实测数据（[Libbulletjme#58](https://github.com/stephengold/Libbulletjme/issues/58)）；修复方向（位置差分 + 判据取舍）记在 `common/control/MechaCharacter.java#updateWalk` 的 TODO 里，尚未实现。
 - 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
 - 字段表纪律：`ArmsCore` 的 `EntityDataAccessor` 只允许在末尾追加（`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.2）；改动字段表或载荷字段后必须同时提升 `ARMSNetwork.PROTOCOL_VERSION`。
 - 当前状态机与动画模块为部分实现（大量 `TODO`），新增状态机节点/子图需同时更新 `MechaLogicStateMachine` 的 `children` 映射。
@@ -100,6 +101,16 @@
 - **Mixin 注入的成员在普通 Java 编译期不存在于目标类上。** 调用方必须写成 `((IArmsHost) player).applyPose(...)` 或 `player instanceof IArmsHost host` 后经 `host` 调用；`player.applyPose(...)` 这类直接调用**编译不过**。`common/ArmsCore.java#bindHostOf` 是这一形态的便捷封装。
 - 编码统一为 UTF-8（`build.gradle` 的 `options.encoding` 与 `ProcessResources.filteringCharset`）。
 - 包结构：`io.github.sweetzonzi.arms_core.*`，与 `mod_group_id` 一致。
+
+## Git 与工作区纪律
+
+以下几条针对「在**未提交**的工作上做局部撤销」这一类操作。文件级回滚命令不区分「你刚加的东西」与「这个文件里其它尚未提交的工作」，一次误用可以静默丢掉一整轮已验证的改动。
+
+- **拿不准能不能安全回滚，就先提交。** 未提交的工作在 `git checkout` / `git restore` / `git stash drop` 面前没有保护层；把当前这一轮做完的部分先 `git add` 成一个临时提交是唯一稳妥的「存档点」。
+- `git checkout -- <文件>` / `git restore <文件>` **只能用于「这个文件的全部未提交改动都不要了」**。执行前先 `git diff --stat <文件>` 确认这个文件里到底有哪些改动，并逐条确认都可以丢。
+- **禁止用文件级回滚撤销「只占该文件一部分」的改动。** 典型场景：某个文件里既有本轮已验证、尚未提交的重构，又有为调查临时加进去的代码——此时要撤的只是后者，`git checkout` 会把前者一起抹掉。这种情况逐处 `edit` 删掉那部分代码。
+- 撤销之后必须复跑 `.\gradlew test`，并用 `git status --short` 核对文件清单。文件级回滚是静默的：它不会报错，也不会提示丢了什么。
+- 临时的诊断代码与探针测试要么放在本轮结束前删除，要么在存在同文件的未提交改动时先提交正式改动再加进去，避免两者混在同一个文件里。
 
 ## 文档编辑规范
 

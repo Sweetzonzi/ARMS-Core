@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -309,30 +310,127 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     // ═══════════════════════════════════════════════
-    // 闪避冲量（逻辑层产出的一次性位移）
+    // 闪避冲量（速度阶跃，由通用力模型接管）
     // ═══════════════════════════════════════════════
 
     /**
-     * 闪避冲量在整个窗口内逐步积分，总位移 ≈ 初速度 × 时长 / 2（线性衰减）。
+     * 一次闪避 = 一次水平速度阶跃 Δv，并被<b>同一步</b>的地面制动力削减，此后按同一减速度继续衰减。
      * <p>
-     * 期望值：{@code 6 × 0.4 / 2 = 1.2 m}。冲量走的是位移叠加通道，不参与控制力积分，
-     * 全程只由 {@code requestDodgeImpulse} 给的初速与窗口时长决定，与稳态速率、姿态倍率、
-     * 地面 μ 都无关——闪避因此总是同一段距离。
+     * 判据分两段，合起来钉住「冲量进了速度通道，并且与普通动量共用同一份力学预算」：
+     * <ul>
+     *   <li>施加冲量后的第一步位移对应的步首速率 ≈ {@code Δv}：本步位移
+     *       {@code = (Δv − μ·g·dt)·dt}，因此反解出 {@code Δv} 只需补回那一步的摩擦量。
+     *       若冲量走的是位移叠加通道（旧实现），同样的反解会得到 {@code μ·g·dt} 那一档，
+     *       而不是 6 m/s；</li>
+     *   <li>此后每步按 {@code μ·g} 递减，与无输入刹车的减速度一致——即冲量没有自己的衰减曲线。</li>
+     * </ul>
      */
     @Test
-    void dodgeImpulseMovesTheDesignDistance() {
-        kcc.setMoveIntent(0f, 0f); // 原地闪避：不需要按方向键
-        Vector3f from = kcc.getPhysicsLocation(null);
+    void dodgeImpulseStepChangesTheVelocityVector() {
+        kcc.setMoveIntent(0f, 0f);
+
+        Vector3f before = kcc.getPhysicsLocation(null);
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+        Vector3f after = kcc.getPhysicsLocation(null);
+
+        float brakePerStep = MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * DT;
+        assertEquals(0f, (after.x - before.x) / DT, 1.0e-3f, "冲量方向是 +Z，X 分量应保持 0");
+        assertEquals(MechaControl.DODGE_IMPULSE_SPEED, (after.z - before.z) / DT + brakePerStep, 0.02f,
+                "闪避本步的位移应等于 Δv 减去同一步的摩擦量，反解出 Δv");
+
+        step(10); // 0.1 s
+        assertEquals(MechaControl.DODGE_IMPULSE_SPEED
+                        - brakePerStep - MechaWalkingAttr.MU_NAKED * MechaWalkingAttr.GRAVITY * 0.1f,
+                hSpeed(), 0.05f, "冲量带来的速度此后应由地面摩擦按 μ·g 衰减，没有独立曲线");
+    }
+
+    /**
+     * 闪避冲量注入的是速度，因此它<b>会改变</b>已有的动量——同向叠加，可加速也可抵消。
+     * <p>
+     * 期望：先以 {@code v} 平移，再施加同向 {@code DODGE_IMPULSE_SPEED}，速率应约为
+     * {@code v + DODGE_IMPULSE_SPEED}。若冲量走的是位移叠加通道，速率会保持在 {@code v}
+     * 不动（旧实现即如此），本条会失败。
+     */
+    @Test
+    void dodgeImpulseAddsToExistingMomentum() {
+        kcc.setMoveIntent(0f, 0f);
+        setHorizontalVelocity(0f, 4f);
 
         kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
-                MechaControl.DODGE_INVULNERABLE_SECONDS, 0.4f);
-        step(60); // 0.6 s：冲量窗口 0.4 s + 余量
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
 
-        Vector3f to = kcc.getPhysicsLocation(null);
-        float dx = to.x - from.x;
-        float dz = to.z - from.z;
-        float moved = (float) Math.sqrt(dx * dx + dz * dz);
+        assertEquals(4f + MechaControl.DODGE_IMPULSE_SPEED, vz(), 0.1f,
+                "同向闪避应在已有速度上叠加 Δv");
+    }
 
-        assertEquals(1.2f, moved, 0.25f, "单次闪避位移应约为 1.2 m，实际 " + moved + " m");
+    /**
+     * 空中闪避不被「不可加速」天花板吃掉（§3.7）。
+     * <p>
+     * 这条钉住注入顺序：{@code hSpeed} 必须在冲量之后读，否则 {@code ceiling = max(airCeiling,
+     * hSpeed)} 拿到的是不含冲量的旧速率（空中约 0.47 m/s），冲量会被 {@code ceiling/speedNow}
+     * 静默缩掉——量级 6 → 0.47，且不会报任何错。用一个极小的冲量把它与"被缩掉"区分开：
+     * 期望读回 ≈ Δv，而被缩掉时只剩 0.47 m/s。
+     */
+    @Test
+    void dodgeImpulseSurvivesTheAirCeiling() {
+        kcc.setMoveIntent(0f, 1f);
+        step(2);
+
+        kcc.setJumpInput(true, false);
+        step(2);
+        kcc.setJumpInput(false, true);
+        step(1);
+        assertFalse(kcc.onGround(), "先决条件：应已离地");
+
+        kcc.setMoveIntent(0f, 0f); // 松开输入：唯一会改变速率的就是这次冲量
+        setHorizontalVelocity(0f, 0f);
+
+        kcc.requestDodgeImpulse(0f, 1f, 1f, MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+
+        assertEquals(1f, vz(), 0.1f,
+                "空中没有摩擦，冲量应被完整保留（被天花板缩掉时会降到约 0.47 m/s）");
+    }
+
+    /**
+     * 空中闪避比地面闪避更远：同一份冲量，地面被摩擦磨掉、空中原样保留。
+     * <p>
+     * 两个场景除了「是否着地」以外完全一致（同一份冲量、同样无输入），因此位移差全部来自
+     * {@code μ·g} 这条地面制动力。
+     */
+    @Test
+    void dodgeGoesFartherInTheAirThanOnTheGround() {
+        // 地面：无输入，制动按 μ·g 磨
+        Vector3f groundFrom = kcc.getPhysicsLocation(null);
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(100); // 1 s：足够把冲量磨完
+        Vector3f groundTo = kcc.getPhysicsLocation(null);
+        float groundMoved = groundTo.z - groundFrom.z;
+
+        // 空中：同样一份冲量，没有摩擦
+        kcc.setMoveIntent(0f, 1f);
+        step(2);
+        kcc.setJumpInput(true, false);
+        step(2);
+        kcc.setJumpInput(false, true);
+        step(1);
+        assertFalse(kcc.onGround(), "先决条件：应已离地");
+
+        kcc.setMoveIntent(0f, 0f);
+        setHorizontalVelocity(0f, 0f);
+        Vector3f airFrom = kcc.getPhysicsLocation(null);
+        kcc.requestDodgeImpulse(0f, 1f, MechaControl.DODGE_IMPULSE_SPEED,
+                MechaControl.DODGE_INVULNERABLE_SECONDS);
+        step(1);
+        float airStep = (kcc.getPhysicsLocation(null).z - airFrom.z) / DT;
+
+        assertTrue(groundMoved > 0.2f, "地面闪避应确实位移，实际 " + groundMoved + " m");
+        assertEquals(MechaControl.DODGE_IMPULSE_SPEED, airStep, 0.05f,
+                "空中闪避应完整保留冲量速度，实际 " + airStep + " m/s");
+        assertTrue(airStep > groundMoved, "空中闪避的瞬时速率应高于被摩擦磨过的地面闪避");
     }
 }
