@@ -227,6 +227,7 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 |------|------|
 | `docs/总体设计文档.md` | 架构、`IArmsHost`、`ArmsCore`、`MechaControl` 双层刚体、两条输入路径。 |
 | `docs/角色控制器-行走物理设计.md` | KCC 力学模型、抓地力、跳跃蓄力、多通道合成、线速度单位约定。 |
+| `docs/跳跃-瞬时冲量持续助推设计.md` | 跳跃模型改造设计：瞬时冲量 + 持续助推窗口、三条窗口终止条件、参数 `F_BOOST` / `T_BOOST_MAX`、代码与文档改动清单、验收判据。 |
 | `docs/分层控制器与状态机设计.md` | 状态机、MoLang 集成、动画驱动。 |
 | `docs/MechaControl设计文档.md` | 早期 `MechaControl` 接口设计。 |
 | `docs/下一步开发TODO.md` | 当前里程碑、逐项待办、跨线程快照决策。 |
