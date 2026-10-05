@@ -47,8 +47,9 @@ import java.util.List;
  * 可覆写定制点（protected）允许后续接入腿部助力子系统：
  * <ul>
  *   <li>{@link #computeDriveForce} — 当前速率下的总驱动力（含各源力-速曲线）</li>
- *   <li>{@link #computeJumpImpulse} — 当前蓄力比下的跳跃冲量（含多腿叠加）</li>
- *   <li>{@link #getJumpSpeedCap} — 起跳速度硬上限</li>
+ *   <li>{@link #computeJumpImpulse} — 冲量相的跳跃冲量（含多腿叠加）</li>
+ *   <li>{@link #getBoostForce} — 助推窗口内的持续向上助推力（含多腿叠加）</li>
+ *   <li>{@link #getJumpSpeedCap} — 冲量相的起跳速度硬上限</li>
  *   <li>{@link #getEffectiveFriction} — 有效摩擦系数</li>
  *   <li>{@link #getControllerMass} — 控制器质量</li>
  * </ul>
@@ -112,7 +113,7 @@ public class MechaCharacter extends PhysicsCharacter {
     @Setter
     private volatile float gravityScale = 1.0f;
 
-    /** 玩家能动性缩放，同时作用于行走净力与跳跃冲量。1.0 = 正常，0.0 = 全锁。由 MoLang ctrl.set_input_scale 改写 */
+    /** 玩家能动性缩放，只作用于行走净力（WASD 连续量）。1.0 = 正常，0.0 = 全锁。由 MoLang ctrl.set_input_scale 改写 */
     @Setter
     private volatile float inputScale = 1.0f;
 
@@ -204,11 +205,19 @@ public class MechaCharacter extends PhysicsCharacter {
     private float overlayDispX;
     private float overlayDispZ;
 
-    /** 是否正在蓄力跳跃（KCC 权威状态，vertical 子机镜像它） */
-    @Getter
-    private boolean chargingJump;
-    /** 蓄力计时器 (s) */
-    private float chargeTimer;
+    /**
+     * 助推窗口剩余时长 (s)。大于 0 表示窗口活跃（KCC 权威状态，vertical 子机经
+     * {@link #isBoosting()} 镜像它）。窗口按物理步衰减，到 0 自然结束。
+     */
+    private float jumpBoostRemainingS;
+
+    /**
+     * 本物理步注入 {@link #updateWalk} 的垂直助推速度增量 (m/s)。
+     * <p>
+     * {@link #updateJump} 在本步算出、{@link #updateWalk} 在同一步消费后叠加进 KCC 的垂直通道。
+     * 两步同线程、同一步内先后执行，因此不需要 {@code volatile}。
+     */
+    private float boostDvY;
 
     /** 当前是否着地 */
     private boolean grounded;
@@ -254,7 +263,7 @@ public class MechaCharacter extends PhysicsCharacter {
         setMaxSlope(FastMath.QUARTER_PI);             // 初始 45°，有输入时由 μ 动态更新
         setLinearDamping(MechaWalkingAttr.C1);        // 粘滞阻尼完全由 KCC 内部处理
         setFallSpeed(55f);                 // 终端速度，Bullet 默认
-        setJumpSpeed(0f);                  // 起跳时按蓄力结果动态设定
+        setJumpSpeed(0f);                  // 起跳时按冲量结果动态设定
         setCollisionGroup(CollisionGroups.PAWN);
         setCollideWithGroups(CollisionGroups.TERRAIN);
     }
@@ -308,13 +317,13 @@ public class MechaCharacter extends PhysicsCharacter {
      * 不会发生。先写一个零向量把 {@code m_verticalVelocity} 归零，再写水平分量，才符合「清垂直分量」
      * 这条语义。
      * <p>
-     * <b>本步遗留的施力状态全部复位。</b> 跳跃蓄力、待发闪避冲量、动画位移叠加记账与当步输入意图都属于
+     * <b>本步遗留的施力状态全部复位。</b> 跳跃助推窗口、待发闪避冲量、动画位移叠加记账与当步输入意图都属于
      * 「上一步的落点上下文」，传送后不再成立（§6.1 第 3 行）。其中动画位移叠加记账尤其不能留：
      * {@link #updateWalk} 下一步按 {@code (读回速度 − overlayDisp) / dt} 反解速度，留着会把动画叠加量
      * 误读成真实动量。
      * <p>
-     * <b>每次调用都会清掉正在进行的跳跃蓄力，因此这条路径只允许被真正的位移调用。</b>
-     * 把宿主实体的每一次位置写入都当成位移来采纳，蓄力就活不过一个 tick；
+     * <b>每次调用都会终止正在进行的跳跃助推窗口，因此这条路径只允许被真正的位移调用。</b>
+     * 把宿主实体的每一次位置写入都当成位移来采纳，助推窗口就活不过一个 tick；
      * {@code common/HostPositionIntake.java} 的四类写入分类正是为此存在的。
      * <p>
      * 入世那一次落点不走本方法：{@code ArmsCore#enterPhysicsSpace} 用
@@ -342,8 +351,8 @@ public class MechaCharacter extends PhysicsCharacter {
         setLinearVelocity(velocity);
 
         // ③ 步内遗留的施力状态与影子记账
-        chargingJump = false;
-        chargeTimer = 0f;
+        jumpBoostRemainingS = 0f;
+        boostDvY = 0f;
         dodgeImpulseX = 0f;
         dodgeImpulseZ = 0f;
         dodgeImpulsePending = false;
@@ -616,7 +625,7 @@ public class MechaCharacter extends PhysicsCharacter {
         // 2. 地面检测（KCC 着地 + 射线法线）
         updateGround();
 
-        // 3. 跳跃蓄力与施放
+        // 3. 跳跃瞬时冲量与助推窗口
         updateJump(dt);
 
         // 4. 行走力计算与施加（含 inputScale、animDelta、分离距离折减、闪避矢量赋值）
@@ -783,8 +792,9 @@ public class MechaCharacter extends PhysicsCharacter {
         float hSpeed = (float) Math.sqrt(vx * vx + vz * vz);
         float verticalVel = vel.y; // 无动画位移时透传，以免重置重力累积
 
-        // Y 分量：动画位移需 /dt 转为 m/s
-        float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt) : verticalVel;
+        // Y 分量：动画位移需 /dt 转为 m/s；助推窗口的垂直增量在两个支路都必须叠加
+        // （只改常规支路会让带动画根位移的动作静默抹掉助推）
+        float yVel = (Math.abs(ady) > EPSILON) ? (ady / dt + boostDvY) : (verticalVel + boostDvY);
 
         if (hasInput) {
             // dirX / dirZ 已经是世界方向（setMoveIntent 内按本步 currentYaw 解出），
@@ -897,34 +907,43 @@ public class MechaCharacter extends PhysicsCharacter {
     /**
      * 本步控制力的总缩放系数。
      * <p>
-     * 四个来源相乘，全部作用在<b>控制力</b>上（而不是净力），因此它们缩放的是稳态速率本身：
+     * 三个来源相乘，全部作用在<b>控制力</b>上（而不是净力），因此它们缩放的是稳态速率本身：
      * 均衡条件 {@code k·min(P/v, F_max) = c₀·m·g + m·g·sinθ} 给出 {@code v ∝ k}。
      * <ul>
      *   <li>{@link #inputScale} —— MoLang {@code ctrl.set_input_scale}，0 = 全锁</li>
-     *   <li>跳跃蓄力折减 —— 蓄力比线性折减，见 {@link MechaJumpAttr#CHARGE_WALK_PENALTY}</li>
      *   <li>分离距离折减 —— {@link #separationDistance}，见 {@link MechaWalkingAttr#SEP_MAX}</li>
      *   <li>{@link #moveSpeedModifier} —— 逻辑层姿态/步态倍率</li>
      * </ul>
      */
     private float controlForceScale() {
         float scale = inputScale;
-        if (chargingJump) {
-            float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
-            scale *= 1.0f - ratio * MechaJumpAttr.CHARGE_WALK_PENALTY;
-        }
         float sepFactor = 1.0f - separationDistance / MechaWalkingAttr.SEP_MAX;
         if (sepFactor < 0f) sepFactor = 0f;
         return scale * sepFactor * moveSpeedModifier;
     }
 
     // ═══════════════════════════════════════════════
-    // 跳跃蓄力模型
+    // 跳跃：瞬时冲量 + 持续助推窗口
     // ═══════════════════════════════════════════════
 
     /**
-     * 更新跳跃蓄力状态，并在松开时通过 KCC 内建 {@link #jump()} 施放（物理线程）。
+     * 更新跳跃的瞬时冲量与助推窗口（物理线程）。
      * <p>
-     * 跳跃冲量受 {@link #inputScale} 调制：inputScale = 0 时跳跃被完全禁止。
+     * 三个阶段：
+     * <ol>
+     *   <li><b>冲量相</b> —— 着地、不在窗口中且按住时，立即按 {@link #computeJumpImpulse()}
+     *       施放冲量并离地，无前置延迟</li>
+     *   <li><b>助推窗口</b> —— 保持按住期间，按 {@link #getBoostForce()} 持续施加向上助推，
+     *       每物理步注入 {@link #boostDvY} 并衰减 {@link #jumpBoostRemainingS}</li>
+     *   <li><b>终止</b> —— 松开、过上止点（{@code v.y ≤ 0}）或达到
+     *       {@link MechaJumpAttr#T_BOOST_MAX} 时窗口关闭，之后仅剩重力</li>
+     * </ol>
+     * <p>
+     * <b>冲量不由 {@link #inputScale} 调制。</b>跳跃许可由逻辑层的 {@code CAN_JUMP} 表达，KCC
+     * 不读取该缩放（它只作用于 WASD 连续量），因此 {@code set_input_scale(0)} 不改变跳跃。
+     * <p>
+     * 「先判终止、后施力、再衰减」的顺序保证松开的那一物理步不注入助推；冲量相那一物理步同时进入
+     * 窗口并立即参与本步施力与衰减，因此有效助推时长恰为 {@code T_BOOST_MAX}。
      */
     private void updateJump(float dt) {
         boolean held = jumpHeld;
@@ -934,37 +953,52 @@ public class MechaCharacter extends PhysicsCharacter {
             jumpReleased = false;
         }
 
-        if (!chargingJump) {
-            // 空闲状态：按下开始蓄力（须着地、且 inputScale > 0 允许跳跃）
-            if (held && grounded && inputScale > EPSILON) {
-                chargingJump = true;
-                chargeTimer = 0f;
+        // 冲量相：着地、不在窗口中且按住时立即起跳
+        if (jumpBoostRemainingS <= 0f && grounded && held) {
+            float v0 = Math.min(computeJumpImpulse() / getControllerMass(), getJumpSpeedCap());
+            setJumpSpeed(v0);
+            jump();
+            jumpBoostRemainingS = MechaJumpAttr.T_BOOST_MAX;
+        }
+
+        if (jumpBoostRemainingS > 0f) {
+            // 助推窗口：松开 / 上止点立即终止；否则本步注入助推并衰减剩余时长
+            float vy = getLinearVelocity(tmp1).y;
+            if (released || !held || vy <= 0f) {
+                jumpBoostRemainingS = 0f;
+                boostDvY = 0f;
+            } else {
+                boostDvY = (getBoostForce() / getControllerMass()) * dt;
+                // KCC 的 m_jumpSpeed 同时充当「上升速度上限」：playerStep 在扣掉重力后把
+                // m_verticalVelocity > m_jumpSpeed 的部分截回 m_jumpSpeed。助推窗口的能量上限应由
+                // F_BOOST 与 T_BOOST_MAX 共同给出，因此这里把该上限抬到本步目标速度，避免助推增量
+                // 被引擎静默钳回冲量起跳速度（轻质量下 F_BOOST/m ≥ g 时会被完全钳掉）。
+                setJumpSpeed(vy + boostDvY);
+                jumpBoostRemainingS -= dt;
             }
         } else {
-            if (released) {
-                // 松开：按当前蓄力比施放冲量，受 inputScale 调制
-                float ratio = Math.min(chargeTimer / MechaJumpAttr.T_CHARGE, 1.0f);
-                float impulse = computeJumpImpulse(ratio) * inputScale;
-                float vRaw = impulse / getControllerMass();
-                float vTakeoff = Math.min(vRaw, getJumpSpeedCap());
-
-                // 使用 KCC 内建跳跃，保证水平速度保留
-                setJumpSpeed(vTakeoff);
-                jump();
-
-                chargingJump = false;
-                chargeTimer = 0f;
-
-            } else if (!held || !grounded) {
-                // 中断：松键后重置、或离地
-                chargingJump = false;
-                chargeTimer = 0f;
-
-            } else {
-                // 持续蓄力
-                chargeTimer += dt;
-            }
+            boostDvY = 0f;
         }
+    }
+
+    /**
+     * 当前是否处于助推窗口内（{@code jumpBoostRemainingS > 0}）。
+     * <p>
+     * KCC 权威状态，由 {@code MechaControl} 镜像到 {@code KCC_JUMP_BOOSTING}，驱动 air 图的
+     * {@code jump_boost} 状态迁移与 {@code MechaControl#forwardInputToKCC} 的 held 旁路。
+     */
+    public boolean isBoosting() {
+        return jumpBoostRemainingS > 0f;
+    }
+
+    /**
+     * 立即终止助推窗口。
+     * <p>
+     * 供受击 / 硬直 / 入水等中断源调用。本方法只把窗口剩余时长置 0、不施加任何力，下一物理步
+     * {@link #updateJump} 会把 {@link #boostDvY} 一并归零。
+     */
+    public void cancelBoost() {
+        jumpBoostRemainingS = 0f;
     }
 
     // ═══════════════════════════════════════════════
@@ -1001,22 +1035,34 @@ public class MechaCharacter extends PhysicsCharacter {
     }
 
     /**
-     * 计算跳跃冲量。
+     * 冲量相的跳跃冲量。
      * <p>
-     * 默认实现：素体裸身线性蓄力曲线。
-     * 子类覆写以实现多腿叠加：Σ I_per_leg(ratio)，取 v_extend 最大值作为硬上限。
+     * 默认实现：素体裸身值 {@link MechaJumpAttr#I_BASE}。
+     * 子类覆写以实现多腿叠加：Σ I_per_leg。
      *
-     * @param chargeRatio 蓄力比 [0, 1]
      * @return 跳跃冲量 (N·s)
      */
-    protected float computeJumpImpulse(float chargeRatio) {
-        return MechaJumpAttr.I_MIN + (MechaJumpAttr.I_MAX - MechaJumpAttr.I_MIN) * chargeRatio;
+    protected float computeJumpImpulse() {
+        return MechaJumpAttr.I_BASE;
     }
 
     /**
-     * 起跳速度硬上限。
+     * 助推窗口内的持续向上助推力。
      * <p>
-     * 默认返回素体 v_extend。多腿时子类应覆写为 max(各腿 v_extend)。
+     * 默认实现：素体裸身值 {@link MechaJumpAttr#F_BOOST}。子类覆写以实现多腿叠加
+     * （各腿推力求和）。
+     *
+     * @return 助推力 (N)
+     */
+    protected float getBoostForce() {
+        return MechaJumpAttr.F_BOOST;
+    }
+
+    /**
+     * 冲量相的起跳速度硬上限。
+     * <p>
+     * 只钳制冲量相的起跳速度，不参与助推窗口内的速度钳制。默认返回素体 v_extend，
+     * 多腿时子类应覆写为 max(各腿 v_extend)。
      */
     protected float getJumpSpeedCap() {
         return MechaJumpAttr.V_EXTEND;

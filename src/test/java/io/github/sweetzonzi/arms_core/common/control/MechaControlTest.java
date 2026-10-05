@@ -245,8 +245,7 @@ class MechaControlTest {
     /**
      * 一次 {@link MechaEvent#JUMP_RELEASE} 只 latch 一帧。
      * <p>
-     * 这条边沿若跨帧重复送达，就会在"松键后很快再按"时把刚开始的蓄力提前放掉
-     * （蓄力比接近 0 的弱跳），因此必须钉住"恰好一次"。
+     * 这条边沿若跨帧重复送达，就会把稍后重新按下的那一次助推窗口提前掐断，因此必须钉住"恰好一次"。
      */
     @Test
     void jumpReleaseEventLatchesExactlyOnce() {
@@ -263,16 +262,37 @@ class MechaControlTest {
         assertEquals(1, kcc.releaseCount);
     }
 
-    /** 反向控制模式下 CAN_JUMP=false 只拦"开始蓄力"，不能吞掉已经开始蓄力的释放边沿。 */
+    /** 反向控制模式下 CAN_JUMP=false 只拦"开始跳跃"，不能吞掉已经开始助推的释放边沿。 */
     @Test
-    void gatedModeStillForwardsReleaseWhileCharging() {
+    void gatedModeStillForwardsReleaseWhileBoosting() {
         control.setBypassObservation(false);
-        kcc.chargingForTest = true;
+        kcc.boostingForTest = true;
 
         control.postEvent(MechaEvent.JUMP_RELEASE);
         control.frameLogic(DT);
 
         assertTrue(kcc.lastReleased);
+    }
+
+    /**
+     * 反向控制模式下，离地后 CAN_JUMP 为假，但助推窗口内的 held 必须继续透传。
+     * <p>
+     * {@code CAN_JUMP} 只在 {@code Posture.STAND} 为真，离地即假；若门控写成
+     * {@code jumpPressed && CAN_JUMP}，助推窗口会在离地第一步被掐死。这里把 KCC 置为离地以构造该场景。
+     */
+    @Test
+    void gatedModeStillForwardsHeldWhileBoosting() {
+        control.setBypassObservation(false);
+        kcc.groundForTest = false;
+        kcc.boostingForTest = true;
+
+        control.applyConditionSnapshot(MechaConditionSnapshot.builder()
+                .jumpPressed(true)
+                .build());
+        control.frameLogic(DT);
+
+        assertFalse(control.canJump(), "离地（air）姿态下 CAN_JUMP 为假");
+        assertTrue(kcc.isJumpHeld(), "助推窗口内的 held 仍须透传");
     }
 
     @Test
@@ -365,7 +385,7 @@ class MechaControlTest {
     /**
      * 记录 {@code setJumpInput} 收到了什么的 KCC。
      * <p>
-     * 只覆写输入入口与蓄力镜像，不触发物理积分，因此本类不需要在物理空间里真实步进
+     * 只覆写输入入口、助推镜像与着地检测，不触发物理积分，因此本类不需要在物理空间里真实步进
      * （地面射线检测属 {@code MechaCharacter} 自身的测试范围）。
      */
     private static final class RecordingMechaCharacter extends MechaCharacter {
@@ -374,8 +394,10 @@ class MechaControlTest {
         private boolean lastReleased;
         /** 收到松开标记的次数 */
         private int releaseCount;
-        /** 覆写 {@code isChargingJump()} 的返回值，用于构造"已经在蓄力"的门控场景 */
-        private boolean chargingForTest;
+        /** 覆写 {@code isBoosting()} 的返回值，用于构造"已经在助推"的门控场景 */
+        private boolean boostingForTest;
+        /** 覆写 {@code onGround()} 的返回值，用于构造"离地后"的门控场景；默认与原生初值一致（着地） */
+        private boolean groundForTest = true;
 
         RecordingMechaCharacter(CapsuleCollisionShape shape, PhysicsSpace space) {
             super(shape, space);
@@ -391,8 +413,13 @@ class MechaControlTest {
         }
 
         @Override
-        public boolean isChargingJump() {
-            return chargingForTest;
+        public boolean isBoosting() {
+            return boostingForTest;
+        }
+
+        @Override
+        public boolean onGround() {
+            return groundForTest;
         }
     }
 

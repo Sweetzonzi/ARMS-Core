@@ -185,7 +185,7 @@ public final class MechaStateActions {
         return new BatchWriteAction(Map.of(
                 VERTICAL, v,
                 IS_GROUNDED, v == Vertical.GROUND,
-                IS_JUMP_CHARGING, v == Vertical.JUMP_CHARGE,
+                IS_JUMP_BOOSTING, v == Vertical.JUMP_BOOST,
                 IS_FALLING, v == Vertical.FALL,
                 IS_GLIDING, v == Vertical.GLIDE,
                 IS_HOVERING, v == Vertical.HOVER,
@@ -226,14 +226,6 @@ public final class MechaStateActions {
     public static StateAction enableVerticalMoveOnly() {
         return new BatchWriteAction(Map.of(
                 VERTICAL_CAN_MOVE, true,
-                VERTICAL_CAN_JUMP, false
-        ));
-    }
-
-    /** vertical 子机在跳跃蓄力期间禁止移动和重复开始跳跃。 */
-    public static StateAction disableVerticalInput() {
-        return new BatchWriteAction(Map.of(
-                VERTICAL_CAN_MOVE, false,
                 VERTICAL_CAN_JUMP, false
         ));
     }

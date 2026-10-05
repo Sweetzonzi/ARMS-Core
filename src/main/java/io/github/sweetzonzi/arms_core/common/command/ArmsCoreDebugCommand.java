@@ -138,14 +138,13 @@ public final class ArmsCoreDebugCommand {
         for (ArmsCore core : cores) {
             var data = core.getSyncedData();
             source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT,
-                            "  %s pos=%s posture=%s gait=%s vertical=%s energy=%.1f jump=%s",
+                            "  %s pos=%s posture=%s gait=%s vertical=%s energy=%.1f",
                             core.getAssemblyId(),
                             data.get(ArmsCore.DATA_POS),
                             data.get(ArmsCore.DATA_POSTURE),
                             data.get(ArmsCore.DATA_GAIT),
                             data.get(ArmsCore.DATA_VERTICAL),
-                            data.get(ArmsCore.DATA_ENERGY),
-                            data.get(ArmsCore.DATA_JUMP_CHARGING))), false);
+                            data.get(ArmsCore.DATA_ENERGY))), false);
         }
         return cores.size();
     }

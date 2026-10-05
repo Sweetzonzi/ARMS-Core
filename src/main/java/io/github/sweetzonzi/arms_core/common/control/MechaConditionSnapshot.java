@@ -26,7 +26,7 @@ public record MechaConditionSnapshot(
         float inputForward,
         /** 左右输入，[-1, 1]，正=左移（与原版 Input.leftImpulse 约定一致） */
         float inputStrafe,
-        /** 跳跃键是否按住（持续状态，用于蓄力） */
+        /** 跳跃键是否按住（持续状态，用于保持跳跃助推窗口） */
         boolean jumpPressed,
         /** 冲刺键是否按住 */
         boolean sprintPressed,

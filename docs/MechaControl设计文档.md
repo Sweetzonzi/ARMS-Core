@@ -117,8 +117,8 @@ public enum MechaEvent {
 ### 与 Snapshot 的分工示例
 
 - `TOGGLE_DRIVE` 必须是事件（不能是快照字段）——它在按下那帧触发一次。放快照里需要 Holder 手动记"上一帧"来比较，容易重复触发。
-- `jumpPressed` 仍然是快照字段——它是持续状态（按住蓄力），不是离散触发（松开才触发跳跃）。
-- `JUMP_RELEASE` 是事件——`jumpPressed` 只表达"此刻是否按住"，而松键是"发生过一次"的事实。放进快照就会在每个物理步被重复读到，从而把下一次刚开始的蓄力提前放掉。
+- `jumpPressed` 仍然是快照字段——它是持续状态（按住保持助推窗口），不是离散触发（按下当步即起跳、松开终止窗口）。
+- `JUMP_RELEASE` 是事件——`jumpPressed` 只表达"此刻是否按住"，而松键是"发生过一次"的事实。放进快照就会在每个物理步被重复读到，从而把稍后重新按下的那一次助推窗口提前掐断。
 
 ### 事件不经过信号总线
 
@@ -198,7 +198,7 @@ public void onPhysicsStep(float dt):
         （用于转身斩、回旋踢、idle 微晃等动画驱动面向变化）
 
   9. kcc.prePhysicsTick(dt)
-     → 行走力模型 + 跳跃蓄力 + 碰撞 sweep + 多通道合成
+     → 行走力模型 + 跳跃冲量与助推窗口 + 碰撞 sweep + 多通道合成
 
   10. pendingEvents.clear()
 ```

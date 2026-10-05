@@ -87,11 +87,11 @@ public enum MechaEvent {
     // ==========================================
 
     /**
-     * 跳跃键松开（单帧边沿），蓄力跳跃的释放信号。
+     * 跳跃键松开（单帧边沿），跳跃助推窗口的终止信号。
      * <p>
      * 与"按住"分开表达：{@code MechaInputPayload.keyFlags} 的 {@code BIT_JUMP} 只表示当前是否按住，
      * 它随每次上行覆盖，被物理线程读到几次不确定；而"松开了"是发生过一次的事实，
-     * 必须恰好被 KCC 的跳跃蓄力更新（`MechaCharacter.java#updateJump`）消费一次，
+     * 必须恰好被 KCC 的助推窗口更新（`MechaCharacter.java#updateJump`）消费一次，
      * 因此走事件闩锁（`MechaControl.java#pendingEventBuffer`）。
      * <p>
      * 追加在枚举末尾而不是与跳跃相关的分组里：{@code eventBits} 的位序取 {@link #ordinal()}，

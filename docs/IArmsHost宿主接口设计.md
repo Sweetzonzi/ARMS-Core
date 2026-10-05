@@ -146,7 +146,7 @@ public interface IArmsHost {
 - **位置回写是过渡态。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，只留速度那一笔：位置由客户端上报与 §5 的位移摄入通道维护。理由是每 tick 的位置回写会覆盖同一 tick 的外部位移，使控制器不知道 `/tp` 一类的写入发生过。
 - 位置回写后调用 `net.minecraft.world.entity.Entity#resetFallDistance`——实体被外部搬动时原版会按位置差累计坠落距离，不重置会让玩家持续受到坠落伤害。位置回写移除之后，这一职责要重新指派：当前它是服务端唯一的坠距重置点（`common/PlayerHostEvents.java#onPlayerTickPost` 走的是 `Player#tick` 末尾的玩家 tick 事件，服务端玩家不在该路径上），可选落点是对账用的 `net.minecraft.server.network.ServerGamePacketListenerImpl#handleMovePlayer` 采纳分支。
 - 绑定字段的每一次变化都要重置输入状态，否则状态机会卡在上一帧（例如 `jumpPressed` 永久为真，`docs/ArmsCore双端权威与网络同步实现计划.md` R11）。`common/MechaInputHandler.java#resetInput` 已提供该动作，绑定实现调用它即可。
-- `setControlledArmsCore` 是绑定关系的**唯一入口**，两个方向的一致性由它负责，三条换绑路径都要覆盖：写入新值前解除本宿主此前承载的装配体；新装配体此前承载于别的宿主时，先解除那一侧的绑定；同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃蓄力凭空消失。单宿主唯一性与「同一装配体换宿主」都收敛在这一处，调用方只需回答「这个宿主现在承载谁」。
+- `setControlledArmsCore` 是绑定关系的**唯一入口**，两个方向的一致性由它负责，三条换绑路径都要覆盖：写入新值前解除本宿主此前承载的装配体；新装配体此前承载于别的宿主时，先解除那一侧的绑定；同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃助推窗口凭空终止。单宿主唯一性与「同一装配体换宿主」都收敛在这一处，调用方只需回答「这个宿主现在承载谁」。
 - 绑定期间授予飞行许可，解除时收回，并调用 `net.minecraft.server.level.ServerPlayer#onUpdateAbilities` 同步给客户端：`docs/宿主接入与伤害管线设计.md` §5.2 末段的「飞行过久」检测在 `noPhysics` 为真时不再有脚下碰撞支撑，悬停与滑翔会被踢。**用 `NeoForgeMod#CREATIVE_FLIGHT` 属性上的修饰符，不要直写 `net.minecraft.world.entity.player.Abilities#mayfly`**——该字段已被 NeoForge 标记为 `@Deprecated` 并明确劝阻直写，许可的正确判据是 `IPlayerExtension#mayFly`（游戏模式或属性值大于 0 二者之一）。修饰符 id 固定（`arms_core:mecha_flight`），因此重复绑定不叠加、收回只撤掉自己那一个，不会覆盖别的模组或游戏模式给出的许可。
 
 **只有服务端路径会走这些方法体。** 客户端玩家同样实现本接口且绑定字段填的是客户端实例，但客户端不持有 KCC（§5.4），因此 `applyPose` / `applyVelocity` 在客户端不会被调用。客户端侧"玩家实体跟着机体走"由另一条路径承担：客户端按同步来的 `DATA_POS` 写自己的实体位置，细节见 `docs/宿主接入与伤害管线设计.md` §5.3。

@@ -15,14 +15,17 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
 
     @Test
     void parallelChildrenKeepIndependentPermissionSources() {
+        // jump_boost 只在 air 图存在：先离地进入 air，再置助推标志
         setMovement(true, false, false, 1f);
-        variables.set(KCC_JUMP_CHARGING, true);
+        setEnvironment(false, false, false);
+        variables.set(KCC_JUMP_BOOSTING, true);
 
-        machine.progress(TEST_DT);
+        machine.progress(TEST_DT);   // STAND → AIR，air 子机启动
+        machine.progress(TEST_DT);   // fall → jump_boost
 
-        assertState(Posture.STAND, Gait.JOG, Vertical.JUMP_CHARGE);
-        assertSourcePermissions(true, true, false, false);
-        assertFinalPermissions(false, false);
+        assertState(Posture.AIR, Gait.JOG, Vertical.JUMP_BOOST);
+        assertSourcePermissions(true, true, true, false);
+        assertFinalPermissions(true, false);
     }
 
     @Test

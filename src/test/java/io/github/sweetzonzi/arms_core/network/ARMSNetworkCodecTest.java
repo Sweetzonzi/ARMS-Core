@@ -143,7 +143,7 @@ class ARMSNetworkCodecTest {
         List<SynchedEntityData.DataValue<?>> initial = List.of(
                 SynchedEntityData.DataValue.create(ArmsCore.DATA_YAW, new Rotations(0f, 90f, 0f)),
                 SynchedEntityData.DataValue.create(ArmsCore.DATA_GAIT, "sprint"),
-                SynchedEntityData.DataValue.create(ArmsCore.DATA_JUMP_CHARGING, true));
+                SynchedEntityData.DataValue.create(ArmsCore.DATA_ENERGY, 42f));
         ArmsCoreCreatePayload original = new ArmsCoreCreatePayload(
                 ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse("minecraft:overworld")),
                 UUID.randomUUID(), 42, initial);
@@ -157,7 +157,7 @@ class ARMSNetworkCodecTest {
         assertEquals(42, decoded.hostEntityId());
         assertNotNull(decoded.initial());
         assertEquals(3, decoded.initial().size());
-        assertEquals(true, decoded.initial().get(2).value());
+        assertEquals(42f, decoded.initial().get(2).value());
     }
 
     @Test
@@ -191,8 +191,8 @@ class ARMSNetworkCodecTest {
     }
 
     @Test
-    void fieldTableHasExactlyEightContiguousIds() {
-        // 字段表只允许在末尾追加：id 必须是 [0, 8) 且互不相同。
+    void fieldTableHasExactlySevenContiguousIds() {
+        // 字段表只允许在末尾追加：id 必须是 [0, 7) 且互不相同。
         // 中间插入或删除会让其后的 id 全部平移，双端线上格式静默错配
         int[] ids = {
                 ArmsCore.DATA_POS.id(),
@@ -202,7 +202,6 @@ class ARMSNetworkCodecTest {
                 ArmsCore.DATA_GAIT.id(),
                 ArmsCore.DATA_VERTICAL.id(),
                 ArmsCore.DATA_ENERGY.id(),
-                ArmsCore.DATA_JUMP_CHARGING.id(),
         };
         for (int expected = 0; expected < ids.length; expected++) {
             assertEquals(expected, ids[expected],

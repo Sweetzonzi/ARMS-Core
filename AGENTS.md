@@ -99,7 +99,7 @@
 | `Config.java` | 示例配置（当前为占位），实际逻辑待扩展。 |
 | `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。服务端构造 KCC，客户端经 `newClientInstance` 构造且不持有 KCC。 |
 | `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → KCC 物理积分；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
-| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、控制力积分（地面全额 + 侧向抓地 / 空中缩放）、跳跃蓄力、动画根位移合成。 |
+| `MechaCharacter.java` | 基于 Bullet `PhysicsCharacter` 的运动学胶囊控制器（KCC）：朝向（`setViewYaw`）、体系移动意图到世界方向的唯一变换（`setMoveIntent`）、控制力积分（地面全额 + 侧向抓地 / 空中缩放）、跳跃瞬时冲量与助推窗口、动画根位移合成。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
 | `common/IArmsHost.java` | 宿主接口：绑定关系的读写（`getControlledArmsCore` / `setControlledArmsCore`）、`getHostEntity`、位置与速度的落地入口（`applyPose` / `applyVelocity`）。玩家经 Mixin 实现它，Doll / AI 敌人可直接实现。 |
 | `mixin/PlayerHostMixin.java` | `@Mixin(Player.class) implements IArmsHost`：注入绑定字段 `armsCore$controlledCore` 并实现五个方法。绑定关系的唯一入口，负责三条换绑路径与输入重置；绑定期间通过 `neoforge:creative_flight` 属性授予飞行许可。 |
@@ -226,7 +226,8 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | 文档 | 内容 |
 |------|------|
 | `docs/总体设计文档.md` | 架构、`IArmsHost`、`ArmsCore`、`MechaControl` 双层刚体、两条输入路径。 |
-| `docs/角色控制器-行走物理设计.md` | KCC 力学模型、抓地力、跳跃蓄力、多通道合成、线速度单位约定。 |
+| `docs/角色控制器-行走物理设计.md` | KCC 力学模型、抓地力、跳跃模型（瞬时冲量 + 助推窗口）、多通道合成、线速度单位约定。 |
+| `docs/角色控制器-KCC制约调研与替换评估.md` | KCC（btKinematicCharacterController）制约调研：单位语义、不可观测与无写回、垂直通道隐藏上限、在世不可换形的硬阻塞、无质量不受力；记录 Minie 的 BetterCharacterControl 作为刚体路线的既有先例（范式和移植障碍）；据此引出自实现刚体角色控制器的方向与验收基线（实现途径归后续文档）。 |
 | `docs/跳跃-瞬时冲量持续助推设计.md` | 跳跃模型改造设计：瞬时冲量 + 持续助推窗口、三条窗口终止条件、参数 `F_BOOST` / `T_BOOST_MAX`、代码与文档改动清单、验收判据。 |
 | `docs/分层控制器与状态机设计.md` | 状态机、MoLang 集成、动画驱动。 |
 | `docs/MechaControl设计文档.md` | 早期 `MechaControl` 接口设计。 |

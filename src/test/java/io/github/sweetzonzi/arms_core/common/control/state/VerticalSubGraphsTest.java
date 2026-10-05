@@ -5,15 +5,15 @@ import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
 import org.junit.jupiter.api.Test;
 
-import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.KCC_JUMP_CHARGING;
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.KCC_JUMP_BOOSTING;
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.VERTICAL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
 
     @Test
-    void groundRemainsStableWhileKccIsNotCharging() {
-        variables.set(KCC_JUMP_CHARGING, false);
+    void groundRemainsStableWhileKccIsNotBoosting() {
+        variables.set(KCC_JUMP_BOOSTING, false);
 
         progress(10);
 
@@ -22,23 +22,33 @@ class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
         assertFinalPermissions(true, true);
     }
 
+    /**
+     * air 图的 {@code fall ⇄ jump_boost} 迁移：助推窗口由 KCC 状态镜像，窗口关闭即回 {@code fall}。
+     * <p>
+     * {@code jump_boost} 只存在于 air 图。冲量在 stand 姿态下即时施放、离地后 posture 才切 air，
+     * 因此子机先落在 {@code fall}，再由 {@code KCC_JUMP_BOOSTING} 迁移进入 {@code jump_boost}。
+     */
     @Test
-    void jumpChargeMirrorsKccChargingState() {
-        variables.set(KCC_JUMP_CHARGING, true);
+    void jumpBoostMirrorsKccBoostingStateInAir() {
+        enterPosture(Posture.AIR);
+        assertState(Posture.AIR, Gait.IDLE, Vertical.FALL);
+
+        variables.set(KCC_JUMP_BOOSTING, true);
         machine.progress(TEST_DT);
 
-        assertEquals(Vertical.JUMP_CHARGE, variables.get(VERTICAL));
-        assertSourcePermissions(true, true, false, false);
-        assertFinalPermissions(false, false);
+        assertEquals(Vertical.JUMP_BOOST, variables.get(VERTICAL));
+        assertSourcePermissions(true, true, true, false);
+        assertFinalPermissions(true, false);
 
         progress(5);
-        assertEquals(Vertical.JUMP_CHARGE, variables.get(VERTICAL));
+        assertEquals(Vertical.JUMP_BOOST, variables.get(VERTICAL));
 
-        variables.set(KCC_JUMP_CHARGING, false);
+        variables.set(KCC_JUMP_BOOSTING, false);
         machine.progress(TEST_DT);
 
-        assertEquals(Vertical.GROUND, variables.get(VERTICAL));
-        assertFinalPermissions(true, true);
+        assertEquals(Vertical.FALL, variables.get(VERTICAL));
+        assertSourcePermissions(true, true, true, false);
+        assertFinalPermissions(true, false);
     }
 
     @Test
@@ -61,19 +71,5 @@ class VerticalSubGraphsTest extends LogicStateMachineTestSupport {
 
         machine.broadcastEvent("fly");
         assertEquals(Vertical.FALL, variables.get(VERTICAL));
-    }
-
-    @Test
-    void postureWithoutVerticalMachineIgnoresStaleVerticalDenial() {
-        variables.set(KCC_JUMP_CHARGING, true);
-        machine.progress(TEST_DT);
-        assertFinalPermissions(false, false);
-
-        setEnvironment(true, true, false);
-        machine.progress(TEST_DT);
-
-        assertEquals(Posture.WATER, variables.get(io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.POSTURE));
-        assertSourcePermissions(true, true, false, false);
-        assertFinalPermissions(true, false);
     }
 }

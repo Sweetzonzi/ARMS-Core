@@ -6,6 +6,7 @@ import com.jme3.bullet.collision.shapes.BoxCollisionShape;
 import com.jme3.bullet.objects.PhysicsRigidBody;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,7 +58,14 @@ class MechaCharacterWalkPhysicsTest {
         // 足够大的地面：10 s 的测试里角色会跑出几十米
         space.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
 
-        kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
+        // 覆写 getBoostForce() 返回 0：屏蔽助推窗口、只保留冲量相，使空中力学断言
+        // （水平速度继承、空中转向、空中闪避）与助推无关
+        kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space) {
+            @Override
+            protected float getBoostForce() {
+                return 0f;
+            }
+        };
         kcc.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
         space.addCollisionObject(kcc);
     }
@@ -215,10 +223,14 @@ class MechaCharacterWalkPhysicsTest {
     // 跳跃：水平速度继承 + 空中「不可加速」
     // ═══════════════════════════════════════════════
 
-    /** 按住跳跃键一拍再松开，触发 KCC 起跳；返回是否成功离地。 */
-    private void jumpAndStep() {
+    /**
+     * 轻拍跳跃键：按下当步即施放冲量并离地，下一物理步松开终止助推窗口。
+     * <p>
+     * 本测试的 KCC 把 {@link MechaCharacter#getBoostForce()} 覆写为 0，因此这次轻拍只体现冲量相。
+     */
+    private void tapJump() {
         kcc.setJumpInput(true, false);
-        step(2);
+        step(1);
         kcc.setJumpInput(false, true);
         step(1);
     }
@@ -237,7 +249,7 @@ class MechaCharacterWalkPhysicsTest {
         assertTrue(takeoffSpeed > 4f, "先决条件：应有水平速度，实际 " + takeoffSpeed + " m/s");
 
         // 起跳后立刻放开方向键：空中不得有任何水平制动
-        jumpAndStep();
+        tapJump();
         kcc.setMoveIntent(0f, 0f);
 
         float minAirSpeed = Float.MAX_VALUE;
@@ -264,7 +276,7 @@ class MechaCharacterWalkPhysicsTest {
     void airSteeringChangesDirectionAtTheControlForceRate() {
         kcc.setMoveIntent(1f, 0f);
         step(300);
-        jumpAndStep();
+        tapJump();
         assertTrue(hSpeed() > 4f, "先决条件：起跳时应有水平速度");
 
         // 起跳后改成纯左移（yaw=0 面向 +Z 时左移 = +X）
@@ -293,7 +305,7 @@ class MechaCharacterWalkPhysicsTest {
     void airControlDoesNotPushSpeedAboveGroundCruise() {
         kcc.setMoveIntent(1f, 0f);
         step(300);
-        jumpAndStep();
+        tapJump();
 
         float maxAirSpeed = 0f;
         for (int i = 0; i < 200 && !kcc.onGround(); i++) {
@@ -472,10 +484,7 @@ class MechaCharacterWalkPhysicsTest {
     void airDodgeAssignsTheVelocityAndTakesOverTheCeiling() {
         kcc.setMoveIntent(0f, 1f);
         step(2);
-        kcc.setJumpInput(true, false);
-        step(2);
-        kcc.setJumpInput(false, true);
-        step(1);
+        tapJump();
         assertFalse(kcc.onGround(), "先决条件：应已离地");
 
         // 输入沿 +Z（闪避轴同向），进入速度沿 +X：赋值把 +X 的分量整段抹掉
@@ -503,10 +512,7 @@ class MechaCharacterWalkPhysicsTest {
         kcc.setMoveIntent(0f, 1f);
         step(2);
 
-        kcc.setJumpInput(true, false);
-        step(2);
-        kcc.setJumpInput(false, true);
-        step(1);
+        tapJump();
         assertFalse(kcc.onGround(), "先决条件：应已离地");
 
         kcc.setMoveIntent(0f, 0f); // 松开输入：唯一会改变速率的就是这次闪避
@@ -540,10 +546,7 @@ class MechaCharacterWalkPhysicsTest {
         // 空中：同样一份冲量，没有摩擦
         kcc.setMoveIntent(0f, 1f);
         step(2);
-        kcc.setJumpInput(true, false);
-        step(2);
-        kcc.setJumpInput(false, true);
-        step(1);
+        tapJump();
         assertFalse(kcc.onGround(), "先决条件：应已离地");
 
         kcc.setMoveIntent(0f, 0f);
@@ -558,5 +561,182 @@ class MechaCharacterWalkPhysicsTest {
         assertEquals(dodgeDv(), airStep, 0.1f,
                 "空中闪避应完整保留赋值后的速率，实际 " + airStep + " m/s");
         assertTrue(airStep > groundMoved, "空中闪避的瞬时速率应高于被摩擦磨过的地面闪避");
+    }
+
+    // ═══════════════════════════════════════════════
+    // 瞬时冲量 + 持续助推窗口（§1 模型的不变量）
+    // ═══════════════════════════════════════════════
+
+    /** 一个独立的物理空间 + 地面 + 角色，用于助推窗口生效的力学测试。 */
+    private record Rig(PhysicsSpace space, MechaCharacter body) {
+    }
+
+    /**
+     * 造一个助推窗口生效、质量为 {@code mass}、助推力为 {@code boostForce} 的控制器。
+     * <p>
+     * 与 {@link #kcc} 不同，这里不屏蔽助推，并自带独立物理空间，避免与 {@link #kcc} 互相碰撞。
+     */
+    private static Rig newRig(float mass, float boostForce) {
+        PhysicsSpace rigSpace = new PhysicsSpace(
+                new Vector3f(-500f, -500f, -500f), new Vector3f(500f, 500f, 500f));
+        rigSpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
+        MechaCharacter body = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), rigSpace) {
+            @Override
+            protected float getControllerMass() {
+                return mass;
+            }
+
+            @Override
+            protected float getBoostForce() {
+                return boostForce;
+            }
+        };
+        body.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
+        rigSpace.addCollisionObject(body);
+        return new Rig(rigSpace, body);
+    }
+
+    /** 在独立 rig 上跑 {@code steps} 个物理步。 */
+    private static void stepRig(Rig rig, int steps) {
+        for (int i = 0; i < steps; i++) {
+            rig.body().prePhysicsTick(DT);
+            rig.space().update(DT, 0, 0x0);
+        }
+    }
+
+    /**
+     * 按住 {@code holdSteps} 个物理步后松开，继续步进直到落地，返回相对起点的最大上升高度 (m)。
+     * <p>
+     * 松开后不再按住，因此落地不会再次起跳（§8 的「落地时若仍按住则再次起跳」因此不参与本测量）。
+     * 落地判据取 {@link MechaCharacter#onGround()}。
+     */
+    private static float maxRiseWhileHolding(Rig rig, int holdSteps) {
+        float y0 = rig.body().getPhysicsLocation(null).y;
+        rig.body().setJumpInput(true, false);
+        stepRig(rig, holdSteps);
+        rig.body().setJumpInput(false, true);
+
+        float maxRise = 0f;
+        for (int i = 0; i < 400; i++) {
+            stepRig(rig, 1);
+            maxRise = Math.max(maxRise, rig.body().getPhysicsLocation(null).y - y0);
+            if (i > 2 && rig.body().onGround()) break;
+        }
+        return maxRise;
+    }
+
+    /**
+     * 不变量 1：轻拍（只走冲量相）。{@code v0 = I_BASE/m = 325/70 = 4.643 m/s}，
+     * 高度 = {@code v0²/(2g) ≈ 1.10 m}，上升时长 = {@code v0/g ≈ 0.473 s}。
+     */
+    @Test
+    void tapJumpRisesToTheImpulseOnlyHeight() {
+        Rig rig = newRig(MechaWalkingAttr.MASS, 0f);
+        float y0 = rig.body().getPhysicsLocation(null).y;
+
+        rig.body().setJumpInput(true, false);
+        stepRig(rig, 1);                      // 冲量相：按下即起跳
+        rig.body().setJumpInput(false, true);
+        stepRig(rig, 1);                      // 松开：窗口立即终止
+
+        float maxRise = 0f;
+        int upSteps = 0;
+        for (int i = 0; i < 300 && !rig.body().onGround(); i++) {
+            stepRig(rig, 1);
+            maxRise = Math.max(maxRise, rig.body().getPhysicsLocation(null).y - y0);
+            if (rig.body().getLinearVelocity(null).y > 0f) upSteps++;
+        }
+
+        assertEquals(1.10f, maxRise, 0.05f, "轻拍高度应由 v0²/(2g) 给出");
+        assertEquals(0.473f, upSteps * DT, 0.05f, "上升时长应为 v0/g");
+    }
+
+    /**
+     * 不变量 2：按住至截止高度 ≈ 1.74 m（{@code m = 70}、{@code F_BOOST = 500}、
+     * {@code T_BOOST_MAX = 0.20}）。
+     */
+    @Test
+    void holdingToTheBoostCutoffReachesTheTallerHeight() {
+        Rig rig = newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST);
+        float maxRise = maxRiseWhileHolding(rig, 40);   // 0.4 s > T_BOOST_MAX
+        assertEquals(1.74f, maxRise, 0.06f, "按住至截止的高度应由冲量 + 助推积分给出");
+    }
+
+    /** 不变量 3：按住越久越高（冲量相同，助推注入的动量随按住时长增加）。 */
+    @Test
+    void holdingLongerNeverLowersTheJump() {
+        float h5 = maxRiseWhileHolding(newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST), 5);
+        float h10 = maxRiseWhileHolding(newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST), 10);
+        float h20 = maxRiseWhileHolding(newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST), 20);
+
+        assertTrue(h5 < h10, "0.05 s 的按住应低于 0.10 s，实际 " + h5 + " / " + h10);
+        assertTrue(h10 < h20, "0.10 s 的按住应低于 0.20 s，实际 " + h10 + " / " + h20);
+    }
+
+    /** 不变量 4：松开即停——松开后垂直加速度恰为 {@code −g}。 */
+    @Test
+    void releasingEndsTheBoostSoGravityTakesOver() {
+        Rig rig = newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST);
+        rig.body().setJumpInput(true, false);
+        stepRig(rig, 5);                      // 窗口内按住
+        rig.body().setJumpInput(false, true);
+        stepRig(rig, 1);                      // 松开那一物理步：不注入助推
+
+        float v1 = rig.body().getLinearVelocity(null).y;
+        stepRig(rig, 1);
+        float v2 = rig.body().getLinearVelocity(null).y;
+
+        assertEquals(-MechaWalkingAttr.GRAVITY, (v2 - v1) / DT, 0.1f,
+                "松开后应只剩重力，垂直加速度为 −g");
+    }
+
+    /**
+     * 不变量 5：时间兜底。轻质量（{@code m = 35}）下 {@code F_BOOST/m ≥ g}，窗口内不出现上止点，
+     * 只有 {@code T_BOOST_MAX} 能收住；按住不放也必须转为下降且不再上升。
+     */
+    @Test
+    void lightBodyCannotHoverUnderAContinuousHold() {
+        float lightMass = 35f;
+        Rig rig = newRig(lightMass, MechaJumpAttr.F_BOOST);
+        assertTrue(MechaJumpAttr.F_BOOST / lightMass >= MechaWalkingAttr.GRAVITY,
+                "先决条件：轻质量下助推加速度不弱于重力");
+
+        rig.body().setJumpInput(true, false);
+        boolean descended = false;
+        for (int i = 0; i < 180; i++) {        // 1.8 s：窗口 0.2 s + 上升余量，落地前收住
+            stepRig(rig, 1);
+            float vy = rig.body().getLinearVelocity(null).y;
+            if (vy <= 0f) {
+                descended = true;
+            }
+            if (descended) {
+                assertTrue(vy <= 0.05f, "时间兜底后不得再上升，实际 vy=" + vy);
+            }
+        }
+        assertTrue(descended, "轻质量机体按住不放也必转为下降，不得悬浮");
+    }
+
+    /**
+     * 不变量 6：窗口末速（{@code m = 70}）为 {@code v0 + (F_BOOST/m − g)·T_BOOST_MAX ≈ 4.11 m/s}；
+     * 该末速可超过 {@code V_EXTEND}（{@code m = 35} 时 ≈ 10.18 m/s > 10），说明上限只钳制冲量相。
+     */
+    @Test
+    void boostWindowSpeedIsTheImpulsePlusBoostIntegral() {
+        int windowSteps = Math.round(MechaJumpAttr.T_BOOST_MAX / DT);   // 0.20 s / 0.01 s = 20
+
+        Rig standard = newRig(MechaWalkingAttr.MASS, MechaJumpAttr.F_BOOST);
+        standard.body().setJumpInput(true, false);
+        stepRig(standard, windowSteps);
+
+        assertEquals(4.11f, standard.body().getLinearVelocity(null).y, 0.05f,
+                "窗口末速 = v0 + (F_BOOST/m − g)·T_BOOST_MAX");
+
+        Rig light = newRig(35f, MechaJumpAttr.F_BOOST);
+        light.body().setJumpInput(true, false);
+        stepRig(light, windowSteps);
+
+        float lightVy = light.body().getLinearVelocity(null).y;
+        assertTrue(lightVy > MechaJumpAttr.V_EXTEND,
+                "窗口末速可超过 V_EXTEND（上限只钳制冲量相），实际 " + lightVy + " m/s");
     }
 }

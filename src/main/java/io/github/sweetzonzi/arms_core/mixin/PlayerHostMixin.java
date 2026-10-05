@@ -74,8 +74,8 @@ public class PlayerHostMixin implements IArmsHost {
      * 旧装配体（本宿主此前承载的那个）与新装配体（此前承载于别的宿主）都要先解除对方的绑定，
      * 再写入新值。调用方只需说「这个宿主现在承载谁」，两个方向的一致性由本方法负责。
      * <p>
-     * 绑定确实变化时重置输入状态，否则状态机会卡在上一帧（例如 {@code jumpHeld} 永久蓄力）。
-     * 同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃蓄力凭空消失。
+     * 绑定确实变化时重置输入状态，否则状态机会卡在上一帧（例如 {@code jumpHeld} 保持按住不放）。
+     * 同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃助推窗口凭空终止。
      */
     @Override
     public void setControlledArmsCore(ArmsCore core) {

@@ -133,14 +133,13 @@ public final class ArmsCoreServerEvents {
 
         applyPoseToHost(core, kcc, kccPosition, velocity);
 
-        // 逻辑层五项：主线程不得读 StateVariableContainer，只读物理线程发布的不可变快照
+        // 逻辑层四项：主线程不得读 StateVariableContainer，只读物理线程发布的不可变快照
         MechaControl.LogicStateSnapshot state = core.getLogicState();
         if (state != null) {
             core.getSyncedData().set(ArmsCore.DATA_POSTURE, state.posture().molangName());
             core.getSyncedData().set(ArmsCore.DATA_GAIT, state.gait().molangName());
             core.getSyncedData().set(ArmsCore.DATA_VERTICAL, state.vertical().molangName());
             core.getSyncedData().set(ArmsCore.DATA_ENERGY, state.energy());
-            core.getSyncedData().set(ArmsCore.DATA_JUMP_CHARGING, state.jumpCharging());
         }
 
         List<SynchedEntityData.DataValue<?>> dirty = core.getSyncedData().packDirty();

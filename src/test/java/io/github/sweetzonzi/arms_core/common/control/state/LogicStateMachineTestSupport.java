@@ -35,7 +35,7 @@ abstract class LogicStateMachineTestSupport {
         variables.set(HAS_INPUT, false);
         variables.set(WALK_KEY_DOWN, false);
         variables.set(IN_WATER, false);
-        variables.set(KCC_JUMP_CHARGING, false);
+        variables.set(KCC_JUMP_BOOSTING, false);
         variables.set(ENERGY, 100f);
 
         machine = new MechaLogicStateMachine(variables, tags);
@@ -135,7 +135,7 @@ abstract class LogicStateMachineTestSupport {
                 IS_IDLE, IS_CREEPING, IS_JOGGING, IS_SPRINTING_G,
                 IS_DRIFTING, IS_DODGING, IS_STUNNED, IS_HARD_LANDING));
         assertEquals(1, countTrue(
-                IS_GROUNDED, IS_JUMP_CHARGING, IS_FALLING,
+                IS_GROUNDED, IS_JUMP_BOOSTING, IS_FALLING,
                 IS_GLIDING, IS_HOVERING, IS_FLYING));
 
         Posture posture = variables.get(POSTURE);
@@ -159,7 +159,7 @@ abstract class LogicStateMachineTestSupport {
 
         Vertical vertical = variables.get(VERTICAL);
         assertEquals(vertical == Vertical.GROUND, variables.get(IS_GROUNDED));
-        assertEquals(vertical == Vertical.JUMP_CHARGE, variables.get(IS_JUMP_CHARGING));
+        assertEquals(vertical == Vertical.JUMP_BOOST, variables.get(IS_JUMP_BOOSTING));
         assertEquals(vertical == Vertical.FALL, variables.get(IS_FALLING));
         assertEquals(vertical == Vertical.GLIDE, variables.get(IS_GLIDING));
         assertEquals(vertical == Vertical.HOVER, variables.get(IS_HOVERING));

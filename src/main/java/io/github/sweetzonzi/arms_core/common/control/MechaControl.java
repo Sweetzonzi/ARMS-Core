@@ -450,7 +450,7 @@ public class MechaControl {
                 stateVelocity.x * stateVelocity.x + stateVelocity.z * stateVelocity.z);
         variables.set(StateVariableKeys.SPEED, horizontalSpeed);
         variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);
-        variables.set(KCC_JUMP_CHARGING, kcc.isChargingJump());
+        variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
 
         variables.set(EVENT_DODGE, pendingEvents.contains(MechaEvent.DODGE));
         variables.set(EVENT_TOGGLE_PRONE, pendingEvents.contains(MechaEvent.TOGGLE_PRONE));
@@ -496,7 +496,7 @@ public class MechaControl {
      * 六条转移全部以 {@code COND_IS_DEAD} 为条件，且该节点无出口），因此「死亡 / ragdoll 冻结」
      * 由这一个判据覆盖，控制器停在最后一帧朝向。
      * <p>
-     * 移动许可（{@code CAN_MOVE}）不影响朝向：被晕住、蓄力、卧倒时仍可转身看向别处。
+     * 移动许可（{@code CAN_MOVE}）不影响朝向：被晕住、助推中、卧倒时仍可转身看向别处。
      */
     private void applyFacing() {
         MechaConditionSnapshot snap = conditionSnapshot;
@@ -529,10 +529,11 @@ public class MechaControl {
             // 反向控制：CAN_MOVE / CAN_JUMP 门控
             applyMoveIntent(fwd, str, hasInput && variables.get(CAN_MOVE));
 
-            // CAN_JUMP 只限制开始跳跃；已经开始蓄力后仍须透传 held/released 才能正常释放。
-            boolean charging = kcc.isChargingJump();
-            boolean jumpHeld = snap.jumpPressed() && (variables.get(CAN_JUMP) || charging);
-            boolean jumpReleased = jumpRelease && charging;
+            // CAN_JUMP 只限制开始跳跃；已经开始助推后仍须透传 held/released 才能正常终止窗口。
+            // 离地后 posture 切 air、CAN_JUMP 即为假，靠「正在助推」这条旁路让窗口内的 held 继续透传
+            boolean boosting = kcc.isBoosting();
+            boolean jumpHeld = snap.jumpPressed() && (variables.get(CAN_JUMP) || boosting);
+            boolean jumpReleased = jumpRelease && boosting;
             kcc.setJumpInput(jumpHeld, jumpReleased);
         }
     }
@@ -704,30 +705,28 @@ public class MechaControl {
     /**
      * 逻辑层状态的不可变快照 —— 物理线程 → 主线程的跨线程出口。
      * <p>
-     * 这五项住在 {@link StateVariableContainer}（物理线程独占），主线程不得读写该容器
+     * 这四项住在 {@link StateVariableContainer}（物理线程独占），主线程不得读写该容器
      * （`docs/下一步开发TODO.md:113`）。本 record 与 {@link MechaConditionSnapshot} 是同一模式
      * （不可变 record + volatile 引用），方向相反：本类是物理线程发布、主线程读取。
      * <p>
      * 唯一的消费者是同步写包路径——主线程据它填 `DATA_POSTURE` / `DATA_GAIT` /
-     * `DATA_VERTICAL` / `DATA_ENERGY` / `DATA_JUMP_CHARGING`
+     * `DATA_VERTICAL` / `DATA_ENERGY`
      * （`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.5）。
      * 客户端读的是同步后的 {@code SynchedEntityData} 字段，不读本快照。
      * <p>
      * 它不属于网络协议类型，因此与 {@code MechaConditionSnapshot} 同放在
      * {@code common/control/} 下，作为 {@link MechaControl} 的嵌套类型。
      *
-     * @param posture      当前姿态
-     * @param gait         当前水平移动模式
-     * @param vertical     当前垂直模式
-     * @param energy       当前能量值
-     * @param jumpCharging KCC 是否正在蓄力跳跃
+     * @param posture  当前姿态
+     * @param gait     当前水平移动模式
+     * @param vertical 当前垂直模式
+     * @param energy   当前能量值
      */
     public record LogicStateSnapshot(
             Posture posture,
             Gait gait,
             Vertical vertical,
-            float energy,
-            boolean jumpCharging
+            float energy
     ) {
     }
 
@@ -744,7 +743,6 @@ public class MechaControl {
                 variables.get(POSTURE),
                 variables.get(GAIT),
                 variables.get(VERTICAL),
-                variables.get(ENERGY),
-                kcc.isChargingJump());
+                variables.get(ENERGY));
     }
 }

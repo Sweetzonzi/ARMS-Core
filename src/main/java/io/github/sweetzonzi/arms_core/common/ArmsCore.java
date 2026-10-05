@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * （`setPhysicsLocation` + `addCollisionObject`）须经
  * `SparkLevel.submitImmediateTask` 投递。服务端 KCC 的位姿与速度由主线程在
  * {@link #syncToClients()} 中直接读取（良性竞态，与 `DestroyableRigidObject.postTick()`
- * 同等接受）；逻辑层五项则走 {@link MechaControl.LogicStateSnapshot} 不可变发布。
+ * 同等接受）；逻辑层四项则走 {@link MechaControl.LogicStateSnapshot} 不可变发布。
  *
  * @author Sweetzonzi
  */
@@ -101,10 +101,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     public static final EntityDataAccessor<Float> DATA_ENERGY =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.FLOAT);
 
-    /** KCC 是否正在蓄力跳跃 */
-    public static final EntityDataAccessor<Boolean> DATA_JUMP_CHARGING =
-            SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.BOOLEAN);
-
     /**
      * 全部 accessor 的标签与默认值，供构造器一次性定义。
      * <p>
@@ -120,7 +116,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         DEFAULT_VALUES.put(DATA_GAIT, "idle");
         DEFAULT_VALUES.put(DATA_VERTICAL, "ground");
         DEFAULT_VALUES.put(DATA_ENERGY, 0f);
-        DEFAULT_VALUES.put(DATA_JUMP_CHARGING, false);
     }
 
     // ═══════════════════════════════════════════════

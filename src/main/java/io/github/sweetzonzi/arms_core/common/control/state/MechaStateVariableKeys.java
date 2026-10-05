@@ -138,9 +138,9 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> IS_GROUNDED =
             key("arms_core:is_grounded", true);
 
-    /** 跳跃蓄力中 */
-    public static final StateVariableKey<Boolean> IS_JUMP_CHARGING =
-            key("arms_core:is_jump_charging", false);
+    /** 空中蹬伸助推窗口活跃（表现层 one-hot） */
+    public static final StateVariableKey<Boolean> IS_JUMP_BOOSTING =
+            key("arms_core:is_jump_boosting", false);
 
     /** 自然摔落 — 空中无推力阶段（上升与下落统一） */
     public static final StateVariableKey<Boolean> IS_FALLING =
@@ -190,7 +190,7 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> CAN_MOVE =
             key("arms_core:can_move", true);
 
-    /** 是否允许跳跃输入（综合：stand posture、非 stun、非蓄力中） */
+    /** 是否允许开始跳跃输入（综合：stand posture、非 stun） */
     public static final StateVariableKey<Boolean> CAN_JUMP =
             key("arms_core:can_jump", true);
 
@@ -218,9 +218,9 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> IN_WATER =
             key("arms_core:in_water", false);
 
-    /** KCC 是否正在蓄力跳跃；作为 vertical 子机的权威输入，不是表现层产出 */
-    public static final StateVariableKey<Boolean> KCC_JUMP_CHARGING =
-            key("arms_core:kcc_jump_charging", false);
+    /** KCC 是否处于跳跃助推窗口；作为 vertical 子机的权威输入，不是表现层产出 */
+    public static final StateVariableKey<Boolean> KCC_JUMP_BOOSTING =
+            key("arms_core:kcc_jump_boosting", false);
 
     // ═══════════════════════════════════════════════
     // 事件 latch（由 MechaControl 从 pendingEvents 汇入）

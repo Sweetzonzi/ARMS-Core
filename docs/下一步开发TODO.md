@@ -74,10 +74,10 @@
 
 ### 3.3 vertical 子状态
 
-- [x] 修正 `jump_charge` 在 `ON_GROUND = true` 时自动返回 `ground` 的条件；改为镜像 KCC 蓄力状态。
-- [x] 明确跳跃蓄力的唯一状态源。
-  - 建议当前阶段由 KCC 维护蓄力计时和冲量计算。
-  - 逻辑状态机镜像 KCC 的 `isChargingJump()`，负责表现语义和输入门控。
+- [x] vertical 子机镜像 KCC 的跳跃窗口状态，不用 `ON_GROUND = true` 作为自动返回条件（stand 图缩为单节点 `ground`，助推窗口只在 air 图的 `jump_boost` 表达，由 `KCC_JUMP_BOOSTING` 迁移）。
+- [x] 明确跳跃助推窗口的唯一状态源。
+  - KCC 维护助推窗口剩余时长与冲量 / 助推计算。
+  - 逻辑状态机镜像 KCC 的 `isBoosting()`（`KCC_JUMP_BOOSTING`），负责表现语义和输入门控。
   - 后续若改为逻辑状态机主导，需移除 KCC 内部重复状态，不能长期保留两套权威状态。
 - [x] 明确跳跃按下、持续、松开三个信号的语义：按下/持续是 `keyFlags` 的 `BIT_JUMP`（连续量，可丢可合并），松开是 `MechaEvent.JUMP_RELEASE`（单帧边沿，经事件闩锁在物理线程被消费一次）。
 - [ ] 细化 `fall`、`glide`、`hover`、`fly` 的进入条件和互斥优先级；事件只负责切换意图，环境条件仍需阻止非法状态。
@@ -97,14 +97,14 @@
 - [x] 让 `MechaControl` 实际持有并初始化共享的 `StateVariableContainer`、`GameplayTagContainer`、`MechaLogicStateMachine`。
 - [x] 在物理线程内按固定顺序执行（`MechaControl.frameLogic`）：
   1. 消费最新快照和已 latch 的事件（帧首原子取走事件批）。
-  2. 采集步进前 KCC 状态，包括 `ON_GROUND`、`SPEED`、`VERTICAL_SPEED`、蓄力状态。
+  2. 采集步进前 KCC 状态，包括 `ON_GROUND`、`SPEED`、`VERTICAL_SPEED`、助推窗口状态。
   3. 写入外部输入、环境变量、KCC 变量和事件变量。
   4. 将事件路由到 posture、当前 gait 或当前 vertical 控制器。
   5. 推进逻辑状态机的自动转移。
   6. 发布只读调试状态 — 待实现（当前直接暴露变量容器）。
   7. 应用状态机产出再调用 `kcc.prePhysicsTick(dt)` — 当前处于旁路观测模式，门控未启用（`setBypassObservation(false)` 可开启）。
 - [x] 修正视角到世界方向的 yaw 符号，使其与当前 `ARMSClient` 已验证的方向一致。
-- [x] 将跳跃松开边沿真正传给 KCC（`MechaEvent.JUMP_RELEASE` → KCC 的松开闩锁），并保证蓄力期间释放边沿不被 `CAN_JUMP=false` 吞掉。
+- [x] 将跳跃松开边沿真正传给 KCC（`MechaEvent.JUMP_RELEASE` → KCC 的松开闩锁），并保证助推窗口期间释放边沿不被 `CAN_JUMP=false` 吞掉。
 - [x] 朝向由视野偏航绝对驱动：`MechaCharacter.setViewYaw` 把写入值归约到 [−180, 180) 后赋值给 `currentYaw`，`MechaControl.applyFacing` 每物理步在解算移动方向之前调用一次（死亡 / ragdoll 时跳过，朝向冻结）。
 - [x] WASD 是体系意图：唯一一次「意图 → 世界」变换在 `MechaCharacter.setMoveIntent` 内按本步朝向完成，`MechaControl.applyMoveIntent` 只做许可门控与透传；闪避方向 `resolveDodgeDirection` 用同一个角独立解出。
 - [ ] 区分以下 KCC 控制量，不能全部复用 `setInputScale()`：
@@ -158,7 +158,7 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 
 旁路观测阶段验收标准：
 
-- [ ] 原有 WASD、转向、制动和跳跃蓄力行为无回归。
+- [ ] 原有 WASD、转向、制动和跳跃行为无回归。
 - [ ] 静止多帧保持稳定 `idle`，不与 `drift` 振荡。
 - [ ] 行走、慢走、冲刺、离地、落地、入水、蹲伏、卧倒的状态序列符合预期。
 - [ ] 事件只由目标层消费一次，未知或当前状态不支持的事件可诊断但不破坏状态。
@@ -180,7 +180,7 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 
 ## 8. P2：状态机反向控制 KCC
 
-- [ ] 在旁路验证稳定后启用 `CAN_MOVE`、`CAN_JUMP`，验证 stun、hard_land、jump_charge、ragdoll 等门控。
+- [ ] 在旁路验证稳定后启用 `CAN_MOVE`、`CAN_JUMP`，验证 stun、hard_land、jump_boost、ragdoll 等门控。
 - [ ] 启用 gait 移动倍率，但不要连带缩放跳跃冲量。
 - [ ] 明确状态读取发生在本物理步还是下一物理步，避免依赖偶然调用顺序形成一帧延迟。
 - [ ] 为 posture 切换需要的 KCC 参数建立集中应用点，例如胶囊高度、步高、重力、碰撞开关。
