@@ -4,6 +4,8 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 
+import org.jetbrains.annotations.Nullable;
+
 /**
  * 机娘宿主 —— 承载一份 {@link ArmsCore} 的实体。
  * <p>
@@ -30,7 +32,7 @@ public interface IArmsHost {
     LivingEntity getHostEntity();
 
     /** 当前承载的装配体；{@code null} 表示人类形态（尚未取得机体）。 */
-    @org.jetbrains.annotations.Nullable
+    @Nullable
     ArmsCore getControlledArmsCore();
 
     /**
@@ -38,7 +40,7 @@ public interface IArmsHost {
      * <p>
      * 一个宿主实体至多绑定一个装配体：实现必须先解除旧装配体的绑定，再写入新值。
      */
-    void setControlledArmsCore(@org.jetbrains.annotations.Nullable ArmsCore core);
+    void setControlledArmsCore(@Nullable ArmsCore core);
 
     /**
      * 把 KCC 的位姿写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
