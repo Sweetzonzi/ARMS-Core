@@ -2,7 +2,7 @@
 
 > **状态**：执行清单
 > **创建**：2026-07-16
-> **最近更新**：2026-08-14（MechaControl 客户端闭环旁路观测 + 时长条件 + ENERGY 初始化，53 项单元测试通过）
+> **最近更新**：2026-10-08（控制力的饱和上限改为 `N = m·g·cosθ` 的静态估算、接触点只用于写入材质、越障保持水平速度、朝向写入每步现算，见方案文档 §5.3、§6.2、§7；待测项登记在 §12.9）
 > **目标**：先完成 `MechaControl` 客户端测试闭环和逻辑状态机验证，再接入动画、MoLang 与正式 `ArmsCore` 生命周期。
 > **关联**：[分层控制器与状态机设计](./分层控制器与状态机设计.md) · [MechaControl 设计文档](./MechaControl设计文档.md) · [角色控制器-行走物理设计](./角色控制器-行走物理设计.md)
 
@@ -196,8 +196,9 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 - [ ] 提取 `body_root` 动画根位移和 Y 轴旋转，并与 KCC 位移合成。Y 轴旋转要先定义与视野朝向权威（`MechaCharacter.setViewYaw`）的合成方式，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12。
 - [ ] 实现 DRIVE 模式及轮子、推进器、机翼等子系统力汇聚。
 - [ ] 完善死亡 ragdoll 的物理体切换、复活重建和宿主同步。
-- [ ] 迁移到刚体角色控制器。设计决策见 `docs/角色控制器-刚体动力学方案.md`（实施阶段 P1–P6 在该文 §11，待定项在 §12），引擎实测与实现约束见 `docs/角色控制器-刚体原型与引擎约束.md`；**当前阻塞在摩擦模型的重新设计上**（方案文档 §12.4），摩擦模型定型前不动迁移。其中 **P4 控制分配器（`docs/控制分配-作动器wrench分配设计.md`）不依赖引擎类型、不需要活着的世界，可以先做**：它落在 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/util/control/`，落点理由与上游槽位见方案文档 §15；该文自带的六条纯函数断言（分配文档 §5）就是它的验收判据。
-- [ ] 姿态轮廓接入（蹲伏 / 卧倒的碰撞形状）。`MechaCharacter.applyPostureShape` 目前在 KCC 上无法实现——Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程；这条随刚体迁移一并解除，属于上一项的 P5 阶段，且分轴锁转在换形与改质量后的保持已实测（`docs/角色控制器-刚体原型与引擎约束.md` §6.2）。
+- [ ] 迁移到刚体角色控制器。设计决策见 `docs/角色控制器-刚体动力学方案.md`（地面力律 §7.4、`N` 与 `μ_eff` 的静态估算 §7.6、着地判据 §7.7、接触材质写入 §7.5，位姿写入规则与越障三段 §6.1–§6.3，实施阶段 P1–P6 见 §11，待定项见 §12），引擎实测与实现约束见 `docs/角色控制器-刚体原型与引擎约束.md`。**当前状态：力律与着地判据已定，可以开工**——控制力的饱和上限按 §7.6 用静态法向力算，摩擦先按 §7.4 的临时形态实现，剩余细化范围登记在 §12.4，对账表在 §7.4。落地顺序：先修原型的第五条坑（`sweepTest` 结果无序，`docs/角色控制器-刚体原型与引擎约束.md` §11.5），再取 §12.9 的三项待测数值（越障那一步的水平速率残留、每步朝向写入的步内偏差峰峰值、起步头十步的平均加速度），然后按 P1 → P2 → P3 推进。
+- [ ] P4 控制分配器（`docs/控制分配-作动器wrench分配设计.md`）**不依赖引擎类型、不需要活着的世界，可以先做**：它落在 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/util/control/`，落点理由与上游槽位见方案文档 §15；该文自带的六条纯函数断言（分配文档 §5）就是它的验收判据。
+- [ ] 姿态轮廓接入（蹲伏 / 卧倒的碰撞形状）。`MechaCharacter.applyPostureShape` 目前在 KCC 上无法实现——Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程；这条随刚体迁移一并解除，属于 P5 阶段。换形规则：变矮无条件，变高前先向上扫掠确认头顶空间（先例：Minie 的 `BetterCharacterControl#checkCanUnDuck`，`https://github.com/stephengold/Minie`）；分轴锁转在换形与改质量后的保持已实测（`docs/角色控制器-刚体原型与引擎约束.md` §6.2）。
 - [x] 落地收敛律改为「最小旋转」并保留 yaw —— 已在原型落地：`RigidBodyControllerPrototypeTest.java#settleTowardUpright`（轴 `u × (0,1,0)`、角 `λ · tilt`；角速度只衰减 pitch / roll）、`#exponentialSettleDecaysTiltExactly`（纯运动学验证：倾角与 `(1−λ)ⁿ` 偏差 0.00016°）、`#singleAxisTiltSettleLeavesYawUntouched`（纯俯仰与纯侧滚下朝向无偏，实测 0.00000°）、`#obliqueTiltSettleLosesSomeYawAsThePriceOfAnOffAxisLanding`（斜置初态朝向偏差随倾角的量级表，按设计保留）、`#exponentialSettleConvergesMonotonicallyWherePdOvershoots`（`(0,1,0)` 对照：峰值 pitch/roll 角速度 0.0000 rad/s）。数值与构造时要避开的两个坑见 `docs/角色控制器-刚体原型与引擎约束.md` §8.2–§8.4；转移植时照抄进 `MechaCharacter` 的落地分支（方案文档 P2）。
 
 这些任务应在逻辑状态机和 KCC 测试闭环稳定后推进，避免动画、宿主装配和基础运动三个问题域同时调试。

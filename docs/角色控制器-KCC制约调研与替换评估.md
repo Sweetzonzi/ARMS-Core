@@ -49,7 +49,7 @@ KCC 不是刚体，而是「**幽灵体 + 手写三段扫掠 + 纯速度推导�
 | --- | --- | --- |
 | C1 | **向上速度被静默钳制** | `playerStep` 扣掉重力后把 `m_verticalVelocity > m_jumpSpeed` 的部分截回 `m_jumpSpeed`（`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#playerStep`）。`m_jumpSpeed` 是有状态字段，因此任何非 `jump()` 的向上来源都会被钳；助推窗口的触发条件是 `助推力 / 质量 > g`，即质量小于约 51 kg |
 | C2 | 下落速度被终端速度截断 | 同一处对 `m_verticalVelocity < -m_fallSpeed` 的截断 |
-| C3 | **`onGround()` 不是接触查询，而是速度推导** | 判据为「垂直速度与垂直偏移都小于单精度阈值」（`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#onGround`）；Java 侧再包一层「当前未在跳跃中」的与运算（`../Libbulletjme/src/main/native/glue/com_jme3_bullet_objects_infos_CharacterController.cpp#isOnGround`） |
+| C3 | **`onGround()` 不是接触清单查询** | 判据是「垂直速度与垂直偏移都小于单精度阈值」，而这两个量由**上一步的向下形状扫掠**清零（`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#stepDown` 命中时 `m_verticalVelocity = 0; m_verticalOffset = 0`，且该扫掠在垂直速度为正时直接返回；`#onGround` 只读这两个量）。Java 侧再包一层「当前未在跳跃中」的与运算（`../Libbulletjme/src/main/native/glue/com_jme3_bullet_objects_infos_CharacterController.cpp#isOnGround`） |
 | C4 | 跳跃家族半废弃 | 最大跳跃高度只有 setter、其唯一消费点是被注释掉的代码块（`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#setMaxJumpHeight`）；`canJump()` 在 C++ 只查着地、在 Java 侧才叠加「未在跳跃中」，两层语义不一致 |
 | C5 | 线阻尼同时作用于水平与垂直 | 同一处对 `m_walkDirection` 与 `m_verticalVelocity` 各乘一次阻尼因子。本项目把阻尼设为 0（`common/control/attr/MechaWalkingAttr.java#C1`），改由手动力模型承担 |
 
@@ -81,17 +81,24 @@ KCC 不是刚体，而是「**幽灵体 + 手写三段扫掠 + 纯速度推导�
 
 ### 5.1 它的运作范式
 
-- **真刚体**：内部持有 `PhysicsRigidBody`，碰撞形状是「偏移胶囊」的组合形状（`CompoundCollisionShape` 内含偏移的 `CapsuleCollisionShape`），有质量，受重力与求解器约束。
-- **速度伺服**：在 `dynamicPreTick` 中按「请求速度 − 当前速度」的差值施加修正，使刚体趋近请求的行走速度，而非直接写入速度。
-- **着地判定**：`checkOnGround` 用 `CollisionSpace#sweepTest` 自胶囊底部向下扫一个小球，命中即为着地——属接触判定，不是速度推导。
-- **跳跃**：`applyCentralImpulse` 施加一次冲量，与其它外力共用一条通道。
-- **在世换形**：`setHeightPercent` 改变碰撞形状尺寸，用于蹲伏 / 卧倒这类轮廓切换。
-- **显式上限**：`maxUpwardVelocity` 是一个可配置字段，语义即「非跳跃时的最大上升速度」。
-- **无手写越障**：没有 stepUp 段落，越障由刚体与台阶形状的自然接触完成。
+- **真刚体**：内部持有 `PhysicsRigidBody`，碰撞形状是「偏移胶囊」的组合形状（`CompoundCollisionShape` 内含偏移的 `CapsuleCollisionShape`），有质量，受重力与求解器约束。构造时 `setAngularFactor(0f)`——**旋转全锁**，姿态只在视图 / 重力变化时由 `updateLocalCoordinateSystem` 写入。
+- **速度权威**：`physicsTick`（步进后）把刚体线速度读进自己的字段，`dynamicPreTick`（下一步的步进前）把它按水平方向衰减（`dampingFactor` 默认 0.9，即每步把水平分量乘 0.1）、补足到请求速度、非主动跳跃时夹 `maxUpwardVelocity`，然后**整体写回** `rigidBody.setLinearVelocity`。它不施加力，也不保留水平惯性，坡度与材质差异因此无从出现。
+- **着地判定**：`checkOnGround` 用 `CollisionSpace#sweepTest` 扫一个半径等于胶囊半径的球，起点是胶囊中心、终点是下半球心（减 margin）；结果里**只排除自己**，有任何命中即着地——**不取命中法线**，因此贴着竖直面时与站在地上不可区分。
+- **跳跃**：`applyCentralImpulse` 施加一次冲量，矢量是 `质量 × 5 m/s`（固定起跳速度，与质量无关）。
+- **在世换形**：`setHeightPercent` 改变碰撞形状（`setCollisionShape`），用于蹲伏 / 卧倒这类轮廓切换；**变高之前先 `checkCanUnDuck` 向上扫球确认头顶空间**。
+- **显式上限**：`maxUpwardVelocity` 是可配置字段，语义即「非跳跃时的最大上升速度」；它的 Javadoc 自述「设为零可避免过台阶时的弹跳」。
+- **没有越障**：没有 `stepUp` 段落，也没有其它把角色抬上台阶的机制。台阶靠自然接触上不去——胶囊底部是球面，台阶棱角一旦高于球心，接触法线的竖直分量就朝下（半径 0.4 m 的胶囊对 0.5 m 台阶即如此）。
+- **运动学模式**：`setKinematic` 直接把刚体切成运动学，供需要外部驱动位置的场合使用（乘客态的现成范式）。
 
 ### 5.2 它能证明什么
 
-把 §3 的制约逐条对照，在这份实现上均已成立：速度是单一量纲（m/s）且水平与垂直同源（A1、A2）；对外报告的速度即求解器给出的真实速度，被墙挡住会被求解器归零（B1、B2）；着地由 sweep 接触判定，地面法线可从接触结果取得（C3、D2）；除设计参数外没有上升速度上限（C1、C2）；碰撞形状可在运行时更换（D1）；外力与冲量可直接施加（D3）；与动态刚体的交互就是标准接触语义（D4）；乘客态可在伺服逻辑中直接跳过（E2）。
+把 §3 的制约逐条对照，这份实现解掉了其中多数：速度是单一量纲（m/s）且水平与垂直同源（A1、A2）；对外报告的速度即求解器给出的真实速度，被墙挡住会被求解器归零（B1、B2）；**着地由一条向下扫掠判定**（C3）；除设计参数外没有上升速度上限（C1、C2）；碰撞形状可在运行时更换（D1）；外力与冲量可直接施加（D3）；乘客态由 `setKinematic` 切换（E2）。
+
+**两条不成立**：D2「地面法线可直接取得」——扫掠结果里没有法线过滤，也没有坡度处理（局部坐标系的上方向取自**重力**，不是地面法线）；D5 越障——它没有 `stepUp`，而 `maxUpwardVelocity` 的 Javadoc 说明「过台阶会弹」是这条路线上的已知现象。
+
+**它是速度权威，不是力权威。** 每步把线速度整体写回，等于放弃惯性，也放弃「地面能传多少你才能拿多少」这条因果（引擎摩擦只被当作需要覆盖掉的旧值），因此冰面、坡度、材质差异与「跳跃继承水平速度」这些语义都做不出来。本项目因此只取它的三样形态——球扫掠着地、变高前先扫掠、`setKinematic`——驱动力仍走力与摩擦锥（`docs/角色控制器-刚体动力学方案.md` §7.4）。
+
+也就是说，§7 验收基线里由 A / B / C / D / E 派生的条目在这份实现上**多数**有先例，但「越障」与「地面法线 / 坡度」两条没有。这仍足以证实「以刚体承载角色控制器」不是理论构想，而补齐这两条正是本项目的增量。
 
 也就是说，§7 验收基线里由 A / B / C / D / E 派生的条目，在这份实现上均有先例。这证实「以刚体承载角色控制器」不是理论构想。
 
