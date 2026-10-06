@@ -33,10 +33,35 @@ public final class MechaWalkingAttr {
     /** 本体最大出力 (N)，§5.1 F_max — 低速区间力上限 */
     public static final float F_MAX = 700.0f;
 
-    /** 裸足静摩擦系数，§5.1 μ_naked — 无助力腿时兜底 */
-    public static final float MU_NAKED = 1.0f;
+    /**
+     * 裸足摩擦系数（<b>角色侧</b>），§5.1 μ_naked — 无助力腿时兜底。
+     * <p>
+     * 它写进控制器刚体的 {@code setFriction}，与地形侧摩擦相乘才是引擎实际使用的组合摩擦
+     * （`docs/角色控制器-刚体动力学方案.md` §7.3）。取 2.0 时组合值 {@code 2.0 × 0.5 = 1.0}，
+     * 爬坡上限 {@code atan(1.0) = 45°}，与 `docs/角色控制器-行走物理设计.md` §8.1 的既有标定
+     * 一致；要 35° 就取 1.4。
+     * <p>
+     * <b>取值 2.0 而不是 1.0 是必须的。</b>组合摩擦同时是控制力的饱和上限
+     * {@code μ_eff·N}：{@code m·g = 686.7 N} 在 μ_eff = 0.5 时上限只有 343 N，比
+     * {@code F_MAX = 700 N} 低一半，于是低速区的驱动力被锥截一半、起步加速度只有解析值的一半。
+     */
+    public static final float MU_NAKED = 2.0f;
 
-    /** 粘滞阻尼系数，§5.1 c₁ — 一阶速度衰减，0=无阻尼。由手动积分自处理，KCC 内部置 0 */
+    /**
+     * 地形侧摩擦系数（配置常量），`docs/角色控制器-刚体动力学方案.md` §7.6。
+     * <p>
+     * 取 Bullet {@code btCollisionObject} 的默认值 0.5：全仓没有任何一处对地形调用
+     * {@code setFriction}，因此引擎用的就是它。逐方块材质接入（§7.5）之后这个常量会被
+     * 按接触对写入的实际值取代，组合摩擦的形式不变。
+     */
+    public static final float TERRAIN_FRICTION = 0.5f;
+
+    /**
+     * 粘滞阻尼系数，§5.1 c₁ — 一阶速度衰减，0=无阻尼。
+     * <p>
+     * 映射到控制器刚体的 {@code setLinearDamping}。它是不是速度相关阻力的唯一来源仍未定
+     * （`docs/角色控制器-刚体动力学方案.md` §12.5），因此当前取 0 并标注来源待定。
+     */
     public static final float C1 = 0.0f;
 
     /** 超速衰减陡度 (m/s)，§5.1 λ — 越大衰减越缓 */

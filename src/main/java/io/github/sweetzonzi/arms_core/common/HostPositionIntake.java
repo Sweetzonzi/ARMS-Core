@@ -117,7 +117,7 @@ public final class HostPositionIntake {
     /**
      * 本份分类状态所属的装配体。
      * <p>
-     * 判据用到的只有 {@code authoritative}、{@code assemblyId} 与 {@code getKcc()}，而「一个装配体一份
+     * 判据用到的只有 {@code authoritative}、{@code assemblyId} 与 {@code getBody()}，而「一个装配体一份
      * 分类状态」这条不变量本来就要求它跟着装配体走。
      */
     private final ArmsCore core;
@@ -497,17 +497,16 @@ public final class HostPositionIntake {
     // ═══════════════════════════════════════════════
 
     /**
-     * 物理线程（或主线程）执行 KCC 侧 warp。
+     * 物理线程（或主线程）执行控制器侧的 warp。
      * <p>
      * {@code PPhase.ALL} 的任务在执行点有两处（物理线程的 {@code prePhysicsTick} / {@code physicsTick} 与
-     * 主线程的 {@code LevelTickEvent.Pre/Post}），落在主线程时与物理步并发，写的是幽灵体变换，属既定的
+     * 主线程的 {@code LevelTickEvent.Pre/Post}），落在主线程时与物理步并发，写的是刚体变换，属既定的
      * 良性竞态（`docs/宿主位置权威与位移摄入设计.md` §6.1 第 1 行）。
      * <p>
-     * 落点是<b>这次摄入的目标</b>，而移动一个已入世的 KCC 需要的不只是换位置：速度的垂直分量与本步遗留的
-     * 施力状态都属于「上一步的落点上下文」，由 {@code common/control/MechaCharacter.java#warp} 一并复位
-     * （它重写了 {@code com.jme3.bullet.objects.PhysicsCharacter#warp}）。
+     * 落点是<b>这次摄入的目标</b>，而移动一个已入世的刚体收成两项：位置写入与速度处理（清垂直分量、
+     * 保留水平动量），见 {@code common/control/MechaCharacter.java#warp}。
      * <p>
-     * 只对权威实例生效：客户端实例不持有 KCC、没有物理空间。非权威实例仍然武装 pin，因为客户端那一侧的
+     * 只对权威实例生效：客户端实例不持有控制器、没有物理空间。非权威实例仍然武装 pin，因为客户端那一侧的
      * {@code DATA_POS} 由同一条写入产生。
      */
     private void runWarpTask() {
@@ -516,7 +515,7 @@ public final class HostPositionIntake {
         if (!core.isAuthoritative()) return;
         // 落点用新向量而不是复用缓冲：本方法可能落在物理线程或主线程，而摄入是罕见事件，
         // 一次小额分配换掉「两个线程同时用同一个缓冲」这个不需要承担的风险
-        core.getKcc().warp(new Vector3f(warpX, warpY, warpZ));
+        core.getBody().warp(new Vector3f(warpX, warpY, warpZ));
         markPinLanded();
     }
 

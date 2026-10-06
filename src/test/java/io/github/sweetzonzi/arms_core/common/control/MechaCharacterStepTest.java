@@ -7,6 +7,7 @@ import com.jme3.bullet.objects.PhysicsRigidBody;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -14,6 +15,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * KCC 自动越障（auto-step）阈值测试。
+ * <p>
+ * <b>本轮已停用，等待基线重建。</b>越障不再由引擎的 {@code btKinematicCharacterController#stepUp}
+ * 完成，而是 {@code MechaCharacter#tryStepUp} 自己做的三段判决 + 位姿写入
+ * （`docs/角色控制器-刚体动力学方案.md` §6.2），因此本类里「步高交给引擎」那条判据已经不成立，
+ * 而「半砖上得去 / 整格上不去」两条要在重建时把控制器真的加入物理空间并逐步步进。重建依据与
+ * 数值来源同 {@link MechaCharacterWalkPhysicsTest}。
+ * <p>
+ * 下面保留原有的类说明与判据，供重建时逐条对照。
  * <p>
  * 越障由 Bullet 的 {@code btKinematicCharacterController} 完成：`stepUp` 先把胶囊抬高
  * {@code m_stepHeight}（值来自 {@link MechaWalkingAttr#STEP_HEIGHT_BASE}，经
@@ -28,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Sweetzonzi
  */
+@Disabled("KCC 承载时期的基线，按 docs/角色控制器-刚体动力学方案.md §11 的 P2 行重建后再启用")
 class MechaCharacterStepTest {
 
     /** 与游戏内一致的物理步长：tps = 100（Spark-Core `PhysicsLevel.baseStep = 5`） */
@@ -87,14 +97,15 @@ class MechaCharacterStepTest {
     private record WalkResult(float maxFeetY, Vector3f finalPosition) {
     }
 
-    /** 步高确实交到了 Bullet 控制器手上，而不是只写在常量里。 */
+    /**
+     * 步高确实交到了控制器手上，而不是只写在常量里。
+     * <p>
+     * 刚体路线的越障由 {@code MechaCharacter} 自己实现（`docs/角色控制器-刚体动力学方案.md` §6.2），
+     * 因此判据落在 {@code MechaCharacter#tryStepUp} 读到的那个常量上。
+     */
     @Test
     void stepHeightReachesTheController() {
-        PhysicsSpace space = new PhysicsSpace(
-                new Vector3f(-50f, -50f, -50f), new Vector3f(50f, 50f, 50f));
-        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
-
-        assertEquals(MechaWalkingAttr.STEP_HEIGHT_BASE, kcc.getStepHeight(), 1.0e-6f);
+        assertEquals(MechaWalkingAttr.STEP_HEIGHT_BASE, MechaCharacter.STEP_HEIGHT_BASE, 1.0e-6f);
     }
 
     /** 半砖（0.5 m）落在素体裸足步高的余量内，应能直接走上去。 */

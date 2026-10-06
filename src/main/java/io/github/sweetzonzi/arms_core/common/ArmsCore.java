@@ -39,24 +39,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
  * （见 `docs/总体设计文档.md:82`）。
  * <p>
- * <b>权威归属</b>：服务端是唯一权威端，客户端不运行 KCC 与状态机
+ * <b>权威归属</b>：服务端是唯一权威端，客户端不运行控制器与状态机
  * （`docs/ArmsCore双端权威与网络同步实现计划.md` D1、§1.3）。因此本类有两条构造路径：
  * <ul>
- *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID)}）：构造 KCC，由 Level 级注册表在物理线程驱动；</li>
- *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID)}）：不构造 KCC，只作为
+ *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID)}）：构造控制器刚体，由 Level 级注册表在物理线程驱动；</li>
+ *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID)}）：不构造控制器，只作为
  *       {@link SynchedEntityData} 的客户端副本载体与可视锚点的宿主。</li>
  * </ul>
  * <p>
  * <b>构造前置（仅服务端路径）</b>：构造器会直接从所在 Level 取物理空间
- * （{@code SparkLevel.getPhysicsLevel(level).getWorld()}）并创建 KCC。该前置在正常流程下由
+ * （{@code SparkLevel.getPhysicsLevel(level).getWorld()}）并把控制器刚体建在该空间上。该前置在正常流程下由
  * Spark-Core 的初始化顺序保证——`PhysicsLevelApplier.kt:24-36` 在 {@code LevelEvent.Load}
  * 中设置 `PhysicsLevel` 并 `start()`，而 {@code ArmsCore} 总是由更晚的创建路径（宿主登录、
  * 装配体创建包、调试命令）构造。
  * <p>
  * <b>线程模型</b>：构造与同步写入（{@link SynchedEntityData#set}）在主线程；
- * {@link #prePhysicsTick(float)} 只允许在物理线程调用，KCC 入世
+ * {@link #prePhysicsTick(float)} 只允许在物理线程调用，控制器刚体入世
  * （`setPhysicsLocation` + `addCollisionObject`）须经
- * `SparkLevel.submitImmediateTask` 投递。服务端 KCC 的位姿与速度由主线程在
+ * `SparkLevel.submitImmediateTask` 投递。服务端控制器刚体的位姿与速度由主线程在
  * {@link #syncToClients()} 中直接读取（良性竞态，与 `DestroyableRigidObject.postTick()`
  * 同等接受）；逻辑层四项则走 {@link MechaControl.LogicStateSnapshot} 不可变发布。
  *
@@ -73,11 +73,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // 字段 id 由 defineId 的调用顺序（即下面的文本顺序）决定，因此只允许在末尾追加；
     // 删除、重排或在中间插入会让该位置之后的 id 全部平移，导致双端线上格式错配。
 
-    /** KCC 物理位置（世界坐标，胶囊中心） */
+    /** 控制器刚体的物理位置（世界坐标，胶囊中心） */
     public static final EntityDataAccessor<org.joml.Vector3f> DATA_POS =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.VECTOR3);
 
-    /** KCC 线速度（水平分量为每物理步位移，垂直分量为 m/s，见计划 §3.10） */
+    /** 控制器刚体的线速度（三个分量同为 m/s，见 `docs/角色控制器-刚体动力学方案.md` §6） */
     public static final EntityDataAccessor<org.joml.Vector3f> DATA_VEL =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.VECTOR3);
 
@@ -130,15 +130,15 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Getter
     private final Level level;
 
-    /** 是否持有 KCC 与状态机（服务端为 true，客户端为 false） */
+    /** 是否持有控制器刚体与状态机（服务端为 true，客户端为 false） */
     @Getter
     private final boolean authoritative;
 
     /**
      * 运动控制编排器。
      * <p>
-     * 服务端路径持有完整的 KCC 与状态机；客户端路径为 {@code null}
-     * （客户端不运行 KCC 与状态机，见 D1）。读取入口是
+     * 服务端路径持有完整的控制器刚体与状态机；客户端路径为 {@code null}
+     * （客户端不运行控制器与状态机，见 D1）。读取入口是
      * {@link MechaControlHolder#getMechaControl()}，本字段生成的 getter 满足该契约。
      */
     @Getter
@@ -198,14 +198,15 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // ==========================================
 
     /**
-     * 服务端构造：创建 KCC 与状态机。
+     * 服务端构造：创建控制器刚体与状态机。
      * <p>
-     * KCC 的胶囊几何取自 {@link MechaBodyPreset}，用于地面射线检测的物理空间直接取自
-     * 所在 Level（见类注释的构造前置）。
+     * 胶囊几何取自 {@link MechaBodyPreset}，物理空间直接取自所在 Level（见类注释的构造前置），
+     * 着地扫掠与越障探针都从这个空间发起。
      * <p>
-     * KCC 只被构造、尚未加入物理空间：入世需要调用方另经
+     * 刚体只被构造、<b>尚未加入物理空间</b>：入世需要调用方另经
      * {@code SparkLevel.submitImmediateTask} 执行 {@link #enterPhysicsSpace(com.jme3.math.Vector3f)}，
-     * 见 `docs/ArmsCore双端权威与网络同步实现计划.md` 阶段 1.5。
+     * 见 `docs/ArmsCore双端权威与网络同步实现计划.md` 阶段 1.5。入世之前
+     * {@code getCollisionSpace()} 返回 {@code null}，控制器只依赖构造时注入的那一份空间引用。
      *
      * @param level      所在世界；其物理空间必须已初始化（见类注释的构造前置）
      * @param assemblyId 装配体 UUID
@@ -219,10 +220,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         this.assemblyId = assemblyId;
         this.authoritative = authoritative;
         if (authoritative) {
-            MechaCharacter kcc = new MechaCharacter(
+            MechaCharacter body = new MechaCharacter(
                     MechaBodyPreset.newCapsuleShape(),
                     SparkLevel.getPhysicsLevel(level).getWorld());
-            this.mechaControl = new MechaControl(this, kcc);
+            this.mechaControl = new MechaControl(this, body);
         } else {
             this.mechaControl = null;
         }
@@ -233,7 +234,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     /**
-     * 客户端构造：不创建 KCC 与状态机，只承载同步数据。
+     * 客户端构造：不创建控制器与状态机，只承载同步数据。
      * <p>
      * 客户端不运行物理模拟（D1），因此这里不读物理空间，也就不受服务端那条
      * 「物理空间必须已初始化」的构造前置约束。
@@ -284,7 +285,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /**
      * 服务端处理同步数据变化。
      * <p>
-     * 服务端一律不把同步数据应用回物理体：位姿的权威方向是「KCC → syncedData」单向，
+     * 服务端一律不把同步数据应用回物理体：位姿的权威方向是「控制器刚体 → syncedData」单向，
      * 反向应用会与物理线程形成反馈回路（计划 §3.7、R3）。
      */
     @Override
@@ -313,11 +314,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * {@code tps = baseStep × 20 = 100}，即 {@code 0.01 s}；客户端 {@code ClientPhysicsLevel(level, 3, ...)}
      * 给出 {@code tps = 60}，即约 {@code 0.0167 s}。
      * <p>
-     * <b>为什么需要它。</b> KCC 的 {@code getLinearVelocity} 在三个轴上语义不同：水平两个分量是
-     * 「每物理步位移」，垂直分量是 m/s（见 `docs/角色控制器-行走物理设计.md` 的单位约定）。而宿主实体
-     * 上 {@code deltaMovement} 的三个分量语义统一是「每 tick 位移」。把前者直接写进后者会同时错两次，
-     * 且两个错的倍数不同：水平差 {@code 1 / (20 × 本值)} 倍，垂直差 {@code 1 / 20} 倍。换算必须同时用到
-     * 本值与 Minecraft 的 20 TPS 常数，因此本值应作为唯一来源暴露，而不是让调用点各自去猜 100 或 60。
+     * <b>它不再是速度换算的输入。</b> 刚体的 {@code getLinearVelocity} 三轴统一为 m/s，而宿主实体上
+     * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code × 20}，与物理步长无关
+     * （`docs/角色控制器-刚体动力学方案.md` §6）。本值现在的用途是按时长累加的量——物理步长本身、
+     * 按秒计时的参数（跳跃助推窗口、闪避无敌）以及诊断。
      *
      * @return 物理步长 (s)
      * @throws IllegalStateException 所在 Level 的物理空间尚未初始化（见类注释的构造前置）
@@ -333,7 +333,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <ol>
      *   <li>Part 层动画混合 —— 必须早于 {@code extractAnimRootDelta()}，后者读取
      *       {@code body_root} 骨骼位姿，而该位姿由 Part 的物理步产出（装配体图接入后生效）</li>
-     *   <li>状态机推进 → 动画根位移提取 → KCC 积分（顺序由 {@link MechaControl} 内部保证）</li>
+     *   <li>状态机推进 → 动画根位移提取 → 控制器物理步（顺序由 {@link MechaControl} 内部保证）</li>
      *   <li>发布逻辑状态快照供主线程读取</li>
      * </ol>
      *
@@ -343,32 +343,35 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         MechaControl control = this.mechaControl;
         if (control == null) return;
 
-        // ② 状态机推进 → extractAnimRootDelta → KCC 积分
+        // ② 状态机推进 → extractAnimRootDelta → 控制器物理步
         control.onPhysicsStep(dt);
 
-        // ③ 发布逻辑状态到主线程（位姿由主线程直接读 KCC，见计划 §3.5）
+        // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）
         this.logicState = control.snapshotLogicState();
     }
 
     /**
-     * 物理线程：把 KCC 放入物理空间并设置出生点。
+     * 物理线程：把控制器刚体放入物理空间并设置出生点。
      * <p>
      * 必须在 {@code SparkLevel.submitImmediateTask} 投递的任务内调用。
      * <p>
-     * KCC 的位置就是宿主实体的位置（{@code common/ArmsCoreServerEvents.java#applyPoseToHost} 每 tick
+     * 刚体的位置就是宿主实体的位置（{@code common/ArmsCoreServerEvents.java#applyPoseToHost} 每 tick
      * 把它写进宿主），因此本方法只负责「入世」这一次设置，<b>不记录任何兜底锚点</b>：以出生点为锚点、
-     * 偏移超限就把 KCC warp 回去，会把一个正在正常行走的机体拉回出生点，与「KCC 位置即玩家位置」直接
+     * 偏移超限就把控制器 warp 回去，会把一个正在正常行走的机体拉回出生点，与「刚体位置即玩家位置」直接
      * 冲突。
+     * <p>
+     * 位置先写、后入世：{@code MechaCharacter} 的构造不读物理空间，重力与扫掠都在入世之后才解析得到，
+     * 因此这两步的先后不影响力模型。
      *
      * @param capsuleCenter 胶囊中心的世界坐标（不是脚底坐标，见计划 §3.14）
      */
     public void enterPhysicsSpace(com.jme3.math.Vector3f capsuleCenter) {
         if (!authoritative) return;
         PhysicsLevel physicsLevel = SparkLevel.getPhysicsLevel(level);
-        MechaCharacter kcc = getKcc();
-        kcc.setPhysicsLocation(capsuleCenter);
+        MechaCharacter body = getBody();
+        body.setPhysicsLocation(capsuleCenter);
         if (inPhysicsSpace.compareAndSet(false, true)) {
-            physicsLevel.getWorld().addCollisionObject(kcc);
+            physicsLevel.getWorld().addCollisionObject(body);
         }
     }
 
@@ -392,7 +395,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     /**
-     * 采纳一次外部位移：改写 {@code DATA_POS} 的来源并提交任务改写 KCC 物理位置。
+     * 采纳一次外部位移：改写 {@code DATA_POS} 的来源并提交任务改写控制器刚体的物理位置。
      * <p>
      * 由 {@code mixin/EntityPositionWriteMixin} 在 {@code Entity#setPos(double,double,double)} 的 {@code HEAD}
      * 处、且作用域栈为空时调用。分类判据（栈空不空、目标是否等于锚点）在
@@ -408,13 +411,13 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 摄入成立时发生三件事：
      * <ol>
      *   <li><b>pin</b> —— 在 warp 真正落地之前，{@code ArmsCoreServerEvents#syncToClients} 用目标填
-     *       {@code DATA_POS}，客户端因此不会被旧的 KCC 位置拉回旧处；</li>
-     *   <li><b>KCC warp</b> —— 经 {@code SparkLevel#submitImmediateTask} 投递
-     *       {@link MechaCharacter#warp}，位置落到目标（保留水平动量、清垂直分量、复位本步遗留的施力状态）；</li>
+     *       {@code DATA_POS}，客户端因此不会被旧的刚体位置拉回旧处；</li>
+     *   <li><b>warp</b> —— 经 {@code SparkLevel#submitImmediateTask} 投递
+     *       {@link MechaCharacter#warp}，位置落到目标（保留水平动量、清垂直分量）；</li>
      *   <li><b>待投递落点</b> —— 落点先写进 {@code HostPositionIntake} 的字段，同一 tick 内多次摄入按最后
      *       写入者生效。</li>
      * </ol>
-     * 客户端实例同样走这条路径：它没有 KCC，投递的任务是空操作，但 pin 照常武装，客户端手里的
+     * 客户端实例同样走这条路径：它没有控制器刚体，投递的任务是空操作，但 pin 照常武装，客户端手里的
      * {@code DATA_POS} 因此与实体位置一致。
      *
      * @param x 这次写入的目标 X（包围盒底面基准）
@@ -459,21 +462,21 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     /**
-     * 返回本核心的 KCC。
+     * 返回本核心的控制器刚体。
      * <p>
-     * KCC 由 {@link MechaControl} 持有（服务端构造时创建），此处只是转发，便于外部在
+     * 它由 {@link MechaControl} 持有（服务端构造时创建），此处只是转发，便于外部在
      * 创建路径中直接拿到它做入世与出生点设置。
      *
-     * @return 本核心的运动学角色控制器
-     * @throws IllegalStateException 在客户端实例上调用（客户端不持有 KCC，见 D1）
+     * @return 本核心的动力学角色控制器（胶囊刚体）
+     * @throws IllegalStateException 在客户端实例上调用（客户端不持有控制器，见 D1）
      */
-    public MechaCharacter getKcc() {
+    public MechaCharacter getBody() {
         MechaControl control = this.mechaControl;
         if (control == null) {
             throw new IllegalStateException(
-                    "客户端 ArmsCore 不持有 KCC（计划 D1：客户端不运行物理模拟）");
+                    "客户端 ArmsCore 不持有控制器（计划 D1：客户端不运行物理模拟）");
         }
-        return control.getKcc();
+        return control.getBody();
     }
 
     // ==========================================

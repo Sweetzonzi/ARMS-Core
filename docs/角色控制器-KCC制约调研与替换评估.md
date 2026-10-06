@@ -41,7 +41,7 @@ KCC 不是刚体，而是「**幽灵体 + 手写三段扫掠 + 纯速度推导�
 | --- | --- | --- | --- |
 | B1 | **撞墙时水平速度不归零** | 原生侧从不把「实际走了多远」写回 `m_walkDirection`：`stepForwardAndStrafe` 只改 `m_currentPosition` / `m_targetPosition`，而 `getLinearVelocity` 是纯字段读出 | 顶墙期间读到的速度是一份没有执行的命令：位置不动、速度按地面摩擦缓慢衰减；障碍一消失就在一个物理步内把位置推满，表现为「从 0 直接加到满速」 |
 | B2 | 由 B1 派生：撞墙与越障难以区分 | `stepUp` 先抬高胶囊再做水平扫掠，**越障成功时水平位移是全量** | 「位移短少」才是有区分度的信号，判据实现记录在 `common/control/MechaCharacter.java#updateWalk` 的 TODO 中，尚未落地 |
-| B3 | 动画根位移与物理位移共用同一水平通道 | 水平通道的语义就是「本步位移」，动画位移也是位移，两者共用同一字段 | 必须自记账 `overlayDispX` / `overlayDispZ`（`common/control/MechaCharacter.java#overlayDispX`），读速度时扣掉，否则动画位移会被当速度逐帧复利 |
+| B3 | 动画根位移与物理位移共用同一水平通道 | 水平通道的语义就是「本步位移」，动画位移也是位移，两者共用同一字段 | 必须自记账 `overlayDispX` / `overlayDispZ`（KCC 承载时期 `common/control/MechaCharacter.java` 的私有字段），读速度时扣掉，否则动画位移会被当速度逐帧复利 |
 
 ### 3.3 垂直通道的隐藏规则
 

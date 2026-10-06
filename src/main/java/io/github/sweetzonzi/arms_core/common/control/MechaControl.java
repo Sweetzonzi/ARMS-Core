@@ -25,12 +25,13 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * MechaControl 是 ARMS-Core 角色运动系统的唯一编排器，聚合以下职责：
  * <ol>
  *   <li><b>输入消费</b> — 接收 Holder 写入的 {@link MechaConditionSnapshot} 和 {@link MechaEvent}，
- *       连同 KCC 内部采集的物理状态，汇入统一的 {@code StateVariableContainer}</li>
+ *       连同控制器内部采集的物理状态，汇入统一的 {@code StateVariableContainer}</li>
  *   <li><b>状态机驱动</b> — 管理逻辑层状态机树（posture + gait/vertical 子机），每物理帧推进状态转移</li>
- *   <li><b>物理桥接</b> — 将玩家输入转发给 {@link MechaCharacter}（KCC 封装），
- *       在 {@link #onPhysicsStep} 中调用 {@code kcc.prePhysicsTick(dt)} 完成行走/跳跃物理积分</li>
+ *   <li><b>物理桥接</b> — 将玩家输入转发给 {@link MechaCharacter}（动力学刚体胶囊），
+ *       在 {@link #onPhysicsStep} 中调用 {@code body.prePhysicsTick(dt)} 完成位姿写入、着地判据、
+ *       行走力与越障</li>
  *   <li><b>旁路观测</b> — 默认 {@link #bypassObservation} 开启：状态机照常运行并产出变量，
- *       但暂不应用 CAN_MOVE / CAN_JUMP 门控 KCC，保证旧 KCC 行为无回归；置 false 后启用反向控制</li>
+ *       但暂不应用 CAN_MOVE / CAN_JUMP 门控控制器，保证不接逻辑层时的行为无回归；置 false 后启用反向控制</li>
  * </ol>
  * <p>
  * 线程模型：
@@ -42,7 +43,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * </ul>
  * <p>
  * 不依赖 Machine-Max 信号总线（ISignalBus）。输入由 Holder 直接传入。
- * 子系统合力叠加（推进器等）通过 {@code addSubsystemForce} 汇聚后施加到 KCC。
+ * 子系统合力叠加（推进器等）通过 {@code addSubsystemForce} 汇聚后施加到控制器刚体。
  *
  * @author Sweetzonzi
  */
@@ -91,9 +92,9 @@ public class MechaControl {
     @Getter
     private final MechaControlHolder holder;
 
-    /** KCC 运动学胶囊控制器（行走物理 + 跳跃 + 碰撞 sweep） */
+    /** 控制器刚体（动力学胶囊：地面力律 + 跳跃 + 着地判据 + 越障） */
     @Getter
-    private final MechaCharacter kcc;
+    private final MechaCharacter body;
 
     /** 逻辑层共享变量容器；父状态机和全部活跃子机共用。 */
     private final StateVariableContainer variables;
@@ -105,7 +106,7 @@ public class MechaControl {
     @Getter
     private final MechaLogicStateMachine logicStateMachine;
 
-    /** 采集 KCC 速度时复用，避免物理帧内分配临时向量。 */
+    /** 采集控制器速度时复用，避免物理帧内分配临时向量。 */
     private final Vector3f stateVelocity = new Vector3f();
 
     // ==========================================
@@ -150,7 +151,7 @@ public class MechaControl {
     /**
      * 旁路观测模式：状态机照常运行并产出变量，但不应用 CAN_MOVE / CAN_JUMP 门控。
      * <p>
-     * 默认开启——先保证原 KCC 行走/跳跃无回归，观测稳定后再置 false 逐项启用反向控制。
+     * 默认开启——先保证逻辑层不介入时的行走/跳跃无回归，观测稳定后再置 false 逐项启用反向控制。
      * -- GETTER --
      * 当前是否处于旁路观测模式。
      * -- SETTER --
@@ -199,11 +200,11 @@ public class MechaControl {
 
     /**
      * @param holder 持有者（ArmsCore 或 MechControllerSubsystem），不可为 null
-     * @param kcc    已初始化的运动学角色控制器
+     * @param body    已入物理空间的动力学角色控制器
      */
-    public MechaControl(MechaControlHolder holder, MechaCharacter kcc) {
+    public MechaControl(MechaControlHolder holder, MechaCharacter body) {
         this.holder = holder;
-        this.kcc = kcc;
+        this.body = body;
         this.conditionSnapshot = MechaConditionSnapshot.EMPTY;
         this.variables = new StateVariableContainer();
         this.tags = new GameplayTagContainer();
@@ -251,7 +252,7 @@ public class MechaControl {
     // ==========================================
 
     // TODO: 当轮子(MotorSubsystem)/推进器(ThrusterSubsystem)/机翼(WingSubsystem)等
-    // 子系统在 DRIVE 状态下施加驱动力时，通过此方法汇聚后叠加到 KCC。
+    // 子系统在 DRIVE 状态下施加驱动力时，通过此方法汇聚后叠加到控制器刚体。
     // 设计文档 §7 — DRIVE 状态下轮子/推进器施力于躯干刚体，不经控制器中转。
     // 当前阶段（仅 WALK）暂不需要。
 
@@ -277,13 +278,13 @@ public class MechaControl {
      * 执行顺序：
      * <ol>
      *   <li>帧首原子取走主线程投递的事件批</li>
-     *   <li>汇入快照和 KCC 状态到 StateVariableContainer，并把视野偏航写进 KCC 作为朝向权威
+     *   <li>汇入快照和控制器状态到 StateVariableContainer，并把视野偏航写进控制器作为朝向权威
      *       （{@link #applyFacing}，早于一切按朝向解算的量）</li>
      *   <li>广播离散事件并推进逻辑状态机</li>
      *   <li>逻辑状态机在推进完成后合并最终输入许可</li>
-     *   <li>按旁路观测/反向控制模式转发玩家输入到 KCC</li>
-     *   <li>提取动画根骨骼位移 → kcc.setAnimRootDelta（当前 TODO 空实现）</li>
-     *   <li>KCC 物理积分 ({@code kcc.prePhysicsTick(dt)})</li>
+     *   <li>按旁路观测/反向控制模式转发玩家输入到控制器</li>
+     *   <li>提取动画根骨骼位移 → body.setAnimRootDelta（当前 TODO 空实现）</li>
+     *   <li>控制器物理步（{@code body.prePhysicsTick(dt)}：位姿写入 / 着地 / 力 / 越障）</li>
      * </ol>
      *
      * @param dt 物理步长 (s)
@@ -303,14 +304,14 @@ public class MechaControl {
         // —— 8. 提取动画根骨骼位移 ——
         extractAnimRootDelta();
 
-        // —— 9. KCC 物理积分（行走力 / 跳跃 / 碰撞 sweep） ——
-        kcc.prePhysicsTick(dt);
+        // —— 9. 控制器物理步（位姿写入 / 着地 / 行走力 / 越障） ——
+        body.prePhysicsTick(dt);
     }
 
     /**
-     * 帧逻辑推进（不含 KCC 物理积分）。
+     * 帧逻辑推进（不含控制器的物理步）。
      * <p>
-     * 包内可见以便单元测试在不触碰 jme3 native（rayTest 等）的前提下验证接线：
+     * 包内可见以便单元测试在不触碰 jme3 native（sweepTest 等）的前提下验证接线：
      * 事件 latch → 变量汇入 → 朝向写入 → 状态机推进 → 输入转发 → 状态变化日志。
      *
      * @param dt 物理步长 (s)
@@ -319,13 +320,13 @@ public class MechaControl {
         // —— 帧首：原子取走主线程投递的事件批 ——
         pendingEvents = pendingEventBuffer.getAndSet(EnumSet.noneOf(MechaEvent.class));
 
-        // —— 1. 汇入快照与步进前 KCC 状态 ——
+        // —— 1. 汇入快照与步进前的控制器状态 ——
         float safeDt = Math.max(dt, 1.0e-6f);
         writeStateInputs(safeDt);
 
-        // —— 1b. 朝向：把视野偏航绝对赋值到 KCC ——
+        // —— 1b. 朝向：把视野偏航绝对赋值到控制器 ——
         // 必须早于 applyLogicOutputToKcc（闪避方向）与 forwardInputToKCC（行走方向）：
-        // 这两处都按 KCC 本步朝向解算，晚一步就会用上一物理步的角
+        // 这两处都按本步朝向解算，晚一步就会用上一物理步的角
         applyFacing();
 
         // —— 2. 事件广播到当前活跃状态树 ——
@@ -334,11 +335,11 @@ public class MechaControl {
         // —— 3. 推进整棵状态树，并由逻辑机合并最终输入许可 ——
         logicStateMachine.progress(safeDt);
 
-        // —— 3b. 逻辑层产出回写到 KCC（速度倍率、胶囊尺寸、闪避）——
+        // —— 3b. 逻辑层产出回写到控制器（速度倍率、闪避）——
         // 必须在 progress 之后：本步产出的 gait / posture 才是本帧要生效的值
         applyLogicOutputToKcc(safeDt);
 
-        // —— 4. 按旁路/反向模式转发输入到 KCC ——
+        // —— 4. 按旁路/反向模式转发输入到控制器 ——
         forwardInputToKCC();
 
         // —— 状态变化日志 ——
@@ -346,41 +347,36 @@ public class MechaControl {
     }
 
     /**
-     * 把逻辑层本帧的产出落到 KCC 上。
+     * 把逻辑层本帧的产出落到控制器上。
      * <p>
      * 在同一个物理步内，本方法之前状态机产出的 {@code POSTURE} / {@code GAIT} /
-     * {@code MOVE_SPEED_MODIFIER} 还只是变量容器里的值，KCC 不看它们；本方法就是把它们变成
-     * 物理效果的链路，共三项：
+     * {@code MOVE_SPEED_MODIFIER} 还只是变量容器里的值，控制器不看它们；本方法就是把它们变成
+     * 物理效果的链路，共两项：
      * <ol>
      *   <li><b>速度倍率</b> —— {@code MOVE_SPEED_MODIFIER}（= posture.speedModifier ×
-     *       gait.baseSpeedModifier）写进 KCC，作为控制力的缩放系数（稳态速率随之等比缩放，
-     *       不是另设一道速度上限；见 `docs/角色控制器-行走物理设计.md` §3.6、§3.8.1）</li>
-     *   <li><b>胶囊尺寸</b> —— 按 posture 换碰撞形状；蹲伏 / 卧倒压低轮廓</li>
+     *       gait.baseSpeedModifier）写进控制器，作为控制力的缩放系数（稳态速率随之等比缩放，
+     *       不是另设一道速度上限；见 `docs/角色控制器-刚体动力学方案.md` §7.4 的力平衡）</li>
      *   <li><b>闪避</b> —— 进入 dodge 状态的那一帧解出闪避轴，把水平速度赋值到该轴上（只保留沿轴的
      *       同向分量，再叠加一次 Δv）并开启无敌窗口</li>
      * </ol>
      * 全部在物理线程执行，符合「只允许物理线程触碰 Bullet 对象」的约定。
      * <p>
-     * 闪避只做一次赋值，不进位移叠加通道，也不受 {@code MOVE_SPEED_MODIFIER} 影响：倍率缩放的是标准
+     * 闪避只做一次赋值，不受 {@code MOVE_SPEED_MODIFIER} 影响：倍率缩放的是标准
      * WASD 控制力（{@link MechaCharacter#controlForceScale()}），而闪避是速度矢量赋值，两者量纲不同、
      * 互不干涉。dodge 状态因此不剥夺自主移动能力。
      */
     private void applyLogicOutputToKcc(float dt) {
         // —— ① 速度倍率 ——
         Float speedMod = variables.get(MOVE_SPEED_MODIFIER);
-        kcc.setMoveSpeedModifier(speedMod == null ? 1.0f : speedMod);
+        body.setMoveSpeedModifier(speedMod == null ? 1.0f : speedMod);
 
         // —— ② 胶囊尺寸 ——
-        // 未接入。Libbulletjme 的 PhysicsCharacter.setCollisionShape 要求
-        // 「the character should not be in any PhysicsSpace while changing shape; the character
-        // gets rebuilt on the physics side」（../Libbulletjme/.../objects/PhysicsCharacter.java:342-363，
-        // 方法体含 assert !isInWorld()）。在物理空间内直接换形状会让原生侧挂接一个未重建的
-        // 碰撞对象：release JVM 不检查断言，原生内存随即损坏，进程以 0xC0000409 中止。
-        // 先 removeCollisionObject → setCollisionShape → addCollisionObject 也不行：实测
-        // 幽灵体状态被重置（着地检测失效、姿态回落到 air），且仍会在下一次换形状时中止。
-        // 因此轮廓姿态（crouch / prone）的碰撞体积目前**没有**实现，见计划文档 §3.12 的登记。
+        // 未接入，属 P5 的范围（`docs/角色控制器-刚体动力学方案.md` §11 的 P5 行）。
+        // 刚体路线已经解掉 KCC 那条硬阻塞——PhysicsRigidBody#setCollisionShape 允许在世换形
+        // （`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测）——但接管它还需要两件事：
+        // 变高前先向上扫掠确认头顶空间、换形后按新的半高把脚底重新对齐到换形前的脚底高度。
         // Posture posture = variables.get(POSTURE);
-        // if (posture != null) kcc.applyPostureShape(posture);
+        // if (posture != null) body.applyPostureShape(posture);
 
         // —— ③ 闪避 ——
         // 只在「刚进入 dodge」的那一物理步投递一次：dodgingLastFrame 记录上一步是否在闪避，
@@ -389,7 +385,7 @@ public class MechaControl {
         boolean dodgingNow = gait == Gait.DODGE;
         if (dodgingNow && !dodgingLastFrame) {
             float[] dir = resolveDodgeDirection();
-            kcc.requestDodgeImpulse(dir[0], dir[1], DODGE_IMPULSE,
+            body.requestDodgeImpulse(dir[0], dir[1], DODGE_IMPULSE,
                     DODGE_INVULNERABLE_SECONDS);
         }
         dodgingLastFrame = dodgingNow;
@@ -399,7 +395,7 @@ public class MechaControl {
      * 解析闪避轴（世界坐标水平单位向量）—— 闪避赋值的目标方向。
      * <p>
      * 有移动输入时沿输入方向，无输入时沿控制器当前朝向（{@link MechaCharacter#getCurrentYaw()}）。
-     * 两种情形的朝向都取 KCC 本步的朝向（{@link #applyFacing} 先于本方法执行），
+     * 两种情形的朝向都取控制器本步的朝向（{@link #applyFacing} 先于本方法执行），
      * 与 {@link MechaCharacter#setMoveIntent} 解行走方向用的是同一个角。
      * 后者保证按住闪避键不放方向键时也能倒地翻滚，而不是原地不动。
      * <p>
@@ -411,7 +407,7 @@ public class MechaControl {
         MechaConditionSnapshot snap = conditionSnapshot;
         float fwd = snap.inputForward();
         float str = snap.inputStrafe();
-        float yaw = kcc.getCurrentYaw();
+        float yaw = body.getCurrentYaw();
         float sinYaw = (float) Math.sin(yaw);
         float cosYaw = (float) Math.cos(yaw);
         if (fwd * fwd + str * str > 0.001f) {
@@ -425,7 +421,7 @@ public class MechaControl {
         return new float[]{-sinYaw, cosYaw};
     }
 
-    /** 将连续输入、环境状态、事件 latch 和 KCC 状态写入共享变量容器。 */
+    /** 将连续输入、环境状态、事件 latch 和控制器状态写入共享变量容器。 */
     private void writeStateInputs(float dt) {
         MechaConditionSnapshot snap = conditionSnapshot;
         boolean hasInput = snap.inputForward() * snap.inputForward()
@@ -440,17 +436,16 @@ public class MechaControl {
         variables.set(IN_WATER, snap.inWater());
         variables.set(IS_SNEAKING, snap.sneaking());
 
-        variables.set(StateVariableKeys.ON_GROUND, kcc.onGround());
-        float safeDt = Math.max(dt, 1.0e-6f);
-        // 走 getHorizontalVelocity 而不是裸读 KCC：它会扣掉动画根运动那条位移叠加通道，
-        // 否则动画驱动的位移会被当成速度，让 SPEED 虚高并把 gait 误推进 drift。
-        // 闪避不扣——它赋值的就是真实速度，见 MechaCharacter.java#getHorizontalVelocity
-        kcc.getHorizontalVelocity(stateVelocity, safeDt);
+        variables.set(StateVariableKeys.ON_GROUND, body.isOnGround());
+        // 水平速度直接从刚体读：三轴统一为 m/s，没有量纲换算，也没有动画根运动那条位移叠加
+        // 通道要扣（刚体上动画位移走标准力 / 冲量通道，不占用物理速度字段）
+        // 闪避改写的动量照实出现在这一份读数里——它赋值的就是真实速度
+        body.getHorizontalVelocity(stateVelocity);
         float horizontalSpeed = (float) Math.sqrt(
                 stateVelocity.x * stateVelocity.x + stateVelocity.z * stateVelocity.z);
         variables.set(StateVariableKeys.SPEED, horizontalSpeed);
         variables.set(StateVariableKeys.VERTICAL_SPEED, stateVelocity.y);
-        variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
+        variables.set(KCC_JUMP_BOOSTING, body.isBoosting());
 
         variables.set(EVENT_DODGE, pendingEvents.contains(MechaEvent.DODGE));
         variables.set(EVENT_TOGGLE_PRONE, pendingEvents.contains(MechaEvent.TOGGLE_PRONE));
@@ -485,8 +480,8 @@ public class MechaControl {
     // ==========================================
 
     /**
-     * 把本帧视野偏航写进 KCC，作为控制器朝向的绝对权威
-     * （{@link MechaCharacter#setViewYaw} 不累积、不插值，写入即生效）。
+     * 把本帧视野偏航写进控制器（{@link MechaCharacter#setViewYaw} 记录权威值，并由
+     * {@code MechaCharacter#prePhysicsTick} 的朝向写入落到刚体姿态上）。
      * <p>
      * 调用点在 {@link #frameLogic(float)} 的第 1b 步：早于闪避方向与行走方向的解算，因此
      * 本步内所有按朝向解算的量取的是同一个角。
@@ -501,17 +496,17 @@ public class MechaControl {
     private void applyFacing() {
         MechaConditionSnapshot snap = conditionSnapshot;
         if (snap.isDead()) return;
-        kcc.setViewYaw(snap.viewYaw());
+        body.setViewYaw(snap.viewYaw());
     }
 
     /**
-     * 将快照中的移动/跳跃输入转发到 KCC。
+     * 将快照中的移动/跳跃输入转发到控制器。
      * <p>
-     * 移动意图（前后 / 左右）原样交给 {@link MechaCharacter#setMoveIntent}，由 KCC 按本步朝向
+     * 移动意图（前后 / 左右）原样交给 {@link MechaCharacter#setMoveIntent}，由控制器按本步朝向
      * 转成世界方向，本层不做三角变换。跳跃的"按住"取自快照（连续量），"松开"取自本帧事件批
      * （{@link MechaEvent#JUMP_RELEASE} 的单帧边沿），因此同一次松键只被 latch 一次，
      * 不随快照被反复读取。
-     * 旁路观测模式（默认）：原样透传，等价于逻辑层完全不存在时的 KCC 行为；
+     * 旁路观测模式（默认）：原样透传，等价于逻辑层完全不存在时的控制器行为；
      * 反向控制模式：按逻辑层合并许可（CAN_MOVE / CAN_JUMP）门控。
      */
     private void forwardInputToKCC() {
@@ -522,28 +517,28 @@ public class MechaControl {
         boolean jumpRelease = pendingEvents.contains(MechaEvent.JUMP_RELEASE);
 
         if (bypassObservation) {
-            // 旁路观测：原样透传（无输入则置零，触发 KCC §3.9 无输入制动）
+            // 旁路观测：原样透传（无输入则置零，地面的无输入制动由引擎接触摩擦给出）
             applyMoveIntent(fwd, str, hasInput);
-            kcc.setJumpInput(snap.jumpPressed(), jumpRelease);
+            body.setJumpInput(snap.jumpPressed(), jumpRelease);
         } else {
             // 反向控制：CAN_MOVE / CAN_JUMP 门控
             applyMoveIntent(fwd, str, hasInput && variables.get(CAN_MOVE));
 
             // CAN_JUMP 只限制开始跳跃；已经开始助推后仍须透传 held/released 才能正常终止窗口。
             // 离地后 posture 切 air、CAN_JUMP 即为假，靠「正在助推」这条旁路让窗口内的 held 继续透传
-            boolean boosting = kcc.isBoosting();
+            boolean boosting = body.isBoosting();
             boolean jumpHeld = snap.jumpPressed() && (variables.get(CAN_JUMP) || boosting);
             boolean jumpReleased = jumpRelease && boosting;
-            kcc.setJumpInput(jumpHeld, jumpReleased);
+            body.setJumpInput(jumpHeld, jumpReleased);
         }
     }
 
     /**
-     * 把移动意图写入 KCC。
+     * 把移动意图写入控制器。
      * <p>
      * 参数是玩家视角相对的原始量（正 = 前进 / 左移），本方法不做坐标系变换：行走方向的
      * 「意图 → 世界」变换发生在 {@link MechaCharacter#setMoveIntent} 内，用的是本步
-     * {@link #applyFacing} 写下的 {@code currentYaw}。禁止移动时置零（触发 KCC 无输入制动）。
+     * {@link #applyFacing} 写下的视野偏航。禁止移动时置零。
      *
      * @param fwd     前后意图，[-1, 1]，正 = 前进
      * @param str     左右意图，[-1, 1]，正 = 左移
@@ -551,10 +546,10 @@ public class MechaControl {
      */
     private void applyMoveIntent(float fwd, float str, boolean allowed) {
         if (!allowed) {
-            kcc.setMoveIntent(0f, 0f);
+            body.setMoveIntent(0f, 0f);
             return;
         }
-        kcc.setMoveIntent(fwd, str);
+        body.setMoveIntent(fwd, str);
     }
 
     // ==========================================
@@ -562,16 +557,19 @@ public class MechaControl {
     // ==========================================
 
     /**
-     * 从躯干 SubPart 的 body_root 骨骼提取帧间位移与旋转，写入 KCC 供多通道合成。
+     * 从躯干 SubPart 的 body_root 骨骼提取帧间位移与旋转，写入控制器供多通道合成。
      * <p>
      * 设计依据：行走物理设计 §1.2（多通道合成）和 §10.3（叠加公式）。
-     * body_root 骨骼通过 New6Dof 世界锚点约束与 KCC 链接。
+     * body_root 骨骼通过 New6Dof 世界锚点约束与控制器刚体链接。
      * <p>
      * 提取内容：
      * <ul>
-     *   <li><b>位移</b> (dx, dy, dz, m/tick) — 世界坐标帧间差，直接与 KCC 物理位移叠加</li>
+     *   <li><b>位移</b> (dx, dy, dz, m/tick) — 世界坐标帧间差，作为力源数据交给
+     *       {@code MechaCharacter#setAnimRootDelta}（刚体上动画位移走标准力 / 冲量通道，
+     *       不占用物理位移字段，见 `docs/角色控制器-刚体动力学方案.md` §6 的 B3 行）</li>
      *   <li><b>Y 轴旋转</b> (deltaYaw, rad/tick) — 面向帧间差，用于转身斩/回旋踢/
-     *       idle 微晃等动画驱动面向变化。KCC 的 angularFactor(0,1,0) 保证只接收 Y 旋转</li>
+     *       idle 微晃等动画驱动面向变化。控制器的角因子是 {@code (0,1,0)}，偏航以外
+     *       两轴不接受角冲量（`docs/角色控制器-刚体动力学方案.md` §4.1、§8.3）</li>
      * </ul>
      */
     private void extractAnimRootDelta() {
@@ -584,7 +582,7 @@ public class MechaControl {
         //    float dx = rootPose.worldPos.x - rootPose.prevWorldPos.x;
         //    float dy = rootPose.worldPos.y - rootPose.prevWorldPos.y;
         //    float dz = rootPose.worldPos.z - rootPose.prevWorldPos.z;
-        //    kcc.setAnimRootDelta(dx, dy, dz);
+        //    body.setAnimRootDelta(dx, dy, dz);
         //
         // 3. 帧间 Y 轴旋转（rad/tick）— 从世界旋转四元数提取 yaw 的帧间差
         //    float[] angles = new float[3];
@@ -595,7 +593,7 @@ public class MechaControl {
         //    // 处理 ±π 环绕：若 delta > π 则 -2π，若 delta < -π 则 +2π
         //    if (deltaYaw > Math.PI) deltaYaw -= 2 * Math.PI;
         //    else if (deltaYaw < -Math.PI) deltaYaw += 2 * Math.PI;
-        //    kcc.setAnimRootYawDelta(deltaYaw);
+        //    body.setAnimRootYawDelta(deltaYaw);
         //
         // 4. 更新上一帧位姿
         //    rootPose.prevWorldPos.set(rootPose.worldPos);
@@ -654,7 +652,7 @@ public class MechaControl {
                         + "| ground={} hSpeed={} vSpeed={}",
                 posture.molangName(), gait.molangName(), vertical.molangName(),
                 snap.inputForward(), snap.inputStrafe(), snap.sprintPressed(), snap.jumpPressed(),
-                kcc.onGround(), variables.get(StateVariableKeys.SPEED),
+                body.isOnGround(), variables.get(StateVariableKeys.SPEED),
                 variables.get(StateVariableKeys.VERTICAL_SPEED));
     }
     // ==========================================
@@ -680,7 +678,7 @@ public class MechaControl {
      * 逻辑层本帧产出的移动速度修正系数。
      * <p>
      * 等于 {@code posture.speedModifier() × gait.baseSpeedModifier()}，由 gait 子机在进入
-     * 各状态时写入变量容器，并在同一步被推到 KCC 上（{@link #applyLogicOutputToKcc}）。
+     * 各状态时写入变量容器，并在同一步被推到控制器上（{@link #applyLogicOutputToKcc}）。
      * <p>
      * 读取注意：变量容器由物理线程写、本方法可能被主线程调用（调试与自检），因此读到的是
      * 最近一次物理步的结果。这是只读诊断用途，不要在物理决策中依赖它。

@@ -10,6 +10,7 @@ import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -18,6 +19,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 行走控制力模型的回归测试：稳态速率、姿态倍率、地面刹车、跳跃继承与空中转向。
+ * <p>
+ * <b>本轮已停用，等待基线重建。</b>本类是 KCC 承载时期的基线，它钉住的量里有三样随承载物换成
+ * 动力学刚体而失效：水平速度的量纲（KCC 是每物理步位移、刚体是 m/s）、稳态速率的来历（KCC 是
+ * 力平衡的根、刚体是引擎接触摩擦与驱动力的平衡点）、以及轨迹（本类不把刚体加入物理空间，因此
+ * 它现在量不到任何位移）。重建的依据是 `docs/角色控制器-刚体动力学方案.md` §11 的 P2 行，
+ * 而 P2 行要求先取 §12.9 三项数值——那三项已由
+ * {@code RigidBodyControllerMeasurementTest} 给出，因此下一轮可以直接按它量到的数重建。
+ * <p>
+ * 下面保留原有的类说明与判据，供重建时逐条对照。
  * <p>
  * 全部在真实 {@link PhysicsSpace} 里按游戏内物理步频（100 Hz，见
  * `docs/ArmsCore双端权威与网络同步实现计划.md` §3.6）驱动
@@ -29,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Sweetzonzi
  */
+@Disabled("KCC 承载时期的基线，按 docs/角色控制器-刚体动力学方案.md §11 的 P2 行重建后再启用")
 class MechaCharacterWalkPhysicsTest {
 
     /** 与游戏内一致的物理步长：tps = 100（Spark-Core {@code PhysicsLevel.baseStep = 5}） */
@@ -382,7 +393,7 @@ class MechaCharacterWalkPhysicsTest {
         heavySpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
         MechaCharacter heavy = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), heavySpace) {
             @Override
-            protected float getControllerMass() {
+            public float getControllerMass() {
                 return doubleMass;
             }
         };
@@ -582,7 +593,7 @@ class MechaCharacterWalkPhysicsTest {
         rigSpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
         MechaCharacter body = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), rigSpace) {
             @Override
-            protected float getControllerMass() {
+            public float getControllerMass() {
                 return mass;
             }
 

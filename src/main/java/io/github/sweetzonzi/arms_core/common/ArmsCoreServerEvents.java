@@ -108,30 +108,31 @@ public final class ArmsCoreServerEvents {
     public static void syncToClients(ArmsCore core) {
         MechaControl control = core.getMechaControl();
         if (control == null) return;
-        MechaCharacter kcc = control.getKcc();
+        MechaCharacter body = control.getBody();
 
         // 位姿与速度：每次读都取新对象，不能把复用缓冲直接交给 set
         // （DataItem.setValue 直接存引用，复用会让已入队的旧值被改写）
-        Vector3f kccPosition = kcc.getPhysicsLocation(null);
-        Vector3f velocity = kcc.getLinearVelocity(null);
+        Vector3f bodyPosition = body.getPhysicsLocation(null);
+        Vector3f velocity = body.getLinearVelocity(null);
 
-        // pin：外部位移被采纳之后、KCC 的 warp 真正落地之前，DATA_POS 取 pin 的目标而不是 KCC 位置。
+        // pin：外部位移被采纳之后、warp 真正落地之前，DATA_POS 取 pin 的目标而不是刚体位置。
         // 没有这一笔，客户端会在 warp 生效前收到旧位置并把自己放回旧处（§3.1）；这也是 DATA_POS 的第二
         // 个取值来源（`docs/ArmsCore双端权威与位移摄入设计.md` §6.2）。
         HostPositionIntake.PinView pin = core.getPositionIntake().getPin();
-        Vector3f position = kccPosition;
+        Vector3f position = bodyPosition;
         if (pin != null) {
             position = new Vector3f(pin.x(), pin.y(), pin.z());
         }
         core.getSyncedData().set(ArmsCore.DATA_POS, toJoml(position));
         core.getSyncedData().set(ArmsCore.DATA_VEL, toJoml(velocity));
 
-        // 朝向：控制器侧绝对 Y 朝向，单位度。currentYaw 已由 MechaCharacter.setViewYaw 归约到
-        // [−π, π)，Rotations 的构造器再对分量取 % 360 覆盖线上格式。
+        // 朝向：控制器侧绝对 Y 朝向（弧度，[−π, π)），同步出去的是度。
+        // 读数优先取刚体姿态里局部 +Z 的水平投影，因此这一份就是躯干约束实际看到的朝向
+        // （见 `common/control/MechaCharacter.java#getCurrentYaw`）
         core.getSyncedData().set(ArmsCore.DATA_YAW,
-                new Rotations(0f, (float) Math.toDegrees(kcc.getCurrentYaw()), 0f));
+                new Rotations(0f, (float) Math.toDegrees(body.getCurrentYaw()), 0f));
 
-        applyPoseToHost(core, kcc, kccPosition, velocity);
+        applyPoseToHost(core, body, bodyPosition, velocity);
 
         // 逻辑层四项：主线程不得读 StateVariableContainer，只读物理线程发布的不可变快照
         MechaControl.LogicStateSnapshot state = core.getLogicState();
@@ -196,7 +197,7 @@ public final class ArmsCoreServerEvents {
     }
 
     /**
-     * 把 KCC 的位姿与速度写进宿主实体，并按固定间隔记录 KCC 与宿主实体的偏移。
+     * 把控制器刚体的位姿与速度写进宿主实体，并按固定间隔记录刚体与宿主实体的偏移。
      * <p>
      * 位置按 {@code 宿主位置 = 胶囊中心 − MechaBodyPreset.HALF_TOTAL} 换算到包围盒底面，换算由
      * 宿主实现负责（{@code IArmsHost#applyPose} 的入参就是胶囊中心，见
@@ -204,21 +205,20 @@ public final class ArmsCoreServerEvents {
      * {@code HALF_TOTAL}，当前素体取值下为 {@code 1.2 m}。
      * <p>
      * 速度也写：{@code noPhysics} 为真时 {@code Entity#move} 不参与碰撞求解，写进去的
-     * {@code deltaMovement} 不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实
-     * 速度，因此它与位置回写不构成两个运动权威。
+     * {@code deltaMovement} 不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到控制器的
+     * 真实速度，因此它与位置回写不构成两个运动权威。
      * <p>
-     * <b>物理步长必须传下去。</b> KCC 的速度在三个轴上语义不同（水平是每物理步位移、垂直是 m/s），而
-     * {@code deltaMovement} 的三个分量统一是每 tick 位移，换算由宿主实现完成、因子取自
-     * {@link ArmsCore#physicsStepSeconds()}——服务端 100 Hz 与客户端 60 Hz 的因子不同，不能在宿主里写死。
+     * <b>换算因子不必再传。</b> 刚体的速度三个轴统一是 m/s，而 {@code deltaMovement} 的三个分量统一是
+     * 每 tick 位移，换算就是 {@code × 20}（每 tick 20 个物理步），与物理空间自己的 {@code baseStep} 无关。
      * <p>
      * 宿主引用为 {@code null}（尚未绑定宿主、或客户端实例）时整个回写是 no-op。
      */
-    private static void applyPoseToHost(ArmsCore core, MechaCharacter kcc,
+    private static void applyPoseToHost(ArmsCore core, MechaCharacter body,
                                         Vector3f position, Vector3f velocity) {
         IArmsHost host = core.getHost();
         if (host == null) return;
         Vec3 entityBefore = host.getHostEntity().position();
-        float yRot = (float) Math.toDegrees(kcc.getCurrentYaw());
+        float yRot = (float) Math.toDegrees(body.getCurrentYaw());
         // 第 4 类作用域（本模组运行时回写）：本模组自己写的这一笔不能被判成外部位移，否则每 tick 一次误判。
         // 用 try/finally 而不是「每个返回点各注入一次」——异常路径也要把栈弹干净
         // （`docs/宿主位置权威与位移摄入设计.md` §5.2）。
@@ -230,7 +230,7 @@ public final class ArmsCoreServerEvents {
         } finally {
             core.getPositionIntake().exitScope(outerDepth);
         }
-        host.applyVelocity(new Vec3(velocity.x, velocity.y, velocity.z), core.physicsStepSeconds());
+        host.applyVelocity(new Vec3(velocity.x, velocity.y, velocity.z));
         logHostDrift(core, host, entityBefore, position, velocity);
     }
 
@@ -241,30 +241,28 @@ public final class ArmsCoreServerEvents {
     private static long hostDriftTicks;
 
     /**
-     * 记录宿主实体回写前后的位置与 KCC 位置，用于定位「KCC 与宿主不同步」的成因。
+     * 记录宿主实体回写前后的位置与控制器刚体位置，用于定位「刚体与宿主不同步」的成因。
      * <p>
      * 三个数各自回答一个问题：
      * <ul>
      *   <li><b>实体自走量</b>（回写前后位置之差）：本 tick 期间实体自己走了多远。应当接近 0；
      *       明显非零说明实体仍有独立的运动来源，例如上一步写进去的 {@code deltaMovement}。</li>
-     *   <li><b>KCC-to-实体 before</b>：回写前实体与 KCC 的偏移。它的<b>水平分量</b>持续增大说明 KCC 没有
-     *       跟着实体走（回写没生效，或 KCC 被别的写入拉回）；<b>垂直分量</b>持续增大说明 KCC 在持续
-     *       下坠（地面检测没接住它）。</li>
-     *   <li><b>KCC 速度</b>：判断 KCC 是在自己走，还是停在原地被拖。</li>
+     *   <li><b>刚体-to-实体 before</b>：回写前实体与刚体的偏移。它的<b>水平分量</b>持续增大说明刚体没有
+     *       跟着实体走（回写没生效，或刚体被别的写入拉回）；<b>垂直分量</b>持续增大说明刚体在持续
+     *       下坠（着地判据没接住它）。</li>
+     *   <li><b>刚体速度</b>：判断刚体是在自己走，还是停在原地被拖。</li>
      * </ul>
-     * 水平与垂直分量回答「KCC 是没跟着宿主走，还是在持续下坠」：水平分量增长说明回写没生效或 KCC
-     * 被别的写入拉回，垂直分量增长说明地面检测没接住 KCC。
      */
     private static void logHostDrift(ArmsCore core, IArmsHost host,
-                                     Vec3 entityBefore, Vector3f kcc, Vector3f velocity) {
+                                     Vec3 entityBefore, Vector3f body, Vector3f velocity) {
         if (++hostDriftTicks % HOST_DRIFT_LOG_INTERVAL != 0) return;
         Vec3 entityAfter = host.getHostEntity().position();
-        double dx = kcc.x - entityBefore.x;
-        double dy = kcc.y - entityBefore.y;
-        double dz = kcc.z - entityBefore.z;
+        double dx = body.x - entityBefore.x;
+        double dy = body.y - entityBefore.y;
+        double dz = body.z - entityBefore.z;
         ARMS.LOGGER.info(
                 "[ARMS-Core] 宿主偏移 {}：水平={} 垂直={} 分量=({}, {}, {})；实体自走量=({}, {}, {})；"
-                        + "KCC 速度=({}, {}, {})",
+                        + "控制器速度=({}, {}, {})",
                 core.getAssemblyId(),
                 fmt(Math.sqrt(dx * dx + dz * dz)), fmt(Math.abs(dy)),
                 fmt(dx), fmt(dy), fmt(dz),

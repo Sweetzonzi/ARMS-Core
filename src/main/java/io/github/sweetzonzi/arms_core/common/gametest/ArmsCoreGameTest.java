@@ -71,7 +71,7 @@ public class ArmsCoreGameTest {
      * <ol>
      *   <li>构造不抛异常——即 {@code SparkLevel.getPhysicsLevel(level)} 拿到了物理空间
      *       （{@link ArmsCore#physicsStepSeconds()} 在物理空间缺失时会抛 {@code IllegalStateException}）；</li>
-     *   <li>服务端路径拿到权威实例与 KCC；</li>
+     *   <li>服务端路径拿到权威实例与控制器刚体；</li>
      *   <li>装配体持有位移摄入的分类状态；</li>
      *   <li>物理步长是有限正数——它是 {@code 1 / tps}，能算出值说明物理空间已经 {@code start()} 过。</li>
      * </ol>
@@ -81,7 +81,7 @@ public class ArmsCoreGameTest {
         ArmsCore core = new ArmsCore(helper.getLevel(), UUID.randomUUID());
 
         helper.assertTrue(core.isAuthoritative(), "服务端构造必须给出权威实例");
-        helper.assertTrue(core.getKcc() != null, "权威实例必须持有 KCC");
+        helper.assertTrue(core.getBody() != null, "权威实例必须持有控制器刚体");
         helper.assertTrue(core.getPositionIntake() != null, "装配体必须持有位移摄入的分类状态");
         helper.assertTrue(core.getLevel() == helper.getLevel(), "装配体所属 level 应当是构造时传入的那个");
 

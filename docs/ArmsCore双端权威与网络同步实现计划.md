@@ -180,7 +180,7 @@ variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
 | D14 | `pos` / `vel` 使用 JOML `Vector3f`（`EntityDataSerializers.VECTOR3`） | 该序列化器即为 JOML 类型；与 Machine-Max `DestroyableObject` 的 `DATA_POS_ID` 一致 |
 | D15 | 位姿、速度与 `currentYaw` 由主线程直接读 KCC，只有逻辑状态经不可变 `LogicStateSnapshot` 跨线程 | `SynchedEntityData` 的 accessor 各自独立，不需要统一载体；`DestroyableRigidObject.postTick()` 已确立主线程直读物理体的先例（§3.5） |
 | D16 | `DATA_YAW` 承载**控制器侧**的朝向，躯干朝向仍由 SubPart 通道承载 | 两者解耦且躯干存在受约束的滞后（§1.1）：控制器侧朝向是上游权威量，躯干是下游结果 |
-| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的语义是"控制器当前 Y 轴朝向"（`MechaCharacter.java#currentYaw`、`#setViewYaw`）。它由视野偏航绝对驱动，但**不等于**线上载荷里的 `viewYaw`：写入经过 [−180, 180) 规约，且死亡（含 ragdoll）时被冻结（`MechaControl.java#applyFacing`） |
+| D17 | `DATA_YAW` 发送 `MechaCharacter.currentYaw` 本身，即 KCC 的绝对 Y 朝向 | 该字段的语义是"控制器当前 Y 轴朝向"（`MechaCharacter.java#viewYaw`、`#setViewYaw`、`#writeFacing`）。它由视野偏航绝对驱动，但**不等于**线上载荷里的 `viewYaw`：写入经过 [−180, 180) 规约，且死亡（含 ragdoll）时被冻结（`MechaControl.java#applyFacing`） |
 | D18 | 客户端不为 `ArmsCore` 重建任何物理体，只按 `DATA_POS` / `DATA_YAW` 摆放一个非实体可视锚点 | 与 `MMPartEntity` 同形（§3.13）；避免"客户端不跑物理"与"客户端要渲染"的冲突，也避免与宿主实体的位置形成双份权威 |
 | D19 | `ArmsCore` 持有 `Level`，并由 `MechaCoreRegistry` 按维度注册；生命周期跟随宿主 / 装配体，不注册为世界实体 | `docs/总体设计文档.md` §2.1 明确 `ArmsCore` 不注册到 `ObjectManager` |
 | D20 | 阶段 1–3 允许 `rootSubPart == null`、`Part` 装配缺席、胶囊尺寸取阶段 0 的临时参数 | §1.1 的耦合不构成运行前置；表现层缺失在 §3.12 显式登记 |
@@ -665,7 +665,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 | # | 任务 | 位置 | 完成判据 |
 |---|------|------|----------|
-| 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java#currentYaw` | 该字段由物理线程写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
+| 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java#viewYaw` | 该字段由物理线程（与主线程）写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
 | 0.2 | 胶囊常量提到共享位置 | `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
 | 0.3 | 为 `ArmsCore` 增加最小构造参数、查询 API 与 KCC | `ArmsCore.java` 整体 | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；构造时以 `MechaBodyPreset` 的胶囊几何 + `SparkLevel.getPhysicsLevel(level).getWorld()` 创建 `MechaCharacter` 并交给 `MechaControl`；暴露 `getKcc()`；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
 
@@ -817,7 +817,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |------|------|
 | `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_ENERGY`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace` |
 | 逻辑状态跨线程出口 | `common/control/MechaControl.java#LogicStateSnapshot`、`#snapshotLogicState` |
-| 逻辑层产出到物理的落地（速度倍率 / 闪避） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#controlForceScale`、`#requestDodgeImpulse`、`#consumeDodgeImpulse`、`#updateWalk`（闪避赋值、沿向/侧向分解与三个机制）、`#overlayDispX`、`#getHorizontalVelocity`、`#equilibriumSpeed`；`common/control/state/graph/MechaStateActions.java#gaitPreservingModifier` |
+| 逻辑层产出到物理的落地（速度倍率 / 闪避） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#controlForceScale`、`#requestDodgeImpulse`、`#consumeDodgeImpulse`、`#updateWalk`（闪避赋值与地面力律）、`#getHorizontalVelocity`、`#equilibriumSpeed`、`#getEffectiveFriction`；`common/control/state/graph/MechaStateActions.java#gaitPreservingModifier` |
 | 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_CAPSULE_HEIGHT`、`#capsuleHeightFor`、`#halfTotalFor`、`#newCapsuleShape` |
 | 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape` |
 | 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |
@@ -834,7 +834,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | `ENERGY` 定义与初值（快照字段来源） | `common/control/MechaControl.java#INITIAL_ENERGY`、`#MechaControl`（构造器初值）；`#logStateChanges`（posture/gait/vertical 的读取形态） |
 | 事件闩锁 | `common/control/MechaControl.java#pendingEventBuffer`、`#postEvent` |
 | `getRootSubPart()` / `getAttr()` 无调用方 | 全仓仅出现在 `MechaControlHolder.java#getRootSubPart`、`#getAttr`、`ArmsCore.java`（返回 `null` 的存根） |
-| `currentYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java#currentYaw`、`#setViewYaw`、`#normalizeViewYaw`、`#animRootYawDelta`（阶段 4 接入点，当前不参与合成）；`common/control/MechaControl.java#applyFacing` |
+| `viewYaw` 的绝对朝向语义与唯一写入方 | `common/control/MechaCharacter.java#viewYaw`、`#setViewYaw`、`#normalizeViewYaw`、`#writeFacing`（每物理步把权威值落到刚体姿态上）、`#animRootYawDelta`（阶段 4 接入点，当前不参与合成）；`common/control/MechaControl.java#applyFacing` |
 | 行走方向「意图 → 世界」的唯一变换点与闪避方向同源 | `common/control/MechaCharacter.java#setMoveIntent`、`#updateWalk`；`common/control/MechaControl.java#applyMoveIntent`、`#resolveDodgeDirection` |
 | 分离距离是一等量 | `common/control/MechaCharacter.java#separationDistance`、`#updateWalk`（`sepFactor` 折减） |
 | 快照模式与跨线程决策 | `common/control/MechaConditionSnapshot.java#MechaConditionSnapshot`；`docs/下一步开发TODO.md` §4、§5.2 |

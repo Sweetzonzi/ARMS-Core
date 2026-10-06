@@ -25,7 +25,7 @@ import org.spongepowered.asm.mixin.Unique;
  * <p>
  * <b>两端都存在。</b> {@link Player} 在客户端同样存在，因此客户端玩家也实现本接口，其绑定字段
  * 填的是客户端 {@link ArmsCore} 实例。区别在 {@code ArmsCore.java#authoritative}：客户端实例不持有
- * KCC，因此 {@link #applyPose} / {@link #applyVelocity} 在客户端永远不会被调用。
+ * 控制器刚体，因此 {@link #applyPose} / {@link #applyVelocity} 在客户端永远不会被调用。
  * <p>
  * <b>方法名不加 {@code @Unique}。</b> 这五个方法必须是目标类上真实可调用的接口实现——调用方会写
  * {@code ((IArmsHost) player).applyPose(...)}，方法被重命名或移除会让该调用点失去目标。只有
@@ -127,28 +127,23 @@ public class PlayerHostMixin implements IArmsHost {
     }
 
     /**
-     * 落地 KCC 的线速度，并把三个轴从 KCC 的单位换算到实体单位。
+     * 落地控制器刚体的线速度，并把三个轴从 m/s 换算到实体单位。
      * <p>
-     * 入参是 KCC 的原生单位（水平为每物理步位移、垂直为 m/s），而 {@code deltaMovement} 三个分量统一是
-     * 每 tick 位移，因此两个方向要乘不同的因子：
+     * 入参三个轴统一是 m/s，而 {@code deltaMovement} 三个分量统一是每 tick 位移，因此换算是同一个
+     * 因子，不需要再区分轴（`docs/角色控制器-刚体动力学方案.md` §6 的量纲统一）：
      *
      * <pre>
-     * 水平：× 20 × physicsStepSeconds   （每物理步位移 → 每 tick 位移）
-     * 垂直：÷ 20                        （m/s → 每 tick 位移）
+     * m/s → 每 tick 位移：× 20    （每 tick 20 个物理步）
      * </pre>
      *
-     * 服务端 {@code physicsStepSeconds} 为 {@code 0.01}（100 Hz），客户端为约 {@code 0.0167}（60 Hz），
-     * 所以因子必须由调用方传入；写死任何一个都会让另一端的水平速度差 1.67 倍。
-     * <p>
-     * {@code noPhysics} 为真时该值不产生实际位移，写入的作用只是让外部查询看到 KCC 的真实速度。
+     * {@code noPhysics} 为真时该值不产生实际位移，写入的作用只是让外部查询看到控制器的真实速度。
      */
     @Override
-    public void applyVelocity(Vec3 velocity, float physicsStepSeconds) {
-        float horizontalScale = 20f * physicsStepSeconds;
+    public void applyVelocity(Vec3 velocity) {
         ((Player) (Object) this).setDeltaMovement(
-                velocity.x * horizontalScale,
-                velocity.y / 20f,
-                velocity.z * horizontalScale);
+                velocity.x * 20f,
+                velocity.y * 20f,
+                velocity.z * 20f);
     }
 
     // ==========================================

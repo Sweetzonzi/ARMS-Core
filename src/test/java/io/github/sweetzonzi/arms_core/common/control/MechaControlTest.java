@@ -418,7 +418,7 @@ class MechaControlTest {
         }
 
         @Override
-        public boolean onGround() {
+        public boolean isOnGround() {
             return groundForTest;
         }
     }

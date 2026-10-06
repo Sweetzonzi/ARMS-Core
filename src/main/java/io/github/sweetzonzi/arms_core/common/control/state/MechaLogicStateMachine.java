@@ -42,8 +42,8 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  *   // 2. 启动（stopped → 进入初始节点）
  *   logic.reset();  // 或 start()
  *
- *   // 3. 每帧：写入快照 + KCC 状态到 variables
- *   logic.getVariables().set(ON_GROUND, kcc.onGround());
+ *   // 3. 每帧：写入快照 + 控制器状态到 variables
+ *   logic.getVariables().set(ON_GROUND, body.isOnGround());
  *   logic.getVariables().set(HAS_INPUT, snapshot.inputForward() != 0 || ...);
  *   logic.getVariables().set(IS_SNEAKING, snapshot.sneaking()); // 蹲伏为连续状态，直接映射 crouch posture
  *   // ...

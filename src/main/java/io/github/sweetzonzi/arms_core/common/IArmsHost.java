@@ -43,12 +43,12 @@ public interface IArmsHost {
     void setControlledArmsCore(@Nullable ArmsCore core);
 
     /**
-     * 把 KCC 的位姿写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
+     * 把控制器刚体的位姿写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
      * <p>
      * <b>只写位置，不写朝向。</b> 朝向的权威在客户端：视野偏航由客户端上行，服务端把它绝对赋值给
-     * KCC 的 {@code currentYaw}（{@code MechaControl#applyFacing}）。若这里顺手把 KCC 的朝向写回宿主
-     * 实体的 {@code yRot}，而下一次上行读的又是这个字段，两点之间就构成一个跨网络的滞后反馈环，
-     * 表现为视角抖动。姿态回写因此只负责位置。
+     * 控制器（{@code MechaControl#applyFacing}），再由控制器每物理步的朝向写入落到刚体姿态上。
+     * 若这里顺手把控制器的朝向写回宿主实体的 {@code yRot}，而下一次上行读的又是这个字段，两点之间
+     * 就构成一个跨网络的滞后反馈环，表现为视角抖动。姿态回写因此只负责位置。
      * <p>
      * {@code yRot} / {@code yHeadRot} 两个参数保留在签名里，供将来的非玩家宿主使用（模型朝向与实体
      * 朝向分离的 Doll 等）；玩家宿主的实现忽略它们。
@@ -61,24 +61,22 @@ public interface IArmsHost {
     void applyPose(Vec3 capsuleCenter, float yRot, float yHeadRot);
 
     /**
-     * 把 KCC 的线速度写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
+     * 把控制器刚体的线速度写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
      * <p>
-     * <b>入参的三个轴语义不同，实现方必须换算。</b> {@code velocity} 是 KCC 的原生单位：水平两个分量是
-     * <b>每物理步位移</b>（m / 物理步），垂直分量是 <b>m/s</b>（`docs/角色控制器-行走物理设计.md` 的
-     * 单位约定）。而宿主实体的 {@code net.minecraft.world.entity.Entity#setDeltaMovement} 三个分量
-     * 统一是 <b>每 tick 位移</b>。直接透传会同时错两次、倍数还不同：
+     * <b>三个轴同为 m/s。</b> 刚体路线统一了速度的量纲（`docs/角色控制器-刚体动力学方案.md` §6），
+     * 不再有「水平是每物理步位移、垂直是 m/s」那种混合语义，因此换算只剩一个因子：
      *
      * <pre>
-     * 水平（每物理步位移 → 每 tick 位移）：× 20 × physicsStepSeconds
-     * 垂直（m/s → 每 tick 位移）        ：÷ 20
+     * m/s → 每 tick 位移：× 20
      * </pre>
      * <p>
-     * 换算因子不能写死：服务端物理空间是 {@code baseStep = 5}（100 Hz，单步 0.01 s），客户端是
-     * {@code baseStep = 3}（60 Hz，单步约 0.0167 s），两者不同。{@code physicsStepSeconds} 参数就是
-     * {@link ArmsCore#physicsStepSeconds()} 给出的值，实现方直接用它。
+     * 宿主实体的 {@code net.minecraft.world.entity.Entity#setDeltaMovement} 三个分量统一是
+     * <b>每 tick 位移</b>，物理步频与服务端 tick 的比值就是 {@code 20}（每 tick 20 个物理步），
+     * 与物理空间自己的 {@code baseStep} 无关，因此不需要再传物理步长。
+     * <p>
+     * {@code noPhysics} 为真时该值不产生实际位移，写入的作用只是让外部查询看到真实速度。
      *
-     * @param velocity             KCC 线速度，单位见上（水平每物理步位移、垂直 m/s）
-     * @param physicsStepSeconds   单个物理步的时长 (s)
+     * @param velocity 控制器线速度 (m/s)，三个轴同单位
      */
-    void applyVelocity(Vec3 velocity, float physicsStepSeconds);
+    void applyVelocity(Vec3 velocity);
 }
