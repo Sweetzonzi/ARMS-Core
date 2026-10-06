@@ -811,17 +811,20 @@ class RigidBodyControllerPrototypeTest {
     // ═══════════════════════════════════════════════
 
     /**
-     * 落地收敛窗口：每物理步把姿态往竖直拉一小段，并把这小段里被带走的方位角还回去。
+     * 落地收敛窗口：每物理步按<b>最小旋转</b>把姿态往竖直拉一小段，角速度的 pitch / roll 分量按同一系数衰减。
      * <p>
-     * 第一步是<b>最小旋转</b>：旋转轴取 {@code u × (0, 1, 0)}（{@code u} = 刚体局部 +Y 的世界方向，
-     * 轴模长恒为 {@code sin(tilt)}），转角取 {@code λ · tilt}，倾角因此严格按
-     * {@code tilt ← (1 − λ) · tilt} 衰减，不超调。
+     * 收敛量不是「竖直 + 某个 yaw」的绝对目标姿态，而是「把上轴转正」这一件事本身：旋转轴取
+     * {@code u × (0, 1, 0)}（{@code u} = 刚体局部 +Y 的世界方向，轴模长恒为 {@code sin(tilt)}），
+     * 转角取 {@code λ · tilt}，倾角因此严格按 {@code tilt ← (1 − λ) · tilt} 衰减，不超调。
+     * 轴上没有 {@code acos} / {@code asin} / {@code atan2}：`u × (0, 1, 0)` 的模长恒为 `sin(tilt)`，
+     * 除以模长即得单位轴。
      * <p>
-     * 第二步是<b>绕竖直轴的补正</b>：绕水平轴旋转会连带改变「局部 +Z 的水平投影方向」（倾角斜置时
-     * 每步约 {@code tilt · λ} 量级，整个收敛期累计可达数度），而它正是朝向。补正值就是这一步前后的
-     * 方位角之差，由两次 {@link #yawDegrees} 读出，反号加回去。
-     * <p>
-     * 角速度只衰减 pitch / roll 分量：yaw 分量不参与和姿态写入的冲突，地面上的原地自旋交给接触摩擦。
+     * <b>朝向在单轴初态下无偏，斜置初态下会被带走。</b> 绕水平轴旋转不改变水平面内矢量的方位角，因此
+     * 纯俯仰与纯侧滚走完全程朝向一动不动；倾斜方向斜置时局部 +Z 的水平投影不在水平面内，每步被转走
+     * {@code tilt · λ} 量级，累计量随倾角超线性增长（实测 27.99° 给 3.53°、70° 给 10–30°、85° 给 40–57°）。
+     * 这一项按**设计**保留：机体是被撞歪的，收敛只做「把上轴转正」这一件事，不为抹掉这个偏差再加一步。
+     * 落地后朝向由 `common/control/MechaControl.java#currentYaw` 的写入方每物理步从输入绝对覆盖
+     * （见该类的 `#applyFacing`），因此它只在收敛窗口内存在。见 `docs/角色控制器-刚体原型与引擎约束.md` §8.4。
      *
      * @param body     控制器刚体
      * @param lambda   每步的收敛系数（0 = 不动，1 = 一步到位）
@@ -839,8 +842,6 @@ class RigidBodyControllerPrototypeTest {
         }
 
         // 最小旋转：轴 = u × (0,1,0)（模长 sin(tilt)），转角 = λ · tilt
-        Quaternion pose = body.getPhysicsRotation(new Quaternion());
-        float yawBefore = yawDegrees(body);
         Vector3f up = unitY(body.getPhysicsRotationMatrix(new Matrix3f()));
         Vector3f axis = up.cross(Vector3f.UNIT_Y);
         float sinTilt = axis.length();
@@ -849,16 +850,7 @@ class RigidBodyControllerPrototypeTest {
             float scale = (float) Math.sin(half) / sinTilt;
             Quaternion step = new Quaternion(axis.x * scale, axis.y * scale, axis.z * scale,
                     (float) Math.cos(half));
-            Quaternion tilted = step.mult(pose);
-            body.setPhysicsRotation(tilted);
-
-            // 把最小旋转带走的方位角还回去
-            float drift = (float) Math.toRadians(angleDelta(yawBefore, yawDegrees(body)));
-            if (Math.abs(drift) > 1.0e-9f) {
-                float halfYaw = -drift * 0.5f;
-                body.setPhysicsRotation(new Quaternion(0f, (float) Math.sin(halfYaw), 0f,
-                        (float) Math.cos(halfYaw)).mult(tilted));
-            }
+            body.setPhysicsRotation(step.mult(body.getPhysicsRotation(null)));
         }
 
         // 角速度只衰减 pitch / roll：yaw 分量不参与和姿态写入的冲突
@@ -874,47 +866,37 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 同一斜置初态、去掉 yaw 补正的收敛：只做最小旋转。
-     * <p>
-     * 用来量「补正到底补了多少」——{@link #settleTowardUpright} 的净朝向漂移为零，但那是补正之后的
-     * 结果，补正之前每步被带走的方位角要靠这一条测出来。
+     * 给定斜置初态跑一遍收敛律。初始姿态是「前倾 {@code pitch} 再侧倾 {@code roll}」，
+     * 倾斜方向一般不在坐标轴所在平面内——这正是纯俯仰与纯侧滚漏掉的那一族姿态。
      *
-     * @return {锁定步数, 倾角与理论值的最大偏差, 朝向最大漂移}
+     * @return {锁定步数, 倾角与理论值的最大偏差, 朝向最大漂移, 初始倾角}
      */
-    private static float[] measureObliqueSettleWithoutYawCorrection() {
+    private static float[] measureObliqueSettle(float pitch, float roll) {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
         PhysicsRigidBody body = newController(space, new Vector3f(0f, 0f, 0f), 2.0f,
                 LOCKED_PITCH_ROLL);
-        dropTiltedOffAxis(body);
+        body.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
+                (float) Math.toRadians(roll), new Vector3f(0f, 0f, 1f))
+                .mult(new Quaternion().fromAngleNormalAxis(
+                        (float) Math.toRadians(pitch), new Vector3f(1f, 0f, 0f))));
         final float lambda = 0.20f;
         final float tilt0 = tiltDegrees(body);
         final float yaw0 = yawDegrees(body);
         float maxTiltError = 0f;
         float maxYawDrift = 0f;
         int steps = 0;
-        for (int i = 0; i < 40; i++) {
-            float tilt = tiltDegrees(body);
-            if (tilt < 0.5f) {
+        for (int i = 0; i < 60; i++) {
+            if (settleTowardUpright(body, lambda, 0.5f)) {
                 break;
             }
             steps++;
-            Vector3f up = unitY(body.getPhysicsRotationMatrix(new Matrix3f()));
-            Vector3f axis = up.cross(Vector3f.UNIT_Y);
-            float sinTilt = axis.length();
-            if (sinTilt > 1.0e-6f) {
-                float half = (float) Math.toRadians(lambda * tilt) * 0.5f;
-                float scale = (float) Math.sin(half) / sinTilt;
-                Quaternion step = new Quaternion(axis.x * scale, axis.y * scale, axis.z * scale,
-                        (float) Math.cos(half));
-                body.setPhysicsRotation(step.mult(body.getPhysicsRotation(null)));
-            }
             maxTiltError = Math.max(maxTiltError,
                     Math.abs(tiltDegrees(body) - tilt0 * (float) Math.pow(1f - lambda, steps)));
             maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(body))));
         }
-        return new float[] { steps, maxTiltError, maxYawDrift };
+        return new float[] { steps, maxTiltError, maxYawDrift, tilt0 };
     }
 
     /**
@@ -975,13 +957,12 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 收敛律本身：倾角应严格按 {@code (1 − λ)} 衰减，且朝向一步都不动。
-     * <p>
-     * 本条**不步进物理**，只反复施加姿态写入，因此检验的是收敛律的纯运动学性质，与求解器无关。
-     * 初始姿态取绕世界 X 轴 30° 纯俯仰。
+     * 收敛律本身：倾角应严格按 {@code (1 − λ)} 衰减。初态取绕世界 X 轴 30° 纯俯仰，
+     * 它同时是「单轴初态朝向无偏」的基准（不变量与对照见 {@link #singleAxisTiltSettleLeavesYawUntouched}
+     * 与 {@link #obliqueTiltSettleLosesSomeYawAsThePriceOfAnOffAxisLanding}）。
      */
     @Test
-    void exponentialSettleDecaysTiltExactlyAndPreservesYaw() {
+    void exponentialSettleDecaysTiltExactly() {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
@@ -1017,11 +998,52 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 初态换成**倾斜方向斜置**的姿态（前倾 20° 再侧倾 20°，倾角 27.99°）：绕水平轴的最小旋转会
-     * 连带改变局部 +Z 的水平投影方向，这是朝向在收敛期会不会被带走的判据，纯俯仰与纯侧滚都测不到它。
+     * 单轴初态下朝向必须**无偏**：绕水平轴的旋转不改变水平面内矢量的方位角，而纯俯仰与纯侧滚下
+     * 局部 +Z 的水平投影恰好落在该平面内，因此收敛全程朝向一动不动。
      */
     @Test
-    void obliqueTiltSettleKeepsYawWhileMinimalRotationAloneDoesNot() {
+    void singleAxisTiltSettleLeavesYawUntouched() {
+        for (Vector3f axis : new Vector3f[]{new Vector3f(1f, 0f, 0f), new Vector3f(0f, 0f, 1f)}) {
+            PhysicsSpace space = newSpace();
+            space.addCollisionObject(staticBox(
+                    new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
+            PhysicsRigidBody body = newController(space, new Vector3f(0f, 0f, 0f), 2.0f,
+                    LOCKED_PITCH_ROLL);
+            body.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
+                    (float) Math.toRadians(30f), axis));
+
+            final float lambda = 0.20f;
+            final float tilt0 = tiltDegrees(body);
+            final float yaw0 = yawDegrees(body);
+            float maxYawDrift = 0f;
+            int steps = 0;
+            for (int i = 0; i < 40; i++) {
+                if (settleTowardUpright(body, lambda, 0.5f)) {
+                    break;
+                }
+                steps++;
+                maxYawDrift = Math.max(maxYawDrift,
+                        Math.abs(angleDelta(yaw0, yawDegrees(body))));
+            }
+            System.out.printf("[原型⑨G] 单轴初态（绕 %s 轴 30°，倾角 %.2f°）：%d 步锁定，"
+                            + "末倾角 %.2f°，朝向最大漂移 %.5f°%n",
+                    axis.x > 0f ? "X" : "Z", tilt0, steps, tiltDegrees(body), maxYawDrift);
+
+            assertTrue(steps > 0 && steps < 40,
+                    "λ=0.20 应在 40 步内锁定，实际 " + steps + " 步");
+            assertTrue(maxYawDrift < 0.01f,
+                    "单轴初态下朝向不应有任何漂移，实际 " + maxYawDrift + "°");
+        }
+    }
+
+    /**
+     * 斜置初态（前倾 20° 再侧倾 20°，倾角 27.99°）：局部 +Z 的水平投影不在水平面内，收敛会把它
+     * 一并带走，因此朝向**按设计**产生偏差——这是非平稳落地的代价，不额外补一步把它抹掉。
+     * <p>
+     * 本条钉住这个偏差的量级（不是零，但也不失控），并顺带量出它随倾角的增长趋势。
+     */
+    @Test
+    void obliqueTiltSettleLosesSomeYawAsThePriceOfAnOffAxisLanding() {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
@@ -1049,15 +1071,20 @@ class RigidBodyControllerPrototypeTest {
             // u 的水平投影（上轴偏向）若与初值同向，说明收敛只在倾角平面内进行
             stillTilting &= (up.x * up0.x + up.z * up0.z) >= 0f;
         }
-        System.out.printf("[原型⑨D] 斜置初态（前倾 20° 再侧倾 20°，倾角 %.2f°）的收敛律："
-                        + "%d 步锁定，倾角与 (1−λ)^n 的最大偏差 %.5f°，朝向最大漂移 %.5f°，"
+        System.out.printf("[原型⑨D] 斜置初态（前倾 20° 再侧倾 20°，倾角 %.2f°）：%d 步锁定，"
+                        + "倾角与 (1−λ)^n 的最大偏差 %.5f°，朝向漂移 %.5f°（按设计保留），"
                         + "上轴偏向始终同向 %s%n",
                 tilt0, steps, maxTiltError, maxYawDrift, stillTilting ? "是" : "否");
 
-        float[] alone = measureObliqueSettleWithoutYawCorrection();
-        System.out.printf("[原型⑨E] 同一斜置初态去掉 yaw 补正：%d 步锁定，倾角偏差 %.5f°，"
-                        + "朝向漂移 %.5f°（补正把它压到 %.5f°）%n",
-                (int) alone[0], alone[1], alone[2], maxYawDrift);
+        System.out.println("[原型⑨F] 斜置初态的朝向漂移随倾角的量级（前倾 θ + 侧倾 φ）：");
+        for (float roll : new float[]{5f, 20f, 45f}) {
+            for (float pitch : new float[]{20f, 45f, 70f, 85f}) {
+                float[] plain = measureObliqueSettle(pitch, roll);
+                System.out.printf("    前倾 %2.0f° + 侧倾 %2.0f°：倾角 %5.2f°，%2d 步锁定，"
+                                + "倾角偏差 %.5f°，朝向漂移 %7.5f°%n",
+                        pitch, roll, plain[3], (int) plain[0], plain[1], plain[2]);
+            }
+        }
 
         assertTrue(steps > 0 && steps < 40,
                 "λ=0.20 应在 40 步内锁定，实际 " + steps + " 步");
@@ -1065,10 +1092,8 @@ class RigidBodyControllerPrototypeTest {
                 "倾角应严格按 (1 − λ) 衰减，实际与理论值的最大偏差 " + maxTiltError + "°");
         assertTrue(stillTilting,
                 "收敛应只在倾角平面内进行，上轴的水平投影不应反向");
-        assertTrue(alone[2] > 1f,
-                "去掉 yaw 补正时应能测出可观的朝向漂移，实际 " + alone[2] + "°");
-        assertTrue(maxYawDrift < 0.01f,
-                "斜置初态下朝向也不应被带走，实际漂移 " + maxYawDrift + "°");
+        assertTrue(maxYawDrift > 1f && maxYawDrift < 10f,
+                "斜置初态下朝向偏差应可测但不失控（实测 3.53°），实际 " + maxYawDrift + "°");
     }
 
     /**
