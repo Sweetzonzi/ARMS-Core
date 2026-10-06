@@ -196,7 +196,8 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
 - [ ] 提取 `body_root` 动画根位移和 Y 轴旋转，并与 KCC 位移合成。Y 轴旋转要先定义与视野朝向权威（`MechaCharacter.setViewYaw`）的合成方式，见 `docs/ArmsCore双端权威与网络同步实现计划.md` §3.12。
 - [ ] 实现 DRIVE 模式及轮子、推进器、机翼等子系统力汇聚。
 - [ ] 完善死亡 ragdoll 的物理体切换、复活重建和宿主同步。
-- [ ] 迁移到刚体角色控制器。已定性方向与实测数据见 `docs/刚体角色控制器原型验证与实施计划.md` §1、§3，姿态保持与落地处理见 `docs/动力学角色控制器设计方案.md` §2、§3，分阶段骨架见前者 §8；**当前阻塞在摩擦模型的重新设计上**（前者 §6 末与后者 §7.4 是同一处留空），摩擦模型定型前不动迁移。
-- [ ] 姿态轮廓接入（蹲伏 / 卧倒的碰撞形状）。`MechaCharacter.applyPostureShape` 目前在 KCC 上无法实现——Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程；这条随刚体迁移一并解除，属于上一项的 P4 阶段，且分轴锁转在换形与改质量后的保持已实测（`docs/动力学角色控制器设计方案.md` §2.4）。
+- [ ] 迁移到刚体角色控制器。设计决策见 `docs/角色控制器-刚体动力学方案.md`（实施阶段 P1–P6 在该文 §11，待定项在 §12），引擎实测与实现约束见 `docs/角色控制器-刚体原型与引擎约束.md`；**当前阻塞在摩擦模型的重新设计上**（方案文档 §12.4），摩擦模型定型前不动迁移。其中 **P4 控制分配器（方案文档 §9.7）不依赖引擎类型、不需要活着的世界，可以先做**：它落在 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/util/control/`，落点理由与上游槽位见该文 §15。
+- [ ] 姿态轮廓接入（蹲伏 / 卧倒的碰撞形状）。`MechaCharacter.applyPostureShape` 目前在 KCC 上无法实现——Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程；这条随刚体迁移一并解除，属于上一项的 P5 阶段，且分轴锁转在换形与改质量后的保持已实测（`docs/角色控制器-刚体原型与引擎约束.md` §6.2）。
+- [x] 落地收敛律改为「最小旋转」并保留 yaw —— 已在原型落地：`RigidBodyControllerPrototypeTest.java#settleTowardUpright`（轴 `u × (0,1,0)`、角 `λ · tilt`，角速度只衰减 pitch / roll）、`#minimalRotationSettleDecaysTiltExactlyAndPreservesYaw`（纯运动学验证：倾角与 `(1−λ)ⁿ` 偏差 0.00016°、朝向漂移 0.00000°）、`#exponentialSettleConvergesMonotonicallyWherePdOvershoots`（`(0,1,0)` 对照：峰值 pitch/roll 角速度 0.0000 rad/s）。数值与两处被改掉的缺陷见 `docs/角色控制器-刚体原型与引擎约束.md` §8.2、§8.3；转移植时照抄进 `MechaCharacter` 的落地分支（方案文档 P2）。
 
 这些任务应在逻辑状态机和 KCC 测试闭环稳定后推进，避免动画、宿主装配和基础运动三个问题域同时调试。

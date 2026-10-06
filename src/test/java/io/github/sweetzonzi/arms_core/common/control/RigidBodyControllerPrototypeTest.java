@@ -24,8 +24,7 @@ import java.util.List;
  * 本类回答四个在动手迁移 {@code MechaCharacter} 之前必须先有数值答案的问题：
  * <ol>
  *   <li><b>锁转刚体站得住吗</b> —— {@code setAngularFactor(0)} 之后，胶囊在 100 Hz 下 5 s 是否
- *       既不抖动也不缓慢下沉、朝向是否恒为单位四元数</li>
- *   <li><b>撞墙速度归零吗</b> —— 这是 KCC 的已知缺陷 B1，刚体路线必须天然成立</li>
+ *       既不抖动也不缓慢下沉、朝向是否恒为单位四元数</li> *   <li><b>撞墙速度归零吗</b> —— 这是 KCC 的已知缺陷 B1，刚体路线必须天然成立</li>
  *   <li><b>自写越障能做到多少</b> —— 抬升 + 水平 sweep + 向下探针，判决阈值是否精确等于设定步高</li>
  *   <li><b>引擎摩擦能给出多少抓地</b> —— 引擎取「双方摩擦之积」，地形侧是 Bullet 默认 0.5，
  *       因此角色侧要取多少才等价于原来 {@code μ = 1.0} 的手感（爬坡上限 = atan(μ_combined)）</li>
@@ -45,6 +44,12 @@ class RigidBodyControllerPrototypeTest {
 
     private static final float MASS = MechaWalkingAttr.MASS;
     private static final float STEP_HEIGHT = MechaWalkingAttr.STEP_HEIGHT_BASE;
+
+    /** 地面状态的角因子：锁 pitch / roll、留 yaw（落地收敛窗口也用这一个）。 */
+    private static final Vector3f LOCKED_PITCH_ROLL = new Vector3f(0f, 1f, 0f);
+
+    /** 三轴旋转自由度全开。 */
+    private static final Vector3f ALL_FREE = new Vector3f(1f, 1f, 1f);
 
     /**
      * 越障探针的一次性扫掠长度 (m)。必须 ≥ 0.4（引擎对 {@code sweepTest} 起终点距离的下限，
@@ -129,18 +134,18 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 控制器刚体：动态、无阻尼、无弹性，旋转自由度由 {@code angularFactor} 给出。
+     * 控制器刚体：动态、无阻尼、无弹性，旋转自由度由**逐轴** {@code angularFactor} 给出。
      * <p>
-     * {@code angularFactor = 0} 即锁转（位置积分不再改变朝向），胶囊的本地轴是 +Y
-     * （{@code CapsuleCollisionShape} 内部是 {@code btCapsuleShape}），因此单位四元数就是「竖直」。
+     * 胶囊的本地轴是 +Y（{@code CapsuleCollisionShape} 内部是 {@code btCapsuleShape}），因此单位四元数
+     * 就是「竖直」。{@code (0, 0, 0)} 即全锁；{@code (0, 1, 0)} 是地面状态的形态——锁 pitch / roll、留 yaw。
      * <p>
      * 摩擦系数由调用方给出：本参数即将取代力模型里的 {@code μ_naked} / {@code μ_foot}，
      * 见 {@link #engineFrictionCalibration()}。
      *
-     * @param angularFactor 0 = 锁转，1 = 三轴旋转自由度全开
+     * @param angularFactor 逐轴角因子
      */
     private static PhysicsRigidBody newController(PhysicsSpace space, Vector3f feet, float friction,
-                                                  float angularFactor) {
+                                                  Vector3f angularFactor) {
         PhysicsRigidBody body = new PhysicsRigidBody(
                 new CapsuleCollisionShape(CAPSULE_RADIUS, CAPSULE_HEIGHT), MASS);
         body.setPhysicsLocation(new Vector3f(feet.x, feet.y + HALF_TOTAL, feet.z));
@@ -155,7 +160,16 @@ class RigidBodyControllerPrototypeTest {
         return body;
     }
 
-    /** 锁转的控制器刚体（原型前四组测量用的形态）。 */
+    /**
+     * @param angularFactor 三轴同值：0 = 全锁，1 = 三轴全开
+     */
+    private static PhysicsRigidBody newController(PhysicsSpace space, Vector3f feet, float friction,
+                                                  float angularFactor) {
+        return newController(space, feet, friction,
+                new Vector3f(angularFactor, angularFactor, angularFactor));
+    }
+
+    /** 全锁的控制器刚体（原型前四组测量用的形态）。 */
     private static PhysicsRigidBody newController(PhysicsSpace space, Vector3f feet, float friction) {
         return newController(space, feet, friction, 0f);
     }
@@ -213,6 +227,26 @@ class RigidBodyControllerPrototypeTest {
         }
         float cos = Math.min(1f, Math.max(-1f, upY / length));
         return (float) Math.toDegrees(Math.acos(cos));
+    }
+
+    /** 刚体朝向（局部 +Z 在水平面上的投影方向，度）。倾角接近 90° 时退化，本类不涉及。 */
+    private static float yawDegrees(PhysicsRigidBody body) {
+        Matrix3f rotation = body.getPhysicsRotationMatrix(new Matrix3f());
+        // 旋转后的本地 +Z 即旋转矩阵的第三列（列主序：get(0,2), get(1,2), get(2,2)）
+        float forwardX = rotation.get(0, 2);
+        float forwardZ = rotation.get(2, 2);
+        return (float) Math.toDegrees(Math.atan2(forwardX, forwardZ));
+    }
+
+    /** 两个角度之间的最短差值（度），落在 (−180, 180]。 */
+    private static float angleDelta(float from, float to) {
+        float delta = (to - from) % 360f;
+        if (delta > 180f) {
+            delta -= 360f;
+        } else if (delta <= -180f) {
+            delta += 360f;
+        }
+        return delta;
     }
 
     // ═══════════════════════════════════════════════
@@ -777,52 +811,47 @@ class RigidBodyControllerPrototypeTest {
     // ═══════════════════════════════════════════════
 
     /**
-     * 落地收敛窗口：每物理步把姿态按指数衰减拉向竖直，并把角速度一并衰减；倾角小到阈值内即锁定。
+     * 落地收敛窗口：每物理步按<b>最小旋转</b>把姿态往竖直拉一小段，角速度的 pitch / roll 分量按同一系数衰减。
+     * <p>
+     * 收敛量不是「竖直 + 某个 yaw」的绝对目标姿态，而是「把上轴转正」这一件事本身：
+     * 旋转轴取 {@code u × (0, 1, 0)}（{@code u} = 刚体局部 +Y 的世界方向，轴模长恒为 {@code sin(tilt)}），
+     * 角取 {@code λ · tilt}。**朝向因此由构造保留**——上轴在竖直时恒为 {@code (0,1,0)}，不含任何朝向信息，
+     * 用它的水平投影反推 yaw 是退化的。
+     * <p>
+     * 倾角严格按 {@code tilt ← (1 − λ) · tilt} 衰减；不需要 {@code atan2}，也不可能超调。
+     * 角速度只衰减 pitch / roll 分量：yaw 分量不参与和姿态写入的冲突，地面上的原地自旋交给接触摩擦。
      *
      * @param body     控制器刚体
      * @param lambda   每步的收敛系数（0 = 不动，1 = 一步到位）
-     * @param lockTilt 倾角小于此值时把 {@code angularFactor} 置 0 并清零角速度
+     * @param lockTilt 倾角小于此值时把角速度清零并把角因子收敛为 {@code (0, 1, 0)}
      * @return 本步是否完成了锁定
      */
     private static boolean settleTowardUpright(PhysicsRigidBody body, float lambda, float lockTilt) {
-        Matrix3f rotation = body.getPhysicsRotationMatrix(new Matrix3f());
         float tilt = tiltDegrees(body);
 
         if (tilt < lockTilt) {
-            // 已经够竖直：清角速度、锁转，此后不再和力矩较劲
+            // 已经够竖直：清角速度、锁到 (0, 1, 0)，此后不再和力矩较劲
             body.setAngularVelocity(new Vector3f(0f, 0f, 0f));
-            body.setAngularFactor(0f);
+            body.setAngularFactor(new Vector3f(0f, 1f, 0f));
             return true;
         }
 
-        // 目标 = 只保留 yaw 的竖直姿态
-        Vector3f up = unitY(rotation);
-        float yaw = (float) Math.atan2(-up.x, -up.z);
-        Quaternion target = new Quaternion().fromAngleNormalAxis(yaw, Vector3f.UNIT_Y);
+        // 最小旋转：轴 = u × (0,1,0)（模长 sin(tilt)），转角 = λ · tilt
+        Vector3f up = unitY(body.getPhysicsRotationMatrix(new Matrix3f()));
+        Vector3f axis = up.cross(Vector3f.UNIT_Y);
+        float sinTilt = axis.length();
+        if (sinTilt > 1.0e-6f) {
+            float half = (float) Math.toRadians(lambda * tilt) * 0.5f;
+            float scale = (float) Math.sin(half) / sinTilt;
+            Quaternion step = new Quaternion(axis.x * scale, axis.y * scale, axis.z * scale,
+                    (float) Math.cos(half));
+            body.setPhysicsRotation(step.mult(body.getPhysicsRotation(null)));
+        }
 
-        // 相对旋转 → 旋转矢量 → 按 lambda 衰减成一个小角度增量
-        Quaternion current = body.getPhysicsRotation(null);
-        Quaternion errQ = target.mult(current.inverse());
-        float ex = errQ.getX();
-        float ey = errQ.getY();
-        float ez = errQ.getZ();
-        float ew = errQ.getW();
-        if (ew < 0f) {
-            ex = -ex;
-            ey = -ey;
-            ez = -ez;
-            ew = -ew; // 取短弧
-        }
-        float vecLen = (float) Math.sqrt(ex * ex + ey * ey + ez * ez);
-        if (vecLen > 1.0e-6f) {
-            float angle = 2f * (float) Math.atan2(vecLen, ew);
-            float scale = angle * lambda / vecLen;
-            Quaternion step = new Quaternion(ex * scale, ey * scale, ez * scale, 1f);
-            step.normalizeLocal();
-            body.setPhysicsRotation(step.mult(current));
-        }
-        // 角速度按同一系数衰减：姿态是运动学写入的，残留角速度会在下一步与它打架
-        body.setAngularVelocity(body.getAngularVelocity(null).mult(1f - lambda));
+        // 角速度只衰减 pitch / roll：yaw 分量不参与和姿态写入的冲突
+        Vector3f angVel = body.getAngularVelocity(null);
+        body.setAngularVelocity(new Vector3f(
+                angVel.x * (1f - lambda), angVel.y, angVel.z * (1f - lambda)));
         return false;
     }
 
@@ -839,34 +868,97 @@ class RigidBodyControllerPrototypeTest {
      */
     @Test
     void exponentialSettleConvergesMonotonicallyWherePdOvershoots() {
-        System.out.println("[原型⑧] 落地收敛：指数衰减 vs PD（初始倾角 30°，上限 2 s）");
+        System.out.println("[原型⑧] 落地收敛：首步即锁 pitch/roll vs 收敛期保持全开"
+                + "（初始：绕世界 X 轴 30° 纯俯仰，上限 2 s）");
         for (float lambda : new float[]{0.05f, 0.10f, 0.20f, 0.35f}) {
-            SettleOutcome outcome = runSettleTrial(lambda);
-            System.out.printf("    指数衰减 λ=%.2f → 收敛用 %3d 步（%.2f s），最大倾角 %6.2f°，"
-                            + "脚底 y ∈ [%+.4f, %+.4f]，峰值角速度 %.3f rad/s，水平位移 %.4f m%n",
-                    lambda, outcome.steps(), outcome.steps() * DT, outcome.maxTilt(),
-                    outcome.minFeet(), outcome.maxFeet(), outcome.maxAngularSpeed(),
-                    outcome.horizontalDrift());
+            SettleOutcome locked = runSettleTrial(lambda, LOCKED_PITCH_ROLL);
+            SettleOutcome open = runSettleTrial(lambda, ALL_FREE);
+            System.out.printf("    λ=%.2f → 首步即锁：收敛 %3d 步（%.2f s），峰值角速度 %.4f rad/s"
+                            + "（其中 pitch/roll %.4f），朝向漂移 %.4f°，水平位移 %.4f m，脚底 y ∈ [%+.4f, %+.4f]%n",
+                    lambda, locked.steps(), locked.steps() * DT, locked.maxAngularSpeed(),
+                    locked.maxPitchRollAngularSpeed(), locked.maxYawDrift(),
+                    locked.horizontalDrift(), locked.minFeet(), locked.maxFeet());
+            System.out.printf("          收敛期全开：收敛 %3d 步（%.2f s），峰值角速度 %.4f rad/s"
+                            + "（其中 pitch/roll %.4f），朝向漂移 %.4f°，水平位移 %.4f m，脚底 y ∈ [%+.4f, %+.4f]%n",
+                    open.steps(), open.steps() * DT, open.maxAngularSpeed(),
+                    open.maxPitchRollAngularSpeed(), open.maxYawDrift(),
+                    open.horizontalDrift(), open.minFeet(), open.maxFeet());
         }
         LockedOutcome pd = runUprightTrial(1f, 8000f, 200f);
         System.out.printf("    对照 PD kP=8000 kD=200 → 最大倾角 %.2f°，脚底 y ∈ [%+.4f, %+.4f]，"
                         + "峰值角速度 %.1f rad/s%n",
                 pd.maxTilt(), pd.minFeet(), pd.maxFeet(), pd.maxAngularSpeed());
 
-        SettleOutcome settle = runSettleTrial(0.20f);
-        assertTrue(settle.steps() > 0 && settle.steps() < 50,
-                "指数衰减应在约 0.5 s 内收敛并锁定，实际 " + settle.steps() + " 步");
-        assertTrue(settle.maxTilt() < 31f,
-                "过程必须单调：最大倾角不应超过初始的 30°，实际 " + settle.maxTilt() + "°");
-        assertTrue(settle.maxFeet() < 0.02f,
-                "运动学收敛不应把胶囊弹离地面，实际脚底最高 " + settle.maxFeet() + " m");
-        assertTrue(settle.maxAngularSpeed() < 0.5f,
-                "角速度应被同系数衰减、不产生高转速，实际峰值 " + settle.maxAngularSpeed() + " rad/s");
+        SettleOutcome locked = runSettleTrial(0.20f, LOCKED_PITCH_ROLL);
+        SettleOutcome open = runSettleTrial(0.20f, ALL_FREE);
+        assertTrue(locked.steps() > 0 && locked.steps() < 50,
+                "倾角按 (1 − λ) 衰减应在约 0.5 s 内收敛并锁定，实际 " + locked.steps() + " 步");
+        assertTrue(locked.maxTilt() < 31f,
+                "过程必须单调：最大倾角不应超过初始的 30°，实际 " + locked.maxTilt() + "°");
+        assertTrue(locked.maxFeet() < 0.02f,
+                "运动学收敛不应把胶囊弹离地面，实际脚底最高 " + locked.maxFeet() + " m");
+        assertTrue(locked.maxPitchRollAngularSpeed() < 1.0e-4f,
+                "首步即锁 pitch/roll 之后求解器无法注入这两个轴的角速度，实际 "
+                        + locked.maxPitchRollAngularSpeed() + " rad/s");
+        assertTrue(open.maxPitchRollAngularSpeed() > locked.maxPitchRollAngularSpeed(),
+                "收敛期保持全开时，求解器会注入 pitch/roll 角速度；这是首步即锁要挡掉的东西");
+        assertTrue(locked.maxYawDrift() < 0.5f,
+                "最小旋转不应改变朝向，实际漂移 " + locked.maxYawDrift() + "°");
     }
 
-    /** 一次落地收敛试验的结果。 */
+    /**
+     * 一次落地收敛试验的结果。
+     * <p>
+     * 朝向漂移与 pitch/roll 角速度分开记：前者检验「收敛律保住了 yaw」，后者检验「锁转挡住了什么」。
+     * 只记合角速度是不够的——姿态是 {@code setPhysicsRotation} 直接写入的，不进 {@code ω}，
+     * 所以朝向即使被转歪，合角速度读数也可以一直是 0。
+     */
     private record SettleOutcome(int steps, float maxTilt, float minFeet, float maxFeet,
-                                 float maxAngularSpeed, float horizontalDrift) {
+                                 float maxAngularSpeed, float maxPitchRollAngularSpeed,
+                                 float maxYawDrift, float horizontalDrift) {
+    }
+
+    /**
+     * 收敛律本身：最小旋转应让倾角严格按 {@code (1 − λ)} 衰减，且**不改变朝向**。
+     * <p>
+     * 本条**不步进物理**，只反复施加姿态写入，因此检验的是收敛律的纯运动学性质，与求解器无关。
+     * 初始姿态取绕世界 X 轴 30° 纯俯仰是刻意的：它正是「从 up 反推 yaw」最退化的情形
+     * （反推值恒为 {@code π}），所以这条同时钉住「朝向没有被转歪」。
+     */
+    @Test
+    void minimalRotationSettleDecaysTiltExactlyAndPreservesYaw() {
+        PhysicsSpace space = newSpace();
+        space.addCollisionObject(staticBox(
+                new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
+        PhysicsRigidBody body = newController(space, new Vector3f(0f, 0f, 0f), 2.0f,
+                LOCKED_PITCH_ROLL);
+        dropTiltedThirtyDegrees(body);
+
+        final float lambda = 0.20f;
+        final float tilt0 = tiltDegrees(body);
+        final float yaw0 = yawDegrees(body);
+        float maxTiltError = 0f;
+        float maxYawDrift = 0f;
+        int steps = 0;
+        for (int i = 0; i < 40; i++) {
+            if (settleTowardUpright(body, lambda, 0.5f)) {
+                break;
+            }
+            steps++;
+            float expected = tilt0 * (float) Math.pow(1f - lambda, steps);
+            maxTiltError = Math.max(maxTiltError, Math.abs(tiltDegrees(body) - expected));
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(body))));
+        }
+        System.out.printf("[原型⑨C] 最小旋转收敛（不步进物理）：%d 步锁定，初始倾角 %.2f°，"
+                        + "倾角与 (1−λ)^n 的最大偏差 %.5f°，朝向最大漂移 %.5f°%n",
+                steps, tilt0, maxTiltError, maxYawDrift);
+
+        assertTrue(steps > 0 && steps < 40,
+                "λ=0.20 应在 40 步内锁定，实际 " + steps + " 步");
+        assertTrue(maxTiltError < 0.05f,
+                "倾角应严格按 (1 − λ) 衰减，实际与理论值的最大偏差 " + maxTiltError + "°");
+        assertTrue(maxYawDrift < 0.01f,
+                "最小旋转不应改变朝向，实际漂移 " + maxYawDrift + "°");
     }
 
     /**
@@ -881,15 +973,16 @@ class RigidBodyControllerPrototypeTest {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
-        PhysicsRigidBody controller = newController(space, new Vector3f(0f, 0f, 0f), 2.0f, 1f);
-        controller.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
-                (float) Math.toRadians(30f), new Vector3f(0f, 0f, 1f)));
+        PhysicsRigidBody controller = newController(space, new Vector3f(0f, 0f, 0f), 2.0f,
+                LOCKED_PITCH_ROLL);
+        dropTiltedThirtyDegrees(controller);
 
-        // 落地第一步：锁转，然后立即开始运动学收敛
-        controller.setAngularFactor(0f);
+        // 落地第一步就已经是 (0, 1, 0)（锁 pitch / roll、留 yaw），随后立即开始运动学收敛
         float startTilt = tiltDegrees(controller);
+        float yaw0 = yawDegrees(controller);
         float maxTilt = startTilt;
-        float maxAngVel = 0f;
+        float maxPitchRollAngVel = 0f;
+        float maxYawDrift = 0f;
         float maxFeet = Float.NEGATIVE_INFINITY;
         float minFeet = Float.POSITIVE_INFINITY;
         Vector3f start = controller.getPhysicsLocation(null);
@@ -897,33 +990,46 @@ class RigidBodyControllerPrototypeTest {
         for (int i = 0; i < 200; i++) {
             if (settleTowardUpright(controller, 0.20f, 0.5f)) {
                 lockedAt = i + 1;
+                break;
             }
             space.update(DT, 0, 0x0);
             maxTilt = Math.max(maxTilt, tiltDegrees(controller));
-            maxAngVel = Math.max(maxAngVel, controller.getAngularVelocity(null).length());
+            Vector3f angVel = controller.getAngularVelocity(null);
+            maxPitchRollAngVel = Math.max(maxPitchRollAngVel,
+                    (float) Math.hypot(angVel.x, angVel.z));
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(controller))));
             maxFeet = Math.max(maxFeet, feetY(controller));
             minFeet = Math.min(minFeet, feetY(controller));
         }
         for (int i = 0; i < 100; i++) {
             space.update(DT, 0, 0x0);
             maxTilt = Math.max(maxTilt, tiltDegrees(controller));
-            maxAngVel = Math.max(maxAngVel, controller.getAngularVelocity(null).length());
+            Vector3f angVel = controller.getAngularVelocity(null);
+            maxPitchRollAngVel = Math.max(maxPitchRollAngVel,
+                    (float) Math.hypot(angVel.x, angVel.z));
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(controller))));
             maxFeet = Math.max(maxFeet, feetY(controller));
             minFeet = Math.min(minFeet, feetY(controller));
         }
         Vector3f end = controller.getPhysicsLocation(null);
         float drift = (float) Math.hypot(end.x - start.x, end.z - start.z);
 
-        System.out.printf("[原型⑨A] 首步即锁 + 运动学收敛：收敛用 %d 步，末倾角 %.4f°，最大倾角 %.2f°，"
-                        + "脚底 y ∈ [%+.4f, %+.4f]，峰值角速度 %.4f rad/s，水平位移 %.4f m%n",
-                lockedAt < 0 ? -1 : lockedAt, tiltDegrees(controller), maxTilt,
-                minFeet, maxFeet, maxAngVel, drift);
+        float endTilt = tiltDegrees(controller);
+        System.out.printf("[原型⑨A] 首步即锁 pitch/roll + 运动学收敛：%d 步锁定，末倾角 %.4f°"
+                        + "（锁定阈值 %.2f°），最大倾角 %.2f°，脚底 y ∈ [%+.4f, %+.4f]，"
+                        + "峰值 pitch/roll 角速度 %.4f rad/s，朝向漂移 %.4f°，水平位移 %.4f m%n",
+                lockedAt, endTilt, 0.5f, maxTilt, minFeet, maxFeet, maxPitchRollAngVel,
+                maxYawDrift, drift);
 
-        assertTrue(lockedAt > 0, "首步锁转之后运动学收敛仍应到达锁定阈值");
-        assertTrue(tiltDegrees(controller) < 1f,
-                "运动学收敛应把倾角带回竖直，实际 " + tiltDegrees(controller) + "°");
+        assertTrue(endTilt < 1f,
+                "运动学收敛应把倾角带回竖直，实际 " + endTilt + "°");
         assertTrue(maxTilt < 31f, "过程不应超过初始 30°，实际 " + maxTilt + "°");
         assertTrue(maxFeet < 0.02f, "不应弹离地面，实际脚底最高 " + maxFeet + " m");
+        assertTrue(maxPitchRollAngVel < 1.0e-4f,
+                "首步即锁 pitch/roll 之后求解器无法注入这两个轴的角速度，实际 "
+                        + maxPitchRollAngVel + " rad/s");
+        assertTrue(maxYawDrift < 0.5f,
+                "最小旋转不应改变朝向，实际漂移 " + maxYawDrift + "°");
     }
 
     /**
@@ -957,20 +1063,42 @@ class RigidBodyControllerPrototypeTest {
                 "锁转下角速度恒为 0");
     }
 
+    /**
+     * 落地前的初态：绕**世界 X 轴** 30° 纯俯仰，朝向为 0。
+     * <p>
+     * 取 X 轴（纯俯仰）是刻意的：俯仰姿态下上轴 {@code u = (0, cos θ, sin θ)}，从它反推 yaw 得到的是
+     * {@code π}、与真实朝向 0 差 180°，因此这是「从 up 反推朝向」最退化的情形——同一组试验既能量倾角衰减，
+     * 也能量朝向有没有被写歪。胶囊绕自身轴旋转对称，俯仰与侧滚对接触几何等价。
+     */
+    private static void dropTiltedThirtyDegrees(PhysicsRigidBody body) {
+        body.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
+                (float) Math.toRadians(30f), new Vector3f(1f, 0f, 0f)));
+    }
+
     /** 倾角 30° 落地，每步跑一次 {@link #settleTowardUpright}，直到锁定或到 2 s。 */
     private static SettleOutcome runSettleTrial(float lambda) {
+        return runSettleTrial(lambda, ALL_FREE);
+    }
+
+    /**
+     * @param angularFactor 施加在刚体上的角因子：{@code (0, 1, 0)} = 首步即锁 pitch / roll，
+     *                      {@code (1, 1, 1)} = 收敛期间保持全开
+     */
+    private static SettleOutcome runSettleTrial(float lambda, Vector3f angularFactor) {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
-        PhysicsRigidBody controller = newController(space, new Vector3f(0f, 0f, 0f), 2.0f, 1f);
-        controller.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
-                (float) Math.toRadians(30f), new Vector3f(0f, 0f, 1f)));
+        PhysicsRigidBody controller = newController(space, new Vector3f(0f, 0f, 0f), 2.0f, angularFactor);
+        dropTiltedThirtyDegrees(controller);
 
         Vector3f start = controller.getPhysicsLocation(null);
+        float yaw0 = yawDegrees(controller);
         float maxTilt = 30f;
         float minFeet = Float.POSITIVE_INFINITY;
         float maxFeet = Float.NEGATIVE_INFINITY;
         float maxAngVel = 0f;
+        float maxPitchRollAngVel = 0f;
+        float maxYawDrift = 0f;
         int lockedAt = -1;
         for (int i = 0; i < 200; i++) {
             if (settleTowardUpright(controller, lambda, 0.5f)) {
@@ -979,7 +1107,11 @@ class RigidBodyControllerPrototypeTest {
             }
             space.update(DT, 0, 0x0);
             maxTilt = Math.max(maxTilt, tiltDegrees(controller));
-            maxAngVel = Math.max(maxAngVel, controller.getAngularVelocity(null).length());
+            Vector3f angVel = controller.getAngularVelocity(null);
+            maxAngVel = Math.max(maxAngVel, angVel.length());
+            maxPitchRollAngVel = Math.max(maxPitchRollAngVel,
+                    (float) Math.hypot(angVel.x, angVel.z));
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(controller))));
             minFeet = Math.min(minFeet, feetY(controller));
             maxFeet = Math.max(maxFeet, feetY(controller));
         }
@@ -987,7 +1119,11 @@ class RigidBodyControllerPrototypeTest {
         for (int i = 0; i < 100; i++) {
             space.update(DT, 0, 0x0);
             maxTilt = Math.max(maxTilt, tiltDegrees(controller));
-            maxAngVel = Math.max(maxAngVel, controller.getAngularVelocity(null).length());
+            Vector3f angVel = controller.getAngularVelocity(null);
+            maxAngVel = Math.max(maxAngVel, angVel.length());
+            maxPitchRollAngVel = Math.max(maxPitchRollAngVel,
+                    (float) Math.hypot(angVel.x, angVel.z));
+            maxYawDrift = Math.max(maxYawDrift, Math.abs(angleDelta(yaw0, yawDegrees(controller))));
             minFeet = Math.min(minFeet, feetY(controller));
             maxFeet = Math.max(maxFeet, feetY(controller));
         }
@@ -995,7 +1131,8 @@ class RigidBodyControllerPrototypeTest {
         float dx = end.x - start.x;
         float dz = end.z - start.z;
         return new SettleOutcome(lockedAt < 0 ? 200 : lockedAt, maxTilt, minFeet, maxFeet,
-                maxAngVel, (float) Math.sqrt(dx * dx + dz * dz));
+                maxAngVel, maxPitchRollAngVel, maxYawDrift,
+                (float) Math.sqrt(dx * dx + dz * dz));
     }
 
     // ═══════════════════════════════════════════════

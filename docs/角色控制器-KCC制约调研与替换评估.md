@@ -150,11 +150,11 @@ KCC 不是刚体，而是「**幽灵体 + 手写三段扫掠 + 纯速度推导�
 - **迁移路径与分阶段**：宿主回写、同步通道、测试与文档的同步改动。
 - 上述内容归后续的实施文档。
 
-本文 §6 引出的方向与 §7 的验收基线由 `docs/刚体角色控制器原型验证与实施计划.md` 承接。该文档记录已定型的四项设计选择（动态刚体、`setAngularFactor(0)` 锁转、引擎接管接触摩擦、控制器只与地形碰撞）、最小原型在真实 `PhysicsSpace` 上的实测结果、四条已定位的实施坑，以及本文 §7 基线的逐条对账。§7 里由 A1 / A2 / B1 / B2 / D5 派生的条目已有实测数据，其余条目标注为「已由设计选择决定」或「待验」。
+本文 §6 引出的方向由两份后续文档承接：`docs/角色控制器-刚体动力学方案.md` 写控制器怎么设计，`docs/角色控制器-刚体原型与引擎约束.md` 写引擎允许什么、要求什么。本文 §7 验收基线的逐条对账在后者的「验收基线的对账」一节。
 
 ## 9. 引用坐标与调研快照
 
 - 实时源码：`common/control/MechaCharacter.java`、`common/control/MechaControl.java`、`common/control/attr/MechaWalkingAttr.java`；`../Spark-Core/src/main/java/com/jme3/bullet/**`、`../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/**`；`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.{cpp,h}`、`../Libbulletjme/src/main/native/glue/com_jme3_bullet_objects_infos_CharacterController.cpp`。
-- 本仓库设计文档：`docs/角色控制器-行走物理设计.md` §11；`docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2、§R7；`docs/宿主位置权威与位移摄入设计.md` §六、§七；`docs/GameTest车道指南.md` §5.2；`docs/刚体角色控制器原型验证与实施计划.md` §1、§3、§5。
+- 本仓库设计文档：`docs/角色控制器-行走物理设计.md` §11；`docs/ArmsCore双端权威与网络同步实现计划.md` §3.12.1、§3.12.2、§R7；`docs/宿主位置权威与位移摄入设计.md` §六、§七；`docs/GameTest车道指南.md` §5.2；`docs/角色控制器-刚体动力学方案.md`；`docs/角色控制器-刚体原型与引擎约束.md`。
 - 外部先例（非本仓库，按 URL 定位）：Minie 的 `BetterCharacterControl.java`（https://github.com/stephengold/Minie ）；BSD 3-Clause 许可。
 - 调研快照：本文结论基于上述源码与文档的当前形态；行号不入文——本仓库源码用「`路径#符号`」、设计文档用「§节号」、外部先例用 URL 定位。
