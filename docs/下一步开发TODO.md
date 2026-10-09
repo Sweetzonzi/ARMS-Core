@@ -2,7 +2,8 @@
 
 > **状态**：执行清单
 > **创建**：2026-07-16
-> **最近更新**：2026-10-08（控制力的饱和上限改为 `N = m·g·cosθ` 的静态估算、接触点只用于写入材质、越障保持水平速度、朝向写入每步现算，见方案文档 §5.3、§6.2、§7；待测项登记在 §12.9）
+> **最近更新**：2026-10-10（控制分配器扩入两项机制：**虚拟作动器**（RCS 与动量轮的六根解耦有界列）与**平衡辅助**（分配之后的残差补齐，抹平比例 `k` 默认 0.5），见分配文档 §2.4、§5.3；作动器的分类由四类扩为五类，见方案文档 §9.2）
+> **上一次**：2026-10-08（控制力的饱和上限改为 `N = m·g·cosθ` 的静态估算、接触点只用于写入材质、越障保持水平速度、朝向写入每步现算，见方案文档 §5.3、§6.2、§7；待测项登记在 §12.9）
 > **目标**：先完成 `MechaControl` 客户端测试闭环和逻辑状态机验证，再接入动画、MoLang 与正式 `ArmsCore` 生命周期。
 > **关联**：[分层控制器与状态机设计](./分层控制器与状态机设计.md) · [MechaControl 设计文档](./MechaControl设计文档.md) · [角色控制器-行走物理设计](./角色控制器-行走物理设计.md)
 
@@ -201,7 +202,7 @@ Java `record` 仍是普通堆对象，本身不会自动减少分配。若每客
   - **P3 已落地且起步加速度已实测复现**：`F_drive = min(k·computeDriveForce, μ_eff·N)` 加 `μ_eff·N·(1 + 1%)` 的摩擦前馈，实测起步头十步平均加速度 9.908 m/s²（解析值 9.81）。**顶速尚未对齐**（实测站立 25.0 m/s、蹲伏 10.7 m/s，且倍率不等比），是待标定项。
   - **§12.9 的三项待测已量出数值，三项都不需要兜底**：越障前后水平速率比 1.0000；每步 yaw 写入的步内偏差峰峰值 0.000000°（因此不清 `ω_y`）；起步加速度比值 1.0100。判据落在 `src/test/java/io/github/sweetzonzi/arms_core/common/control/RigidBodyControllerMeasurementTest.java`。
   - **下一步按这个顺序**：先做顶速标定（方案文档 §12.10，可动旋钮是 `common/control/attr/MechaWalkingAttr.java` 的 `F_MAX` / `MU_NAKED` / `P_BASE`）→ 按量到的数重建两个测试基线（同文 §11 的 P2 行）→ P1 真地形回归 → P5 姿态轮廓 → P6 宿主与同步。
-- [ ] P4 控制分配器（`docs/控制分配-作动器wrench分配设计.md`）**不依赖引擎类型、不需要活着的世界，可以先做**：它落在 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/util/control/`，落点理由与上游槽位见方案文档 §15；该文自带的六条纯函数断言（分配文档 §5）就是它的验收判据。
+- [ ] P4 控制分配器（`docs/控制分配-作动器wrench分配设计.md`）**不依赖引擎类型、不需要活着的世界，可以先做**：它落在 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/util/control/`，落点理由与上游槽位见方案文档 §15；该文自带的十条纯函数断言（分配文档 §5）就是它的验收判据，其中四条属该文 §2.4 的虚拟作动器（六根解耦有界列）与 §5.3 的平衡辅助（分配之后的残差补齐，抹平比例 `k` 默认 0.5）。
 - [ ] 姿态轮廓接入（蹲伏 / 卧倒的碰撞形状）。`MechaCharacter.applyPostureShape` 目前在 KCC 上无法实现——Libbulletjme 禁止在世的 KCC 换碰撞形状，违反会以 `0xC0000409` 中止进程；这条随刚体迁移一并解除，属于 P5 阶段。换形规则：变矮无条件，变高前先向上扫掠确认头顶空间（先例：Minie 的 `BetterCharacterControl#checkCanUnDuck`，`https://github.com/stephengold/Minie`）；分轴锁转在换形与改质量后的保持已实测（`docs/角色控制器-刚体原型与引擎约束.md` §6.2）。
 - [x] 落地收敛律改为「最小旋转」并保留 yaw —— 已在原型落地：`RigidBodyControllerPrototypeTest.java#settleTowardUpright`（轴 `u × (0,1,0)`、角 `λ · tilt`；角速度只衰减 pitch / roll）、`#exponentialSettleDecaysTiltExactly`（纯运动学验证：倾角与 `(1−λ)ⁿ` 偏差 0.00016°）、`#singleAxisTiltSettleLeavesYawUntouched`（纯俯仰与纯侧滚下朝向无偏，实测 0.00000°）、`#obliqueTiltSettleLosesSomeYawAsThePriceOfAnOffAxisLanding`（斜置初态朝向偏差随倾角的量级表，按设计保留）、`#exponentialSettleConvergesMonotonicallyWherePdOvershoots`（`(0,1,0)` 对照：峰值 pitch/roll 角速度 0.0000 rad/s）。数值与构造时要避开的两个坑见 `docs/角色控制器-刚体原型与引擎约束.md` §8.2–§8.4；转移植时照抄进 `MechaCharacter` 的落地分支（方案文档 P2）。
 
