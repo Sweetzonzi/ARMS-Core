@@ -35,7 +35,7 @@ class MechaCharacterFacingTest {
     void setUp() {
         PhysicsSpace space = new PhysicsSpace(
                 new Vector3f(-50f, -50f, -50f), new Vector3f(50f, 50f, 50f));
-        kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
+        kcc = new MechaCharacter(MechaBodyPreset.newBodyShape(), space);
     }
 
     // ═══════════════════════════════════════════════

@@ -2,9 +2,10 @@ package io.github.sweetzonzi.arms_core.common.control;
 
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import com.jme3.bullet.PhysicsSpace;
-import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
+import com.jme3.bullet.collision.shapes.CollisionShape;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 import lombok.Getter;
@@ -56,7 +57,7 @@ class MechaControlTest {
 
     @BeforeEach
     void setUp() {
-        kcc = new RecordingMechaCharacter(new CapsuleCollisionShape(0.4f, 1.6f), physicsSpace);
+        kcc = new RecordingMechaCharacter(MechaBodyPreset.newBodyShape(), physicsSpace);
         DummyHolder holder = new DummyHolder();
         control = new MechaControl(holder, kcc);
         holder.mechaControl = control;
@@ -448,7 +449,7 @@ class MechaControlTest {
         /** 覆写 {@code onGround()} 的返回值，用于构造"离地后"的门控场景；默认与原生初值一致（着地） */
         private boolean groundForTest = true;
 
-        RecordingMechaCharacter(CapsuleCollisionShape shape, PhysicsSpace space) {
+        RecordingMechaCharacter(CollisionShape shape, PhysicsSpace space) {
             super(shape, space);
         }
 

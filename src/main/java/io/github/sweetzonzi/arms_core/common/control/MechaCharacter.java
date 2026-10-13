@@ -4,9 +4,8 @@ import cn.solarmoon.spark_core.physics.body.CollisionGroups;
 import com.jme3.bullet.CollisionSpace;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.PhysicsCollisionObject;
-import com.jme3.bullet.collision.PhysicsRayTestResult;
 import com.jme3.bullet.collision.PhysicsSweepTestResult;
-import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
+import com.jme3.bullet.collision.shapes.CollisionShape;
 import com.jme3.bullet.collision.shapes.ConvexShape;
 import com.jme3.bullet.objects.PhysicsRigidBody;
 import com.jme3.math.Matrix3f;
@@ -27,7 +26,7 @@ import java.util.List;
 /**
  * 机娘动力学角色控制器（对应设计文档：`docs/角色控制器-刚体动力学方案.md`）。
  * <p>
- * <b>承载物是一个动态刚体胶囊</b>：本类就是那个胶囊（继承 {@link PhysicsRigidBody}），
+ * <b>承载物是一个动态刚体</b>：本类就是那个刚体（继承 {@link PhysicsRigidBody}），
  * 由求解器负责碰撞响应、位置积分与速度积分。控制器只做四件事：
  * <ol>
  *   <li><b>位姿写入</b> —— 每物理步把视野偏航绝对写进刚体姿态，并在倾角超过阈值时按
@@ -87,10 +86,10 @@ public class MechaCharacter extends PhysicsRigidBody {
      */
     private static final float GROUND_NORMAL_THRESHOLD = 0.35f;
 
-    /** 向下扫掠窗口在胶囊中心<b>之上</b>的余量 (m)：允许在离地这么多时仍算着地。 */
+    /** 向下扫掠窗口在碰撞体中心<b>之上</b>的余量 (m)：允许在离地这么多时仍算着地。 */
     private static final float GROUND_WINDOW_ABOVE = 0.3f;
 
-    /** 向下扫掠窗口在胶囊中心<b>之下</b>的余量 (m)：探到脚底以下这么多。 */
+    /** 向下扫掠窗口在碰撞体中心<b>之下</b>的余量 (m)：探到脚底以下这么多。 */
     private static final float GROUND_WINDOW_BELOW = 0.1f;
 
     /** 向下扫掠探针的总长度 (m)。引擎要求起终点至少相距 0.4，正好等于该下限。 */
@@ -140,19 +139,10 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 越障探针的前向扫掠长度 (m)，`docs/角色控制器-刚体原型与引擎约束.md` §10.2。
      * <p>
      * 必须 ≥ 0.4（引擎对 {@code sweepTest} 起终点距离的下限），因此不能等于每步位移
-     * ——100 Hz 下 6 m/s 只有 6 cm。它同时决定越障的起判距离：胶囊前缘离台阶超过
+     * ——100 Hz 下 6 m/s 只有 6 cm。它同时决定越障的起判距离：碰撞体前缘离台阶超过
      * {@code 探针长度 − 半径} 时探不到。
      */
     private static final float STEP_PROBE_FORWARD = 1.2f;
-
-    /**
-     * 「抬起来走不走得过去」那一次扫掠的长度 (m)。<b>必须短于 {@link #STEP_PROBE_FORWARD}。</b>
-     * <p>
-     * 判决要回答的是「抬到台阶顶面之上以后这个位置还挡不挡」，而不是「再往前一米有没有别的东西」：
-     * 台阶顶面只有 1 m 宽（MC 方块尺度）时，用 1.2 m 的探针会直接捅到台阶后方的下一格地形，
-     * 把一次合法的越障判成失败。
-     */
-    private static final float STEP_CLEARANCE_PROBE = 0.5f;
 
     /**
      * 摩擦锥前馈的释放余量（无量纲），见 §7.4 的力律。
@@ -169,16 +159,61 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float FEEDFORWARD_RELEASE = 0.01f;
 
     /**
-     * 抬起来做判决时脚底要高出台阶顶面多少 (m)。<b>必须大于胶囊半径。</b>
+     * 落位时把底面写进踏板的水平距离 (m)，见 {@link #tryStepUp}。
      * <p>
-     * 胶囊底部是半径 0.4 m 的半球，脚底只高出顶面 {@code δ} 时半球在水平方向仍伸出
-     * {@code √(2rδ)}：δ = 0.05 时伸出 0.20 m，判决会被「抬起来之后还是撞到台阶自己」
-     * 误判成失败（原型实测，见 §11.4）。
+     * 越障是「迈上台阶」这个动作，落位就要把底面<b>放到踏板上</b>一段真实的支撑区，而不是贴着立面
+     * 蹭过去：推进量取「本步沿移动方向的速率 × Δt」与「{@code 本值 + 前缘到立面的间隙}」中的较大者，
+     * 因此底面总是越过立面 {@code 本值} 以上。本值同时决定<b>落脚面下扫的探测深度</b>——下扫用碰撞体
+     * 形状、探测点就在落位后的水平位置上（见 {@link #probeLandingBySweep}），底面与踏板的相交区有多
+     * 深，读数就有多准。
+     * <p>
+     * 取 0.1 m 是两侧夹出来的（实测见 `docs/角色控制器-刚体原型与引擎约束.md` §11.6）：
+     * <ul>
+     *   <li><b>下限来自读数精度。</b>底面是圆，与踏板的相交区是弓形；引擎的凸体扫掠对这种「掠射
+     *       接触」报出的命中时间系统性偏早。同一个 0.5 m 台阶，圆柱下扫的读数随相交深度变化为
+     *       <pre>
+     *   相交深度    1 mm     5 mm     2 cm     5 cm    10 cm    20 cm
+     *   圆柱读数  0.4379   0.4488   0.4744   0.4942  0.5000  0.5000
+     *   法线 y    0.2205   0.3587   0.6715   0.9271  1.0000  1.0000
+     *       </pre>
+     *       1 mm 处读低 6.2 cm、法线还落在可站立门限（{@link #GROUND_NORMAL_THRESHOLD}）之下：那样
+     *       的一步既读不出真实高度，也不该按「可站立面」放行。到 0.1 m 读数才精确。</li>
+     *   <li><b>上限来自最窄的真实踏板。</b>落位后底面不得伸过踏板、插进下一级：底面半径 0.4 m，
+     *       而方块地形里最窄的踏板是楼梯的 0.5 m（半格的顶面），于是 {@code 本值 + 0.4 ≤ 0.5} 给出
+     *       {@code 本值 ≤ 0.1}。再大就会让「上楼」被自己的下扫判成过高——下扫读到的会是下一级的顶面，
+     *       而那次落位确实会把底面写进下一级。</li>
+     * </ul>
+     * 两侧在 0.1 m 上正好闭合。这个深度同时给出足以承重的支撑区（弓形面积约 0.035 m²，是贴边 1 mm
+     * 时 0.38 cm² 的近百倍），并让探测点的水平投影在立面处覆盖 {@code ±0.26 m}——相邻地形只要落进
+     * 这个宽度就会进同一次下扫的读数，而它也正是「底面会不会被写进相邻实体」的边界宽度。
      */
-    private static final float STEP_LIFT_CLEARANCE = 0.5f;
+    private static final float STEP_STAND_ON = 0.1f;
 
-    /** 越障时最小水平推进量 (m)：前缘已贴住台阶时仍要有一步向前，否则永远停在贴墙的平衡点上。 */
-    private static final float STEP_MIN_ADVANCE = 1.0e-3f;
+    /**
+     * 前向探针的命中算不算「立面」：命中面法线的<b>竖直分量上限</b>，见 {@link #probeForward}。
+     * <p>
+     * 越障只能由<b>立面</b>触发。立面是近似竖直的面（台阶侧壁、楼梯的踢面），法线竖直分量接近 0；
+     * 而<b>坡</b>的法线竖直分量是 {@code cosθ}——任何能走的坡都远大于 0，本值取 0.3 就把
+     * 「倾角小于 72.5° 的坡」全部挡在外面。
+     * <p>
+     * <b>为什么必须挡坡。</b>落位是位置写入：底面直径 0.8 m，形状下扫读到的是<b>整个底面之下最高的
+     * 那一点</b>。站在坡上时，底面之前 0.1 m 处的地面本来就比脚底高（{@code 0.1 × tanθ}），于是判据
+     * 每一步都成立——10° 的坡上就是每步抬 1.76 cm、前移 {@link #STEP_STAND_ON}，即 10 m/s 的横向
+     * 瞬移，而坡本来就该由地面力律的摩擦锥爬（`docs/角色控制器-刚体动力学方案.md` §7.4）。
+     * 竖直分量是唯一能把两者分开的读数：坡的读数本身就是坡的法线。
+     */
+    private static final float STEP_FACE_MAX_UP = 0.3f;
+
+    /**
+     * 「前缘已贴住立面」的容差 (m)，见 {@link #tryStepUp}。
+     * <p>
+     * 贴住的判据是「中心到立面的沿向距离 ≤ 半径 + 本值」。留余量是因为求解器把碰撞体压在立面上时
+     * 会保留接触边距，量到的沿向距离大于半径；球面底压在方块棱线上时更大——楔住的那一拍法线把
+     * 碰撞体往外推，稳定之后量到 0.427～0.431（半径 0.4），因此本值必须盖过它，否则越障在最需要
+     * 它的那一刻永远差几毫米进不去（原型实测：0.02 时棱线楔住处 300 步全部被拒，人物纹丝不动）。
+     * 取 0.05 m：覆盖求解器的接触边距，又远小于探针射程，不会把「还没走到台阶」当成接触。
+     */
+    private static final float STEP_CONTACT_MARGIN = 0.05f;
 
     /**
      * 素体裸足的越障高度 (m)，取值来自 {@link MechaWalkingAttr#STEP_HEIGHT_BASE}。
@@ -194,11 +229,38 @@ public class MechaCharacter extends PhysicsRigidBody {
     /** 台阶落差的下限 (m)：低于它视为「几乎无落差」，不是台阶。 */
     private static final float STEP_RISE_MIN = 0.01f;
 
+    /**
+     * 抬高量判据在步高那一端的数值容差 (m)，见 {@link #probeLandingBySweep}。
+     * <p>
+     * 判据是「抬高量不超过步高」。读数在相交深度达到 {@link #STEP_STAND_ON} 之后是<b>精确</b>的——
+     * 正好等于步高的落脚面（0.6 m 台阶）读出来就是 0.600000，浮点噪声落在哪一侧决定它过不过门。
+     * 容差把这条边界钉在「步高」这个契约值上，而不是钉在浮点舍入上——档位差 1 mm 在方块地形里
+     * 没有对应物（MC 的方块高 1 m、半砖 0.5 m，最细的雪层也是 0.125 m）。
+     */
+    private static final float STEP_RISE_TOLERANCE = 1.0e-3f;
+
     /** 越障前向探针起点相对脚底的高度 (m)，见 {@link #probeForward}。 */
     private static final float STEP_PROBE_LIFT = 0.01f;
 
-    /** 台阶顶面探针起点相对脚底的高度余量 (m)，见 {@link #probeStepTop}。 */
-    private static final float STEP_TOP_PROBE_MARGIN = 0.3f;
+    /** 下扫探针相对步高的余量 (m)，见 {@link #STEP_LANDING_PROBE}。 */
+    private static final float STEP_LANDING_MARGIN = 0.4f;
+
+    /**
+     * 落脚面下扫的探针长度 (m)，见 {@link #probeLandingBySweep}。
+     * <p>
+     * 取 {@code 步高 + STEP_LANDING_MARGIN}：探针起点在「脚底 + 本值」上，因此碰撞体下沿比脚底高
+     * 出本值那么多，必须<b>严格高于</b>任何合法落脚面（正好落在步高上的面也要入窗），余量那一段
+     * 就是为此留的。
+     * <p>
+     * <b>本值同时定义「什么叫太高」。</b>抬高量按 {@code 本值 − 比例 × 本值} 反解，判据要求它不超过
+     * 步高；探针再长一点就会把「比步高更高的面」也读成合法值，一整格方块于是被分两级吃掉
+     * （原型实测：把窗口放到比步高多 0.1 m 时，1.0 m 完整方块上去了，脚底到 1.0000）。
+     * <p>
+     * 同时它不得小于 0.4 m：引擎要求 {@code sweepTest} 的起终点至少相隔 0.4 m
+     * （`../Spark-Core/src/main/java/com/jme3/bullet/CollisionSpace.java#sweepTest` 的 Javadoc）。
+     * 步高 0.6 m 加余量在这个下限之上。
+     */
+    private static final float STEP_LANDING_PROBE = STEP_HEIGHT_BASE + STEP_LANDING_MARGIN;
 
     /** 复位「上一步落点上下文」时要作废的闪避轴向与输入（{@link #displaceTo} 用）。 */
     private static final Quaternion IDENTITY_ROTATION = new Quaternion();
@@ -216,13 +278,14 @@ public class MechaCharacter extends PhysicsRigidBody {
     private final PhysicsSpace fallbackSpace;
 
     /**
-     * 胶囊半高 = 圆柱段半高 + 半球半径 (m)，用于把胶囊中心换算到脚底。
+     * 碰撞体半高 (m)，用于把碰撞体中心换算到脚底。
      * <p>
+     * 圆柱底面是平面，因此脚底恰好是「中心 − 本值」所落的那张平面，不依赖取哪一点最靠下。
      * 随姿态改变（{@link #applyPostureShape}），因此不能是 {@code final}；
      * 由物理线程写入、物理线程读取，另加 {@code volatile} 是因为换形也可能发生在
      * 主线程提交的任务里。
      */
-    private volatile float capsuleHalfTotal;
+    private volatile float bodyHalfTotal;
 
     // ── 移动与跳跃输入（volatile，跨线程可见） ──
 
@@ -348,7 +411,13 @@ public class MechaCharacter extends PhysicsRigidBody {
      */
     private float boostDvY;
 
-    /** 本物理步是否走到了一次越障（越障那一步不再施加地面行走力，见 {@link #updateWalk}）。 */
+    /**
+     * 本物理步是否走到了一次越障（越障那一步不再施加地面行走力，见 {@link #updateWalk}）。
+     * <p>
+     * 对外可读（{@code isSteppedUpThisStep()}）也是诊断入口：越障是一次位置写入，肉眼只能从
+     * 「脚底突然抬高」反推，而这个标志把它变成可数的量（坡上每一步都成立时尤其明显）。
+     */
+    @Getter
     private boolean steppedUpThisStep;
 
     /** 当前是否着地（含最小保持，见 {@link #GROUND_MIN_HOLD_STEPS}）。 */
@@ -371,7 +440,6 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ── 扫掠中间结果（复用，减少物理线程分配） ──
 
     private final List<PhysicsSweepTestResult> sweepResults = new ArrayList<>();
-    private final List<PhysicsRayTestResult> rayResults = new ArrayList<>();
 
     /**
      * 本物理步实际以中心力施加的水平合力 (N)，诊断用。
@@ -396,16 +464,16 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ═══════════════════════════════════════════════
 
     /**
-     * @param shape        胶囊碰撞形状，尺寸应与 {@link MechaBodyPreset} 一致
+     * @param shape        碰撞形状（圆柱），尺寸应与 {@link MechaBodyPreset} 一致
      * @param physicsSpace 物理空间（用于着地扫掠与越障探针）；入世后会被
      *                     {@link PhysicsCollisionObject#getCollisionSpace()} 取代
      */
-    public MechaCharacter(CapsuleCollisionShape shape, PhysicsSpace physicsSpace) {
+    public MechaCharacter(CollisionShape shape, PhysicsSpace physicsSpace) {
         super(shape, MechaWalkingAttr.MASS);
         this.fallbackSpace = physicsSpace;
-        // 半高取共享常量而非从 shape 推导：胶囊几何的唯一来源是 MechaBodyPreset，
+        // 半高取共享常量而非从 shape 推导：碰撞体几何的唯一来源是 MechaBodyPreset，
         // 服务端出生点与客户端锚点也用同一组值，避免两处各算一遍
-        this.capsuleHalfTotal = MechaBodyPreset.HALF_TOTAL;
+        this.bodyHalfTotal = MechaBodyPreset.HALF_TOTAL;
 
         // 重力不写死在这里：刚体的重力是「物理空间重力 × 本体的 gravityScale」，
         // 而物理空间要等入世之后才拿得到（入世前 getCollisionSpace() 为 null）。
@@ -550,14 +618,14 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     /**
-     * 按姿态重建碰撞胶囊 —— <b>当前不可用，未接入调用路径</b>（P5 的范围）。
+     * 按姿态重建碰撞体 —— <b>当前不可用，未接入调用路径</b>（P5 的范围）。
      * <p>
      * 刚体路线解掉了 KCC 那条硬阻塞——{@code PhysicsRigidBody#setCollisionShape} 允许在世换形
      * （`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测：换形后锁转仍有效、姿态不受扰动），
      * 因此本方法不再受原生断言限制。
      * <p>
      * <b>但接管它需要两件本类还没有的东西</b>：① 变高之前先向上扫掠确认头顶空间（否则站起来
-     * 会把人顶进天花板）；② 换形之后按新的半高把脚底重新对齐到换形前的脚底高度，否则胶囊变矮
+     * 会把人顶进天花板）；② 换形之后按新的半高把脚底重新对齐到换形前的脚底高度，否则碰撞体变矮
      * 会把脚埋进地里。两件都是 P5 的内容（`docs/角色控制器-刚体动力学方案.md` §11 的 P5 行），
      * 因此这里保留为返回 {@code false} 的占位，调用方不要接入。
      *
@@ -698,7 +766,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 速度的两个水平分量保持不变，{@code y} 取 {@code verticalVelocity}。越障落位传 0（不清的话，
      * 下一步的积分会把刚对齐的脚底再拽下去），外部位移落点传 0（原版传送的语义对应物）。
      *
-     * @param location         目标胶囊中心（调用方持有，本方法不改写它）
+     * @param location         目标碰撞体中心（调用方持有，本方法不改写它）
      * @param verticalVelocity 写入的垂直速度 (m/s)
      */
     private void displaceTo(Vector3f location, float verticalVelocity) {
@@ -730,7 +798,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * {@code PhysicsRigidBody#setPhysicsLocation} 之后再由本类构造器之外的调用方
      * {@code addCollisionObject}。
      *
-     * @param location 目标胶囊中心（调用方持有，本方法不改写它）
+     * @param location 目标碰撞体中心（调用方持有，本方法不改写它）
      */
     public void warp(Vector3f location) {
         displaceTo(location, 0f);
@@ -765,7 +833,7 @@ public class MechaCharacter extends PhysicsRigidBody {
         updateJump(dt);
 
         // 4. 越障（§6.2）：抬升 → 前移 → 落位，同一物理步内
-        steppedUpThisStep = tryStepUp();
+        steppedUpThisStep = tryStepUp(dt);
 
         // 5. 行走力：地面按力律、空中按 F_max × AIR_CONTROL（§7.4）
         updateWalk(dt);
@@ -816,7 +884,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ═══════════════════════════════════════════════
 
     /**
-     * 朝向写入：绕世界 Y 轴把胶囊局部 +Z 的<b>水平投影</b>转到视野偏航上。
+     * 朝向写入：绕世界 Y 轴把碰撞体局部 +Z 的<b>水平投影</b>转到视野偏航上。
      * <p>
      * 全部输入取自<b>本步开始时的当前姿态</b>，任何一步都不缓存、不复用上一拍的旋转量：
      * 写入是幂等的绝对对齐而不是增量累加，因此本步开始时刚体既吃了上一拍的写入、也吃了求解器
@@ -936,7 +1004,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <ol>
      *   <li>竖直速度为正时不判——这一步正在上升，脚下不该算着地（同时封掉
      *       「0.4 m 探针 = 二段跳窗口」）</li>
-     *   <li>端点定窗口而不是扫满再比 fraction：起点取胶囊中心 + 0.3、终点取中心 − 0.1，
+     *   <li>端点定窗口而不是扫满再比 fraction：起点取碰撞体中心 + 0.3、终点取中心 − 0.1，
      *       长度 0.4 正好是引擎下限，而「有任何合法命中」就等于「贴地」</li>
      * </ol>
      * 结果筛：排除自己 → 只留对方组为 {@link CollisionGroups#TERRAIN} → 只留法线竖直分量
@@ -1217,10 +1285,10 @@ public class MechaCharacter extends PhysicsRigidBody {
         }
 
         // ── 着地时兜住重力的下向速度 ──
-        // 刚体上求解器只约束位置、不回写速度：不清零的话重力每步注入 g·dt，胶囊以每步约 5 mm
+        // 刚体上求解器只约束位置、不回写速度：不清零的话重力每步注入 g·dt，碰撞体以每步约 5 mm
         // 的速度持续下沉，直到接触边距被吃满为止。
         // <b>只兜下沉、绝不制造上升。</b>写成 velocity.y + boostDvY 会把求解器在接触上给出的
-        // 微小**正**垂直速度（求解器噪声，量级 0.05 m/s）一步步固化成向上的台阶，胶囊随后
+        // 微小**正**垂直速度（求解器噪声，量级 0.05 m/s）一步步固化成向上的台阶，碰撞体随后
         // 真的离地一拍、地面摩擦断一拍、再落回来——实测表现为速度无界的周期性抖动。
         // 因此只有 vy ≤ 本值时才动垂直分量，且此时写成 min(vy, 0) + 助推增量：噪声被抹平成 0，
         // 跳跃的起跳速度（> 本值）与助推增量都不受影响
@@ -1276,24 +1344,29 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ═══════════════════════════════════════════════
 
     /**
-     * 越障：抬升 → 前移到台阶前缘上方 → 落到顶面，三步在<b>同一个物理步内</b>走完（§6.2）。
+     * 越障：探落脚面 → 落位，两步在<b>同一个物理步内</b>走完（§6.2）。
      * <p>
-     * 为什么必须是位置写入而不是力：胶囊底部是半径 0.4 m 的半球，台阶棱角一旦高于球心，
-     * 接触法线的竖直分量就朝下，接触力只能把人顶住。走台阶的判据与常量沿用
-     * `docs/角色控制器-刚体原型与引擎约束.md` §10（探针长度、抬升量、净空探针、最小前移）。
+     * 越障走位置写入而不是力，是为了不依赖接触能否把人推上去：底面为平面的形体压在台阶立面上时
+     * 接触法线水平，接触力只能把人顶住、不能把人抬起来（球面底更差——棱角一旦高过球心，接触法线
+     * 的竖直分量就朝下）。判据与常量见 `docs/角色控制器-刚体原型与引擎约束.md` §10。
      * <p>
-     * <b>水平速度原样保留。</b>落位只把胶囊的前缘写到台阶立面上，这一步的积分仍按写入前的
-     * 水平速度走，因此多出的 {@code v·Δt} 恰好把胶囊中心送到顶面支撑区里——6 m/s 时是 6 cm，
-     * 而贴墙后中心到立面的水平余量是半径 0.4 m，两者相差一个量级。清零水平速度会让人物卡在
-     * 台阶前缘并丢掉动量，那正是刚体路线要修掉的那类表现。因此越障<b>不改速度通道</b>，也就
-     * 不需要在越障期间把刚体切成运动学。
+     * <b>水平速度原样保留。</b>落位只把碰撞体推进本步应有的那一段，这一步的积分仍按写入前的
+     * 水平速度走。清零水平速度会让人物卡在台阶前缘并丢掉动量，那正是刚体路线要修掉的那类表现。
+     * 因此越障<b>不改速度通道</b>，也就不需要在越障期间把刚体切成运动学。
      * <p>
      * <b>垂直速度必须清零。</b>不清的话，下一步的积分会把判决刚对齐的脚底再拽下去
      * （`docs/角色控制器-刚体原型与引擎约束.md` §4 实测 0.5067 m 的落差）。
+     * <p>
+     * <b>一次下扫同时回答两件事。</b>下扫用的是碰撞体自己的形状、位置就是落位后的水平位置
+     * （见 {@link #probeLandingBySweep}），因此它量到的「第一个接触」既是落脚面的高度，也是
+     * <b>底面放下去会碰到什么</b>：底面直径 0.8 m，落位后压在哪个面上，那一片就必须没有更高的地形，
+     * 否则读数直接给出更高的那个面——超过步高就拒绝，不超过就把脚底抬到它上面。落位因此不需要第二
+     * 次下扫，也不需要「整个底面都有支撑」这类净空判据：接触就是支撑的全部要求。
      *
+     * @param dt 物理步长 (s)，推进量取 {@code max(本步沿移动方向的速率 × dt, STEP_STAND_ON)}
      * @return 本步是否完成了一次越障
      */
-    private boolean tryStepUp() {
+    private boolean tryStepUp(float dt) {
         if (!grounded) return false;
 
         // 方向：优先用本步输入意图，无输入时用当前水平速度的方向
@@ -1304,45 +1377,87 @@ public class MechaCharacter extends PhysicsRigidBody {
         if (len < 1.0e-3f) return false;
         dirX /= len;
         dirZ /= len;
-        // 速度过小不值得抬一次：越障是「走向台阶」这件事，不是静止时的坠落
-        float projected = velocity.x * dirX + velocity.z * dirZ;
-        if (projected < 0.05f) return false;
+        // 沿 dir 的速率：无输入时它是「有没有在走向台阶」的判据，有输入时它是推进量的来源
+        float projected = Math.max(velocity.x * dirX + velocity.z * dirZ, 0f);
+        if (!inputHasMove && projected < 0.05f) return false;
 
         PhysicsSpace space = resolveSpace();
         if (space == null) return false;
 
         Vector3f center = getPhysicsLocation(tmp2);
-        float feet = center.y - capsuleHalfTotal;
+        float feet = center.y - bodyHalfTotal;
 
-        Float toFace = probeForward(space, center, feet, dirX, dirZ);
-        if (toFace == null) return false;
+        // ① 到立面的沿向距离：一道廉价的前置门，只回答「前缘贴住立面了没有」
+        float faceDistance = probeForward(space, center, feet, dirX, dirZ);
+        if (Float.isNaN(faceDistance)) return false;
+        // 贴住的判据在这里只是省掉后面的扫掠。碰撞体每步位移比探针射程小一个量级，不加这道门
+        // 就会在离台阶还有一米多时先做一次下扫——下扫本身会以「落脚面与脚底齐平」拒绝那一步
+        // （见 ③ 的落差下限），因此这道门丢掉的是计算而不是判决
+        if (faceDistance > MechaBodyPreset.RADIUS + STEP_CONTACT_MARGIN) return false;
 
-        Float stepTop = probeStepTop(space, center, feet, dirX, dirZ, toFace);
-        if (stepTop == null) return false;
+        // ② 落位后的水平位置：迈上去的那一脚。前缘离立面还有间隙时把它一并补上，
+        //    这样底面越过立面的深度恒 ≥ STEP_STAND_ON，下扫的读数才在精确区内
+        float gap = Math.max(faceDistance - MechaBodyPreset.RADIUS, 0f);
+        float advance = Math.max(projected * dt, STEP_STAND_ON + gap);
 
-        float rise = stepTop - feet;
-        if (rise <= STEP_RISE_MIN || rise > STEP_HEIGHT_BASE) return false;
+        // ③ 探落脚面：用碰撞体自己的形状，在落位后的水平位置上向下扫
+        float stepTop = probeLandingBySweep(space, feet,
+                center.x + dirX * advance, center.z + dirZ * advance);
+        if (Float.isNaN(stepTop)) return false;
+        // 落脚面相对**当前脚底**的高度才是「这一级台阶有多高」。探针窗口只保证「比脚底高」，
+        // 不保证「高出不超过步高」；而碰撞体每越一级脚底就抬一截，若只查相对探针起点的落差，
+        // 就允许从已经抬起的位置再抬一级，整格方块被分两步吃掉（原型实测：少了这道门时
+        // 1.0 m 完整方块上去了，脚底到 1.0000）。步高是「单级能迈多高」的契约，必须在最外层比
+        if (stepTop - feet > STEP_HEIGHT_BASE + STEP_RISE_TOLERANCE) return false;
 
-        if (!hasClearance(space, stepTop, dirX, dirZ, toFace)) return false;
-
-        stepForwardTo(stepTop, dirX, dirZ, toFace);
+        // ④ 落位：脚底对齐落脚面，水平推进 advance
+        stepForwardTo(stepTop, dirX, dirZ, advance);
         return true;
     }
 
     /**
      * ① 脚底略上方的水平扫掠：前方 {@link #STEP_PROBE_FORWARD} 米内有没有挡路的台阶立面。
      * <p>
-     * <b>必须用脚底高度（抬 1 cm）的胶囊 sweep，不能用中心高度的射线。</b>半砖顶面只有 0.5 m、
-     * 而胶囊中心在 1.2 m，从中心打出的射线整条从台阶上方穿过去，命中数恒为 0——表现是
+     * <b>必须用脚底高度（抬 1 cm）的碰撞体 sweep，不能用中心高度的射线。</b>半砖顶面只有 0.5 m、
+     * 而碰撞体中心在 1.2 m，从中心打出的射线整条从台阶上方穿过去，命中数恒为 0——表现是
      * 「越障永不触发」且没有任何报错（`docs/角色控制器-刚体原型与引擎约束.md` §11.1）。
-     * 抬 1 cm 是为了跳过「脚下的地板」：胶囊站在地上时脚底与地面接触，从脚底精确起扫会把地板
+     * 抬 1 cm 是为了跳过「脚下的地板」：站在地上时脚底与地面接触，从脚底精确起扫会把地板
      * 当成 0 距离的命中。
+     * <p>
+     * <b>返回的是「扫掠起点沿移动方向到台阶立面」的距离，越障只用它判「前缘贴住了没有」。</b>
+     * {@code sweepTest} 的命中比例是<b>最近接近点</b>的参数，因此
+     * {@code 比例 × 探针长度 + 半径} 就是起点到立面的距离；扫掠起点与碰撞体中心在水平面上同位，
+     * 两者相差的只是那 1 cm 的抬升（竖直方向），不影响水平距离。
+     * <p>
+     * <b>压进立面时本值会退化成半径。</b>出发即接触（碰撞体已经被引擎推进立面）的那一拍命中比例
+     * 是 0，本值于是恒等于一个半径。本值因此<b>不能</b>用来给落位定位——落位的水平位置由
+     * {@link #tryStepUp} 按推进量给出，与立面在哪里无关，读数的可信度由
+     * {@link #STEP_STAND_ON} 那段相交深度保证。
+     * <p>
+     * <b>命中必须限在地形上。</b>{@code sweepTest} 没有碰撞组参数，它会把物理空间里所有物体都
+     * 报出来；本方法因此按 {@link CollisionGroups#TERRAIN} 筛，只排除自己是不够的。
+     * <p>
+     * <b>命中必须是立面，竖直分量超过 {@link #STEP_FACE_MAX_UP} 的面按「不是立面」拒绝。</b>
+     * 台阶侧壁与楼梯踢面是竖直面，法线竖直分量接近 0；地面与坡的法线竖直分量是 {@code cosθ}，
+     * 任何能走的坡都远大于本值。这条门是<b>坡与台阶的分界</b>：坡由地面力律的摩擦锥爬，而落位是
+     * 位置写入——底面直径 0.8 m，形状下扫读到的是底面之下最高的那一点，站在坡上时底面之前
+     * {@link #STEP_STAND_ON} 处的地面本来就比脚底高，判据会每一步都成立。
+     * <p>
+     * <b>筛的是竖直分量，不是「法线朝不朝移动方向」。</b>斜向接近时挡住碰撞体的仍是同一个立面，
+     * 命中点的水平法线本来就不必与移动方向一致。另有一类历史读数要留意：球面底压在方块棱线上时
+     * 接触点落在中心斜下方，法线竖直分量可以高到 0.97（原型实测：棱线楔住处三条读数分别是
+     * 0.969 / 0.861 / 0.613），那属于「楔住」而不是「坡」。现行碰撞体是<b>平底圆柱</b>，压在台阶
+     * 立面上时接触发生在侧壁上、读数竖直分量接近 0，这一类读数不再出现；若将来换回球面底，
+     * 这道门要重新量。
+     * <p>
+     * {@code sweepTest} 的结果是无序的，本方法因此<b>只处理命中比例最小的那一条</b>。
      *
-     * @return 胶囊中心到台阶立面的水平距离 (m)；前方没有立面或障碍在射程边缘时返回 {@code null}
+     * @return 从扫掠起点沿 {@code dir} 到台阶立面的距离 (m)；前方没有立面或障碍在射程边缘时
+     *         {@code NaN}
      */
-    private Float probeForward(PhysicsSpace space, Vector3f center, float feet, float dirX, float dirZ) {
+    private float probeForward(PhysicsSpace space, Vector3f center, float feet, float dirX, float dirZ) {
         Vector3f start = new Vector3f(
-                center.x, feet + STEP_PROBE_LIFT + capsuleHalfTotal, center.z);
+                center.x, feet + STEP_PROBE_LIFT + bodyHalfTotal, center.z);
         Vector3f end = new Vector3f(
                 start.x + dirX * STEP_PROBE_FORWARD, start.y, start.z + dirZ * STEP_PROBE_FORWARD);
 
@@ -1353,101 +1468,117 @@ public class MechaCharacter extends PhysicsRigidBody {
                 sweepResults, 0f);
 
         // 先筛再取：sweepTest 的结果是无序的，取 get(0) 会得到与地形分块顺序有关的行为
-        // （§11.5）。这里只留「法线不是可站立面」的那些，它们是可能的台阶立面
+        // （§11.5）。这里筛掉自身与非地形，**不按「法线朝不朝移动方向」筛**——见方法说明
+        PhysicsSweepTestResult nearest = null;
         float bestFraction = Float.POSITIVE_INFINITY;
         for (PhysicsSweepTestResult result : sweepResults) {
             if (result == null || result.getCollisionObject() == this) continue;
-            Vector3f normal = result.getHitNormalLocal(tmp3);
-            if (Math.abs(normal.y) >= GROUND_NORMAL_THRESHOLD) continue;
+            if (result.getCollisionObject().getCollisionGroup() != CollisionGroups.TERRAIN) continue;
             if (result.getHitFraction() < bestFraction) {
                 bestFraction = result.getHitFraction();
+                nearest = result;
             }
         }
-        if (bestFraction == Float.POSITIVE_INFINITY) return null;
+        if (nearest == null) return Float.NaN;
         // 命中比例 1 是「障碍恰好在探针终点」，交给下一步再判；命中比例 0 是<b>合法且常见</b>的
         // 信号（出发即接触），必须限幅而不能判失败（§11.2）
-        if (bestFraction >= 1f) return null;
+        if (bestFraction >= 1f) return Float.NaN;
 
-        float gap = Math.max(bestFraction, 0f) * STEP_PROBE_FORWARD;
-        return gap + MechaBodyPreset.CAPSULE_RADIUS;
+        // 命中的必须是**立面**：竖直分量超过 {@link #STEP_FACE_MAX_UP} 的面是地面或坡。
+        // 坡交给地面力律（越障是位置写入，底面之前那一点在坡上本来就比脚底高，判据会每步成立）
+        if (nearest.getHitNormalLocal(tmp3).y > STEP_FACE_MAX_UP) return Float.NaN;
+        float alongDistance = Math.max(bestFraction, 0f) * STEP_PROBE_FORWARD;
+
+        // 命中比例是「最近接近点」的参数：比例 × 探针长度就是「沿移动方向还差多远贴上立面」，
+        // 加上半径即「中心沿移动方向到相切点」的距离。它只作「贴住了没有」这道门的输入
+        return alongDistance + MechaBodyPreset.RADIUS;
     }
 
     /**
-     * ② 从「脚底 + 步高 + 余量」向下打一条射线，取最近的向上表面作为台阶顶面。
+     * 探落脚面：在<b>落位后的水平位置</b>上，用<b>碰撞体自己的形状</b>从「脚底 +
+     * {@link #STEP_LANDING_PROBE}」向下扫同样长的一段，由命中比例反解落脚面的高度。
      * <p>
-     * <b>起点必须高过台阶顶面。</b>从胶囊中心高度往下打，在台阶还差半步才走到时会先打到脚下的
-     * 地板，解出的落差恒为 0，表现与「没探到台阶」完全相同（§11.3）。
-     *
-     * @param toFace 胶囊中心到台阶立面的水平距离 (m)
-     * @return 台阶顶面的世界高度 (m)；没有向上的表面时返回 {@code null}
-     */
-    private Float probeStepTop(PhysicsSpace space, Vector3f center, float feet,
-                               float dirX, float dirZ, float toFace) {
-        float probeX = center.x + dirX * toFace;
-        float probeZ = center.z + dirZ * toFace;
-        Vector3f from = new Vector3f(probeX, feet + STEP_HEIGHT_BASE + STEP_TOP_PROBE_MARGIN, probeZ);
-        Vector3f to = new Vector3f(probeX, feet - GROUND_WINDOW_BELOW, probeZ);
-
-        rayResults.clear();
-        space.rayTest(from, to, rayResults);
-        Float stepTop = null;
-        float bestFraction = Float.POSITIVE_INFINITY;
-        for (PhysicsRayTestResult hit : rayResults) {
-            if (hit == null || hit.getCollisionObject() == this) continue;
-            if (hit.getCollisionObject().getCollisionGroup() != CollisionGroups.TERRAIN) continue;
-            Vector3f normal = hit.getHitNormalLocal(tmp3);
-            if (normal.y < GROUND_NORMAL_THRESHOLD) continue;
-            // rayTest 的结果是有序的，但仍按命中比例取最小，避免依赖返回顺序
-            if (hit.getHitFraction() < bestFraction) {
-                bestFraction = hit.getHitFraction();
-                stepTop = from.y + (to.y - from.y) * hit.getHitFraction();
-            }
-        }
-        return stepTop;
-    }
-
-    /**
-     * ③ 把胶囊抬到台阶顶面之上再水平扫掠一次：仍被挡说明障碍高于步高（或头顶有东西），放弃。
+     * <b>读数就是「起点高度 − 落差」。</b>探针起点比脚底高 {@code 探针长度}，落差是
+     * {@code 长度 × 命中比例}，两者之差就是落脚面相对脚底的真实抬高量。<b>别写成
+     * {@code (1 − 比例) × 长度}</b>：那等于把余量那一段当成免费行程，1.0 m 的方块会被量成 0.4 m
+     * 放行（原型实测）。
      * <p>
-     * 探针长度取 {@link #STEP_CLEARANCE_PROBE}（必须短于前向探针），抬升量取
-     * {@link #STEP_LIFT_CLEARANCE}（必须大于胶囊半径，见 §11.4）。
+     * <b>探测位置就是落位位置，不是「立面之外一点点」。</b>这一次下扫要回答的所有问题都取决于
+     * 「底面放下去会碰到什么」，而底面只会在落位后的那个水平位置上：{@code 中心 + 移动方向 ×
+     * advance}。位置对准之后，读数里就同时包含了两件事——落脚面的高度，以及底面任何一部分会先碰到
+     * 的更高的东西。旁边更高的地形因此<b>自动</b>进入判决：碰到的面超过步高就整步拒绝，不超过就把
+     * 脚底抬到它上面。落位不需要第二次下扫，也不需要「整个底面都有支撑」这类净空判据——接触就是
+     * 支撑的全部要求（`docs/角色控制器-刚体动力学方案.md` §6.2）。
+     * <p>
+     * <b>形状必须是碰撞体自己的。</b>换成一个小探针就丢掉了这条判据的全部宽度：底面直径 0.8 m，
+     * 小探针只反映探测点那一点的地形，旁边（同一个水平面内、离中心不到一个半径处）更高的地形
+     * 就看不见了——实测 L 形两级（一级 0.5 m，右侧紧挨顶面 0.7 m 的二级）下，小探针读到 0.5 m 放行、
+     * 落位把底面 0.1 m 压进二级，再由求解器把机体横推 0.25 m 出来（`docs/角色控制器-刚体原型与
+     * 引擎约束.md` §11.6 末段）。
+     * <p>
+     * <b>读数只在相交深度够大时才准。</b>底面是圆，与踏板的相交区是弓形；引擎的凸体扫掠对这种
+     * 「掠射接触」报出的命中时间系统性偏早，深度 1 mm 时 0.5 m 的台阶只读到 0.4379 且法线竖直分量
+     * 只有 0.22（表见 {@link #STEP_STAND_ON}）。落位因此必须把底面真正放上踏板一段——
+     * {@code advance} 的下限就是为此而设。
+     * <p>
+     * <b>命中面的法线竖直分量要够大。</b>太斜的面（坡）由地面力律的摩擦锥爬，位置写入会把人瞬移
+     * 上去；掠射接触报出的近水平法线也在这里被挡掉（那正是「读不准」的那一类）。阈值与着地判据
+     * 同一个分界。
+     * <p>
+     * <b>命中必须限在地形上，且结果无序。</b>{@code sweepTest} 没有碰撞组参数，会把物理空间里所有
+     * 物体都报出来；本方法按 {@link CollisionGroups#TERRAIN} 筛，并且只取命中比例最小的那一条
+     * （{@code get(0)} 会得到与地形分块顺序有关的行为，§11.5）。
      *
-     * @return {@code true} 表示抬起来之后前方畅通
+     * @param probeX 落位后的碰撞体中心 X (m)
+     * @param probeZ 落位后的碰撞体中心 Z (m)
+     * @return 落脚面的世界高度 (m)；没有合法落脚面时 {@code NaN}
      */
-    private boolean hasClearance(PhysicsSpace space, float stepTop, float dirX, float dirZ, float toFace) {
-        // 抬起来时纵向不动：判决回答的是「把当前这个水平位置抬到台阶顶面之上还挡不挡」
-        Vector3f center = getPhysicsLocation(tmp2);
-        Vector3f lifted = new Vector3f(
-                center.x, stepTop + STEP_LIFT_CLEARANCE + capsuleHalfTotal, center.z);
-        Vector3f end = new Vector3f(
-                lifted.x + dirX * STEP_CLEARANCE_PROBE, lifted.y, lifted.z + dirZ * STEP_CLEARANCE_PROBE);
+    private float probeLandingBySweep(PhysicsSpace space, float feet, float probeX, float probeZ) {
+        Vector3f from = new Vector3f(probeX,
+                feet + STEP_LANDING_PROBE + bodyHalfTotal, probeZ);
+        Vector3f to = new Vector3f(probeX, from.y - STEP_LANDING_PROBE, probeZ);
 
         sweepResults.clear();
         space.sweepTest((ConvexShape) getCollisionShape(),
-                new Transform(lifted, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
-                new Transform(end, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
+                new Transform(from, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
+                new Transform(to, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
                 sweepResults, 0f);
+
+        PhysicsSweepTestResult nearest = null;
+        float bestFraction = Float.POSITIVE_INFINITY;
         for (PhysicsSweepTestResult result : sweepResults) {
-            if (result != null && result.getCollisionObject() != this) {
-                return false;
+            if (result == null || result.getCollisionObject() == this) continue;
+            if (result.getCollisionObject().getCollisionGroup() != CollisionGroups.TERRAIN) continue;
+            if (result.getHitFraction() < bestFraction) {
+                bestFraction = result.getHitFraction();
+                nearest = result;
             }
         }
-        return true;
+        // 比例 1 是「落脚面恰在探针末端之外」——那已经不是落脚面，按无面处理
+        if (nearest == null || bestFraction >= 1f) return Float.NaN;
+        if (nearest.getHitNormalLocal(tmp3).y < GROUND_NORMAL_THRESHOLD) return Float.NaN;
+
+        // 抬高量 = 起点高度 − 落差。**不能**写成 (1 − 比例) × 长度，那会把余量当成免费行程
+        float rise = STEP_LANDING_PROBE - Math.max(bestFraction, 0f) * STEP_LANDING_PROBE;
+        if (rise <= STEP_RISE_MIN || rise > STEP_HEIGHT_BASE + STEP_RISE_TOLERANCE) return Float.NaN;
+        return feet + rise;
     }
 
     /**
-     * ④ 落位：脚底对齐台阶顶面，水平只推进到「前缘贴到台阶立面」的那一段。
+     * 落位：脚底对齐落脚面，水平推进 {@code advance}。
      * <p>
-     * 纵向取原来的水平位置（判决已经确认这个位置抬起来之后畅通），横向取
-     * {@code toFace + 半径 + 最小推进量}，即胶囊前缘正好贴住立面再向前一步。
-     * 这样落位之后胶囊中心仍在立面之外，顶面留出的支撑区长
-     * {@code 2 × 半径 = 0.8 m}，足够承接下一步的积分。
+     * {@code advance} 由 {@link #tryStepUp} 按「本步速率在移动方向上的投影 × Δt」给出，下限是
+     * {@link #STEP_STAND_ON}——越障是「迈上台阶」，落位就要把底面放到踏板上，而不是贴着立面蹭过去。
+     * 斜向接近时沿移动方向的速率本来就只有一部分，落位因而按那个分量走；贴墙那一拍速率被接触
+     * 吃掉（顶墙即归零），下限接管。
+     * <p>
+     * 落位后的底面与踏板相交成弓形（0.5 m 台阶、推进 0.2 m 时面积约 0.035 m²），足够承接下一步的
+     * 积分与力律的摩擦锥。
      */
-    private void stepForwardTo(float stepTop, float dirX, float dirZ, float toFace) {
+    private void stepForwardTo(float stepTop, float dirX, float dirZ, float advance) {
         Vector3f center = getPhysicsLocation(tmp2);
-        float advance = toFace + MechaBodyPreset.CAPSULE_RADIUS + STEP_MIN_ADVANCE;
         Vector3f target = new Vector3f(
-                center.x + dirX * advance, stepTop + capsuleHalfTotal, center.z + dirZ * advance);
+                center.x + dirX * advance, stepTop + bodyHalfTotal, center.z + dirZ * advance);
         // 规则 1：写位置的同一物理步处理速度。水平分量原样保留（§6.2），垂直清零
         displaceTo(target, 0f);
     }

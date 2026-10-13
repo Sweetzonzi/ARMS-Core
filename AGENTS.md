@@ -14,31 +14,33 @@
 
 ```powershell
 # 客户端运行（物理线程与 KCC 调试主要看这个）
-.\gradlew runClient
+.\gradlew --offline runClient
 
 # 服务端运行
-.\gradlew runServer
+.\gradlew --offline runServer
 
 # 数据生成（输出到 src/generated/resources）
-.\gradlew runData
+.\gradlew --offline runData
 
 # GameTest 服务器（真服务端；无需客户端，跑完自动退出）
-.\gradlew runGameTestServer
+.\gradlew --offline runGameTestServer
 
 # 重新生成 GameTest 场地结构模板（改了场地几何后才需要）
-.\gradlew generateGameTestStructure
+.\gradlew --offline generateGameTestStructure
 
 # 单元测试（纯逻辑层；不需要启动 Minecraft）
-.\gradlew test
+.\gradlew --offline test
 
 # 构建产物（jar 在 build/libs）
-.\gradlew build
+.\gradlew --offline build
 
 # 清理构建目录
-.\gradlew clean
+.\gradlew --offline clean
 ```
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的三条：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率），只输出数值、不做基线断言，结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。
+- **命令一律带 `--offline`。** 本仓库的依赖已经全部落在本地 Gradle 缓存里，联网解析会白白花掉十几分钟：同一份 `.\gradlew test` 联网 **14 分 32 秒**、带 `--offline` **12～16 秒**，而编译与用例本身是秒级（联网那一轮的输出里 23 个任务全部 `UP-TO-DATE`，时间全在依赖解析）。只有确实要拉新依赖时才去掉它：升级 `neo_version` / `minecraft_version`、新增 Maven 依赖、或改了 `gradle.properties` 里的版本号。带 `--offline` 时若真有依赖缺失，Gradle 会直接报「No cached version available for offline mode」，不会静默地少解析一部分。
+
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的三条：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率、越障高度契约），以输出数值为主、不做基线断言（例外是两条判据契约：越障高度契约判「一次越障的抬升量不超过步高」这条不变量本身，楼梯与坡那条判「判据认不认得出立面」——楼梯一级一级上去、坡一次都不触发），结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10 与 `docs/角色控制器-刚体原型与引擎约束.md` §11.6。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。
 - **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
@@ -46,12 +48,12 @@
 
 | 车道 | 命令 | 能覆盖什么 |
 |------|------|-----------|
-| JUnit | `.\gradlew test` | 纯逻辑与力学：不需要活着的世界，可搭裸 `PhysicsSpace` 步进刚体控制器。十余秒到几分钟（搭空间并跑长跑的用例是分钟级） |
-| GameTest | `.\gradlew runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前两条探针：「物理空间就绪且 `ArmsCore` 构造得出来」，以及「位置写入分类与锚点判据」（镜像不摄入、只有栈空且目标 ≠ 锚点才采纳）；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
+| JUnit | `.\gradlew --offline test` | 纯逻辑与力学：不需要活着的世界，可搭裸 `PhysicsSpace` 步进刚体控制器。十余秒到几分钟（搭空间并跑长跑的用例是分钟级） |
+| GameTest | `.\gradlew --offline runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前两条探针：「物理空间就绪且 `ArmsCore` 构造得出来」，以及「位置写入分类与锚点判据」（镜像不摄入、只有栈空且目标 ≠ 锚点才采纳）；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
 
 - GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前唯一一处是 `common/gametest/ArmsCoreGameTest.java`。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
-- **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
-- `.vscode/launch.json` 已有 `GameTestServer` 启动项，依赖 `build/moddev/gameTestServerRunProgramArgs.txt`（由 `gradlew prepareGameTestServerRun` 生成）。
+- **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew --offline generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
+- `.vscode/launch.json` 已有 `GameTestServer` 启动项，依赖 `build/moddev/gameTestServerRunProgramArgs.txt`（由 `gradlew --offline prepareGameTestServerRun` 生成）。
 
 ### 开发期 mod 目录（两个，都在本仓库根）
 
@@ -68,7 +70,7 @@
 - **GeckoLib 与 Spark 不放 `mods/`**：它们的 jar 与其它来源的同名模块同时在类路径上时，ModLauncher 在模块解析阶段直接中止：
   `java.lang.module.ResolutionException: Modules geckolib and geckolib.neoforge export package … to module mixinextras.neoforge`。
   GeckoLib 由 Spark-Core 与 Machine-Max 各自的 Maven 依赖 `software.bernie.geckolib:geckolib-neoforge-<mc>:<geckolib_version>` 提供，不需要 jar；Spark 来自 Spark-Core 构建脚本里的 `implementation(files(fileTree("mods")))`，它作为 root component 进入 Spark-Core 的 `runtimeElements`，随复合构建出现在本项目的 `runtimeClasspath` 上（Mod List 里的 `spark 1.10.124` 就是它），本地再放一份同名模块就会撞包。
-- **从 IDE 发起的 run 只带 `mods/`**：IDE 的类路径来自 Gradle 的 main `runtimeClasspath`（四个 run 共用一份），`runClient` 任务上的 `classpathProvider` 只有 `gradlew runClient` 会走。`gradlew createClientLaunchScript` 生成的启动脚本同理。
+- **从 IDE 发起的 run 只带 `mods/`**：IDE 的类路径来自 Gradle 的 main `runtimeClasspath`（四个 run 共用一份），`runClient` 任务上的 `classpathProvider` 只有 `gradlew --offline runClient` 会走。`gradlew --offline createClientLaunchScript` 生成的启动脚本同理。
 - **核对办法**：`run/logs/latest.log` 里 `ModDiscoverer` 打出的 Mod List 是最终生效的 mod 集合；`build/moddev/*LegacyClasspath.txt` 只是 MC-BOOTSTRAP 模块层的清单，其中出现某个 jar 不代表它会被当成 mod 载入。
 
 ## 复合构建依赖（极易踩坑）
@@ -89,7 +91,7 @@
 
 - `src/main/templates/META-INF/neoforge.mods.toml` 中的 `${...}` 占位符由 `generateModMetadata` 任务在构建时替换（属性列表是 `generateModMetadata` 任务里的 `replaceProperties` 映射）。
 - `src/main/resources` 与 `build/generated/sources/modMetadata` 共同打包；数据生成输出目录 `src/generated/resources` 也被包含进资源集（`build.gradle` 的 `sourceSets.main.resources`）。
-- 新增资源后若 IDEA 没识别，运行 `gradlew neoForgeIdeSync` 或 `gradlew generateModMetadata`。
+- 新增资源后若 IDEA 没识别，运行 `gradlew --offline neoForgeIdeSync` 或 `gradlew --offline generateModMetadata`。
 
 ## 代码架构要点
 
@@ -99,7 +101,7 @@
 | `Config.java` | 示例配置（当前为占位），实际逻辑待扩展。 |
 | `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。服务端构造控制器刚体，客户端经 `newClientInstance` 构造且不持有它。 |
 | `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → 控制器物理步；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
-| `MechaCharacter.java` | 机娘动力学角色控制器：**继承 `com.jme3.bullet.objects.PhysicsRigidBody`**（动态刚体胶囊，不再是 KCC）。四件事：每物理步的位姿写入（朝向绝对对齐 + 倾倒按 `(1 − λ)` 收敛）、着地判据（向下形状扫掠 + 法线筛 + 最小保持）、地面行走力律（`F_drive = min(k·computeDriveForce, μ_eff·N)` 加 1% 释放余量的摩擦前馈，走 `applyCentralForce`）、越障三段（抬升 → 前移 → 落位，同一物理步完成、水平速度原样保留）。另有 `setViewYaw`、`setMoveIntent`（体系意图 → 世界方向的唯一变换）、跳跃冲量与助推窗口、闪避速度赋值。设计与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。 |
+| `MechaCharacter.java` | 机娘动力学角色控制器：**继承 `com.jme3.bullet.objects.PhysicsRigidBody`**（动态刚体圆柱，不再是 KCC）。四件事：每物理步的位姿写入（朝向绝对对齐 + 倾倒按 `(1 − λ)` 收敛）、着地判据（向下形状扫掠 + 法线筛 + 最小保持）、地面行走力律（`F_drive = min(k·computeDriveForce, μ_eff·N)` 加 1% 释放余量的摩擦前馈，走 `applyCentralForce`）、越障两段（探落脚面 → 落位，同一物理步完成、水平速度原样保留）。另有 `setViewYaw`、`setMoveIntent`（体系意图 → 世界方向的唯一变换）、跳跃冲量与助推窗口、闪避速度赋值。设计与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
 | `common/IArmsHost.java` | 宿主接口：绑定关系的读写（`getControlledArmsCore` / `setControlledArmsCore`）、`getHostEntity`、位置与速度的落地入口（`applyPose` / `applyVelocity`）。玩家经 Mixin 实现它，Doll / AI 敌人可直接实现。 |
 | `mixin/PlayerHostMixin.java` | `@Mixin(Player.class) implements IArmsHost`：注入绑定字段 `armsCore$controlledCore` 并实现五个方法。绑定关系的唯一入口，负责三条换绑路径与输入重置；绑定期间通过 `neoforge:creative_flight` 属性授予飞行许可。 |
@@ -110,8 +112,8 @@
 | `common/MechaInputHandler.java` | 上行输入的服务端处理链：控制权校验 → 合并环境状态 → 写快照 → 按事件序号幂等投递事件。 |
 | `common/ArmsCoreServerEvents.java` | 两个相位的接线：`PhysicsLevelTickEvent.Pre` 扇出 `prePhysicsTick`，`LevelTickEvent.Post` 写 `syncedData` 并发包；以及补发、断线重置、维度卸载。 |
 | `common/command/ArmsCoreDebugCommand.java` | `/arms` 调试命令（spawn / list / remove / move / jump / stop / event / control）。 |
-| `common/control/attr/MechaBodyPreset.java` | 胶囊几何的唯一来源（半径 / 圆柱段高 / `HALF_TOTAL` / 由脚底算胶囊中心），服务端出生点与客户端锚点共用。 |
-| `common/control/attr/MechaModelPreset.java` | 机体占位模型的唯一来源（模型 `ModelIndex` / 贴图 / 缩放 / 底面偏移），与 `MechaBodyPreset` 同为阶段 4.6 前素体取值的临时权威；外观 1:1 渲染，只与胶囊底面对齐。 |
+| `common/control/attr/MechaBodyPreset.java` | 碰撞体几何的唯一来源（圆柱半径 / 全高 / `HALF_TOTAL` / 由脚底算控制器碰撞体中心 / 各姿态高度），服务端出生点与客户端锚点共用。 |
+| `common/control/attr/MechaModelPreset.java` | 机体占位模型的唯一来源（模型 `ModelIndex` / 贴图 / 缩放 / 底面偏移），与 `MechaBodyPreset` 同为阶段 4.6 前素体取值的临时权威；外观 1:1 渲染，只与碰撞体底面对齐。 |
 | `network/ARMSNetwork.java` | 载荷注册与协议版本串；四个载荷为下行 `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` / `MechaCoreSyncPayload` 与上行 `MechaInputPayload`。 |
 | `client/ARMSClient.java` | 客户端输入采集与上行发送（`ClientTickEvent.Pre`）。客户端不构造 KCC、不跑状态机。 |
 | `client/ClientMechaAnchor.java` | 客户端可视锚点的采样与插值（含传送 / 断流跳变判据）。 |
@@ -120,8 +122,8 @@
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进控制器（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），控制器在 `prePhysicsTick` 里把权威值落到刚体姿态上（`writeFacing`，绕世界 Y 轴、每步现算）；`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避轴（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
-- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进控制器（`MechaCharacter.setMoveSpeedModifier`），作为**驱动力 `F_drive` 的缩放系数**（在锥截阈值以下的区间里稳态速率随之等比缩放；实测倍率 1.0 与 0.3 的稳态速率之比不是 0.3，原因见 `docs/角色控制器-刚体动力学方案.md` §12.10），进入 dodge 时把水平速度**赋值**到闪避轴上（`v' = (max(v·u, 0) + Δv)·u`：垂直于轴的动量整段抹掉、反向分量截断为 0、同向分量保留并叠加 Δv）。闪避与跳跃同构地**以冲量衡量**：`Δv = I_dodge / m`（`I_dodge` 见 `common/control/MechaControl.java#DODGE_IMPULSE`，`m` 见 `common/control/MechaCharacter.java#getControllerMass`，默认就是刚体质量），因此同一个冲量在越重的机体上效果越小；闪避轴 `u` 由输入轴与本步朝向解出，不读当前速度，见 `common/control/MechaCharacter.java#requestDodgeImpulse`。不剥夺自主移动：dodge 的进入动作不写 `MOVE_SPEED_MODIFIER`，见 `common/control/state/graph/MechaStateActions.java#gaitPreservingModifier`。姿态轮廓（蹲伏 / 卧倒的胶囊尺寸）**未接入**（P5 的范围）：刚体路线上在世换形已经可行（`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测），但接管它还差「变高前先向上扫掠确认头顶空间」与「按新半高把脚底重新对齐」两件，因此 `MechaCharacter.applyPostureShape` 仍是返回 `false` 的占位。
-- 行走力学模型（`MechaCharacter.updateWalk`，刚体形态）：输入施加的是**力**，速度由求解器按真实接触积分。地面：`F_drive = min(k·computeDriveForce(v), μ_eff·N)` 沿目标移动方向施加，再加 `μ_eff·N·(1 + 1% 余量)` 的摩擦前馈把引擎的静摩擦抵消掉，`N = m·g·cosθ` 取静态估算；**引擎对受力接触体给的是静摩擦锁定而不是「从受力里减掉 μN」**，因此前馈与那 1% 余量都是必需的，机制与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。空中控制力为 `F_max × AIR_CONTROL`（0.30）、不加前馈，因此空中难变向而跳跃继承水平速度。着地判据（向下扫掠 + 法线筛 + 最小保持）见同文 §7.7，位姿写入规则与越障三段见同文 §6.1、§6.2。**顶速三项尚未与旧标定对齐**（实测站立 25.0 m/s、蹲伏 10.7 m/s，且倍率不等比），原因与可动的旋钮见同文 §12.10。
+- 逻辑层产出 → 物理的落地集中在 `MechaControl.applyLogicOutputToKcc`：`MOVE_SPEED_MODIFIER` 写进控制器（`MechaCharacter.setMoveSpeedModifier`），作为**驱动力 `F_drive` 的缩放系数**（在锥截阈值以下的区间里稳态速率随之等比缩放；实测倍率 1.0 与 0.3 的稳态速率之比不是 0.3，原因见 `docs/角色控制器-刚体动力学方案.md` §12.10），进入 dodge 时把水平速度**赋值**到闪避轴上（`v' = (max(v·u, 0) + Δv)·u`：垂直于轴的动量整段抹掉、反向分量截断为 0、同向分量保留并叠加 Δv）。闪避与跳跃同构地**以冲量衡量**：`Δv = I_dodge / m`（`I_dodge` 见 `common/control/MechaControl.java#DODGE_IMPULSE`，`m` 见 `common/control/MechaCharacter.java#getControllerMass`，默认就是刚体质量），因此同一个冲量在越重的机体上效果越小；闪避轴 `u` 由输入轴与本步朝向解出，不读当前速度，见 `common/control/MechaCharacter.java#requestDodgeImpulse`。不剥夺自主移动：dodge 的进入动作不写 `MOVE_SPEED_MODIFIER`，见 `common/control/state/graph/MechaStateActions.java#gaitPreservingModifier`。姿态轮廓（蹲伏 / 卧倒的碰撞体尺寸）**未接入**（P5 的范围）：刚体路线上在世换形已经可行（`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测），但接管它还差「变高前先向上扫掠确认头顶空间」与「按新半高把脚底重新对齐」两件，因此 `MechaCharacter.applyPostureShape` 仍是返回 `false` 的占位。
+- 行走力学模型（`MechaCharacter.updateWalk`，刚体形态）：输入施加的是**力**，速度由求解器按真实接触积分。地面：`F_drive = min(k·computeDriveForce(v), μ_eff·N)` 沿目标移动方向施加，再加 `μ_eff·N·(1 + 1% 余量)` 的摩擦前馈把引擎的静摩擦抵消掉，`N = m·g·cosθ` 取静态估算；**引擎对受力接触体给的是静摩擦锁定而不是「从受力里减掉 μN」**，因此前馈与那 1% 余量都是必需的，机制与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。空中控制力为 `F_max × AIR_CONTROL`（0.30）、不加前馈，因此空中难变向而跳跃继承水平速度。着地判据（向下扫掠 + 法线筛 + 最小保持）见同文 §7.7，位姿写入规则与越障两段见同文 §6.1、§6.2。**顶速三项尚未与旧标定对齐**（实测站立 25.0 m/s、蹲伏 10.7 m/s，且倍率不等比），原因与可动的旋钮见同文 §12.10。
 - **撞墙时速度会归零**（KCC 时代的那条缺陷已随承载物消失）：刚体的速度就是求解器给出的真实速度，被挡住即归零，实测见 `docs/角色控制器-刚体原型与引擎约束.md` §3。KCC 那条「水平通道是位移命令、原生侧从不写回」的成因与上游报告（[Libbulletjme#58](https://github.com/stephengold/Libbulletjme/issues/58)）记在 `docs/角色控制器-KCC制约调研与替换评估.md` §3.2。
 - **已知缺陷：外部位移会被两处回写抹掉。** 宿主实体的位置由 KCC 每 tick 产出并在服务端 level 相位回写（`common/ArmsCoreServerEvents.java#applyPoseToHost`），而 `/tp` 一类的本模组之外的写入只改了宿主实体。客户端那一侧：`PlayerTickEvent.Post` 上的 `client/ClientHostPoseEvents.java#applySyncedPose` 用旧 `DATA_POS` 把自己放回旧位置，而它只调 `Entity#setPos`、不写 `xo/yo/zo`（原版处理 `ClientboundPlayerPositionPacket` 时把这一族字段写成了目标），于是同一 tick 渲染出的相机按 `xo` 与当前位置插值——外观上是「闪到目标一帧」，位置其实当 tick 就被抹掉。服务端那一侧：同一 tick 的 level 相位用旧 KCC 位置覆盖实体，tick 尾相位（收到的包在 `net.minecraft.server.MinecraftServer#waitUntilNextTick` 里排空）再由客户端上报的旧位置覆盖一次。**摄入已落地**：`common/HostPositionIntake.java` 把外部位移转成 KCC 的 warp 并在落地前钉住 `DATA_POS`；判定点是 `mixin/EntityPositionWriteMixin.java` 对 `Entity#setPos` 的注入，按「作用域栈 + 锚点」分类（三类已知镜像由该 Mixin 与 `mixin/ServerGamePacketListenerMixin.java`、两端运行时回写各压一个作用域；只有栈空且目标不等于锚点才采纳）。**仍未落地的是服务端那次每 tick 位置回写**（`docs/宿主位置权威与位移摄入设计.md` §九 第 4 步要删掉它、宿主位置改由客户端上报维护），以及乘客态与客户端那两半；已完成与未完成的逐条清单见该文 §十一。
 - 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
@@ -144,7 +146,7 @@
 - **拿不准能不能安全回滚，就先提交。** 未提交的工作在 `git checkout` / `git restore` / `git stash drop` 面前没有保护层；把当前这一轮做完的部分先 `git add` 成一个临时提交是唯一稳妥的「存档点」。
 - `git checkout -- <文件>` / `git restore <文件>` **只能用于「这个文件的全部未提交改动都不要了」**。执行前先 `git diff --stat <文件>` 确认这个文件里到底有哪些改动，并逐条确认都可以丢。
 - **禁止用文件级回滚撤销「只占该文件一部分」的改动。** 典型场景：某个文件里既有本轮已验证、尚未提交的重构，又有为调查临时加进去的代码——此时要撤的只是后者，`git checkout` 会把前者一起抹掉。这种情况逐处 `edit` 删掉那部分代码。
-- 撤销之后必须复跑 `.\gradlew test`，并用 `git status --short` 核对文件清单。文件级回滚是静默的：它不会报错，也不会提示丢了什么。
+- 撤销之后必须复跑 `.\gradlew --offline test`，并用 `git status --short` 核对文件清单。文件级回滚是静默的：它不会报错，也不会提示丢了什么。
 - 临时的诊断代码与探针测试要么放在本轮结束前删除，要么在存在同文件的未提交改动时先提交正式改动再加进去，避免两者混在同一个文件里。
 
 ## 文档编辑规范
@@ -218,7 +220,7 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 
 ## 调试与运行
 
-- VS Code 已配置启动项 `.vscode/launch.json`（Client / Data / GameTestServer / Server），依赖 `build/moddev/` 下的参数文件；若文件不存在，先运行一次 `gradlew prepareClientRun` 等任务生成。
+- VS Code 已配置启动项 `.vscode/launch.json`（Client / Data / GameTestServer / Server），依赖 `build/moddev/` 下的参数文件；若文件不存在，先运行一次 `gradlew --offline prepareClientRun` 等任务生成。
 - 物理/动画日志：`MechaLogicStateMachine.DEBUG_LOG = false`，临时设为 `true` 可打印状态转移。
 - `MechaCharacter` 中行走力、跳跃、摩擦等参数集中在 `MechaWalkingAttr` / `MechaJumpAttr`（`common/control/attr`）。
 
@@ -227,10 +229,10 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | 文档 | 内容 |
 |------|------|
 | `docs/总体设计文档.md` | 架构、`IArmsHost`、`ArmsCore`、`MechaControl` 双层刚体、两条输入路径。 |
-| `docs/角色控制器-行走物理设计.md` | KCC 承载下的现行力模型：控制力、抓地力、跳跃模型（瞬时冲量 + 助推窗口）、多通道合成、线速度单位约定；摩擦项归属、越障三段与着地判据的迁移结论指向 `docs/角色控制器-刚体动力学方案.md` §6.2、§7.1、§7.4、§7.6。 |
+| `docs/角色控制器-行走物理设计.md` | KCC 承载下的现行力模型：控制力、抓地力、跳跃模型（瞬时冲量 + 助推窗口）、多通道合成、线速度单位约定；摩擦项归属、越障判决与着地判据的迁移结论指向 `docs/角色控制器-刚体动力学方案.md` §6.2、§7.1、§7.4、§7.6。 |
 | `docs/角色控制器-KCC制约调研与替换评估.md` | KCC（btKinematicCharacterController）制约调研：单位语义、不可观测与无写回、垂直通道隐藏上限、在世不可换形的硬阻塞、无质量不受力；`onGround()` 的真实机制（上一步向下形状扫掠是否命中，不是接触清单查询）；记录 Minie 的 BetterCharacterControl 作为既有先例——它的「每步写线速度」的速度权威、没有越障、不取命中法线三条不照搬，只取球扫掠着地 / 变高前先扫掠 / `setKinematic` 三样形态；据此引出自实现刚体角色控制器的方向与验收基线（实现途径归后续文档）。 |
-| `docs/角色控制器-刚体原型与引擎约束.md` | 动力学刚体路线在真实 `PhysicsSpace` 上的**实测结果与实现约束**：锁转站立零漂移、撞墙速度归零、越障阈值精确等于台阶高度、引擎组合摩擦为双方之积（五档 × 六坡角的标定表，地形侧取 Bullet 默认 0.5——数据包里 `BlockPhysicsData` 的 0.7 只被按接触点写入的路径用到）、`setAngularFactor` 只拦角冲量而不改逆惯量、分轴锁在换形与改质量后仍有效、地面 PD 姿态控制器的六组增益数据与单接触点机制、落地收敛的首步即锁对照（`(0,1,0)` 锁 pitch/roll 留 yaw）、探针取高判据。**五条**实施坑（前四条不报错、只表现为越障不触发；第五条是 `sweepTest` 结果无序、判决必须「先筛再取」）与 KCC 验收基线的对账表也在本文；§8.3 与 §8.4 给出收敛律的纯运动学验证（倾角严格按 `(1−λ)` 衰减、单轴初态朝向漂移 0.00000°）与斜置初态的朝向偏差量级表。可执行判据 `src/test/java/io/github/sweetzonzi/arms_core/common/control/RigidBodyControllerPrototypeTest.java`。 |
-| `docs/角色控制器-刚体动力学方案.md` | 刚体控制器的**设计决策与理由与实测数值**：现行 KCC 的三个阻断性问题、四项已定型选择、姿态自由度划分（`(0, 1, 0)` 锁 pitch/roll 留 yaw，yaw 由每物理步的位姿写入驱动并作为躯干的目标朝向，理由见 §4.1、§5.2）、落地处理（锁与摆正两个动作、收敛律 = 把上轴转正的最小旋转、为什么不需要平滑过渡的权重）、**地面行走力律**（`F_drive` 截到 `μN` + 摩擦锥前馈带 1% 释放余量；含引擎「静摩擦锁定」的实测、三种候选模型的取舍、以及与旧标定的对账表——起步加速度已复现、顶速未对齐）、**接触量取法**（`N = m·g·cosθ`、`μ_eff` 取配置常量，都不读接触点）、**着地判据**（向下扫掠 + 端点定窗口 + 法线竖直分量 ≥ 0.35 + 上升门限取量级 + 最小保持）、**位姿写入的四条规则与越障三段**（抬升 → 前移 → 落位，同一物理步内）、`warp` 收缩为「位置 + 速度」、力与力矩如何作用于胶囊体（世界系归约）、力源到作动器的数据映射（五类力源、两个去向、作动器交出的四样数据、分配目标与各界的构造、活行掩码由 `angularFactor` 导出——飞行 6 行 / 地面与收敛窗口 4 行）、气动复用与每物理步现算（逐计算点速度含 `ω × r`、气动点随舵面转带来两条接线前提、仿射模型 = 截距 + 割线列，实测区间内偏差峰值 7.5% 列模长）、气动的去向是**目标上的矢量减法**（含折进界 / 折进目标 / 加在输出三路对比）。含实施阶段 P1–P6 的落地状态、待定项（§12.1、§12.8 已定，§12.9 三处待测已量出数值，§12.10 是顶速标定）与术语表；控制分配器本体见 `docs/控制分配-作动器wrench分配设计.md`。 |
+| `docs/角色控制器-刚体原型与引擎约束.md` | 动力学刚体路线在真实 `PhysicsSpace` 上的**实测结果与实现约束**：锁转站立零漂移、撞墙速度归零、越障阈值精确等于台阶高度、引擎组合摩擦为双方之积（五档 × 六坡角的标定表，地形侧取 Bullet 默认 0.5——数据包里 `BlockPhysicsData` 的 0.7 只被按接触点写入的路径用到）、`setAngularFactor` 只拦角冲量而不改逆惯量、分轴锁在换形与改质量后仍有效、地面 PD 姿态控制器的六组增益数据与单接触点机制、落地收敛的首步即锁对照（`(0,1,0)` 锁 pitch/roll 留 yaw）、探针取高判据。**九条**实施坑（前五条是越障判决本身：探针取高、命中比例 0 是合法信号、顶面探针的取高、抬升量的下限（只属于胶囊承载时期）、`sweepTest` 结果无序；第六条是落脚面探针的取位与取高——用碰撞体形状在落位位置下扫，含掠射接触的读数表与推进量下限 0.1 m 的两侧夹法；后三条是底面为平面的形体在斜置初态下的穿透恢复、锁转下倾角是姿态写入的专属量、以及有限宽碰撞体绕角点接触的实测（含判据收窄后该边界为何消失））与 KCC 验收基线的对账表也在本文；§8.3 与 §8.4 给出收敛律的纯运动学验证（倾角严格按 `(1−λ)` 衰减、单轴初态朝向漂移 0.00000°）与斜置初态的朝向偏差量级表。可执行判据 `src/test/java/io/github/sweetzonzi/arms_core/common/control/RigidBodyControllerPrototypeTest.java`。 |
+| `docs/角色控制器-刚体动力学方案.md` | 刚体控制器的**设计决策与理由与实测数值**：现行 KCC 的三个阻断性问题、四项已定型选择、姿态自由度划分（`(0, 1, 0)` 锁 pitch/roll 留 yaw，yaw 由每物理步的位姿写入驱动并作为躯干的目标朝向，理由见 §4.1、§5.2）、落地处理（锁与摆正两个动作、收敛律 = 把上轴转正的最小旋转、为什么不需要平滑过渡的权重）、**地面行走力律**（`F_drive` 截到 `μN` + 摩擦锥前馈带 1% 释放余量；含引擎「静摩擦锁定」的实测、三种候选模型的取舍、以及与旧标定的对账表——起步加速度已复现、顶速未对齐）、**接触量取法**（`N = m·g·cosθ`、`μ_eff` 取配置常量，都不读接触点）、**着地判据**（向下扫掠 + 端点定窗口 + 法线竖直分量 ≥ 0.35 + 上升门限取量级 + 最小保持）、**位姿写入的四条规则与越障两段**（探落脚面 → 落位，同一物理步内）、`warp` 收缩为「位置 + 速度」、力与力矩如何作用于碰撞体（世界系归约）、力源到作动器的数据映射（五类力源、两个去向、作动器交出的四样数据、分配目标与各界的构造、活行掩码由 `angularFactor` 导出——飞行 6 行 / 地面与收敛窗口 4 行）、气动复用与每物理步现算（逐计算点速度含 `ω × r`、气动点随舵面转带来两条接线前提、仿射模型 = 截距 + 割线列，实测区间内偏差峰值 7.5% 列模长）、气动的去向是**目标上的矢量减法**（含折进界 / 折进目标 / 加在输出三路对比）。含实施阶段 P1–P6 的落地状态、待定项（§12.1、§12.8 已定，§12.9 三处待测已量出数值，§12.10 是顶速标定）与术语表；控制分配器本体见 `docs/控制分配-作动器wrench分配设计.md`。 |
 | `docs/控制分配-作动器wrench分配设计.md` | 「要一份 wrench → 每个作动器出多少」的**纯函数设计**，与载具类型无关：五类驱动的分类与两个去向、作动器交出的四样数据与各界（推进器 `[0,1]` / 舵面与姿控器件 `[−1,+1]`、形状配装期定死、模长随动压缩放）、分配目标的语义、雅可比割线列的取法（两端严格精确、区间内误差实测峰值 7.5% 且两个曲率来源部分相消）、阻尼伪逆 + 级联饱和 + 权重矩阵两层职责（含为什么不需要线性代数库、被取代的按轴独立钳制）、问题的维度由调用方给定的行掩码导出、混合作动器与代回复核、`u` 兼作程序性动画与跨端同步的原始输入；虚拟作动器（六根解耦有界列，RCS 与动量轮，§2.4）与平衡辅助（分配之后的残差补齐，抹平比例 `k` 默认 0.5，§5.3）。含实施与验证（十条纯函数断言）、三项待定项。 |
 | `docs/跳跃-瞬时冲量持续助推设计.md` | 跳跃模型改造设计：瞬时冲量 + 持续助推窗口、三条窗口终止条件、参数 `F_BOOST` / `T_BOOST_MAX`、代码与文档改动清单、验收判据。 |
 | `docs/分层控制器与状态机设计.md` | 状态机、MoLang 集成、动画驱动。 |

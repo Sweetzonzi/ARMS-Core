@@ -5,7 +5,7 @@ import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.PhysicsRayTestResult;
 import com.jme3.bullet.collision.PhysicsSweepTestResult;
 import com.jme3.bullet.collision.shapes.BoxCollisionShape;
-import com.jme3.bullet.collision.shapes.CapsuleCollisionShape;
+import com.jme3.bullet.collision.shapes.ConvexShape;
 import com.jme3.bullet.objects.PhysicsRigidBody;
 import com.jme3.math.Matrix3f;
 import com.jme3.math.Quaternion;
@@ -13,6 +13,7 @@ import com.jme3.math.Transform;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -23,7 +24,7 @@ import java.util.List;
  * <p>
  * 本类回答四个在动手迁移 {@code MechaCharacter} 之前必须先有数值答案的问题：
  * <ol>
- *   <li><b>锁转刚体站得住吗</b> —— {@code setAngularFactor(0)} 之后，胶囊在 100 Hz 下 5 s 是否
+ *   <li><b>锁转刚体站得住吗</b> —— {@code setAngularFactor(0)} 之后，碰撞体在 100 Hz 下 5 s 是否
  *       既不抖动也不缓慢下沉、朝向是否恒为单位四元数</li> *   <li><b>撞墙速度归零吗</b> —— 这是 KCC 的已知缺陷 B1，刚体路线必须天然成立</li>
  *   <li><b>自写越障能做到多少</b> —— 抬升 + 水平 sweep + 向下探针，判决阈值是否精确等于设定步高</li>
  *   <li><b>引擎摩擦能给出多少抓地</b> —— 引擎取「双方摩擦之积」，地形侧是 Bullet 默认 0.5，
@@ -38,8 +39,8 @@ class RigidBodyControllerPrototypeTest {
     /** 与游戏内一致的物理步长：tps = 100 */
     private static final float DT = 1f / 100f;
 
-    private static final float CAPSULE_RADIUS = MechaBodyPreset.CAPSULE_RADIUS;
-    private static final float CAPSULE_HEIGHT = MechaBodyPreset.CAPSULE_HEIGHT;
+    private static final float RADIUS = MechaBodyPreset.RADIUS;
+    private static final float HEIGHT = MechaBodyPreset.BODY_HEIGHT;
     private static final float HALF_TOTAL = MechaBodyPreset.HALF_TOTAL;
 
     private static final float MASS = MechaWalkingAttr.MASS;
@@ -55,7 +56,7 @@ class RigidBodyControllerPrototypeTest {
      * 越障探针的一次性扫掠长度 (m)。必须 ≥ 0.4（引擎对 {@code sweepTest} 起终点距离的下限，
      * 见 {@code CollisionSpace#sweepTest}），因此不能等于每步位移（100 Hz 下 6 m/s 只有 6 cm）。
      * <p>
-     * 它同时决定越障的<b>起判距离</b>：胶囊前缘离台阶超过 {@code 探针长度 − 半径} 时探不到。
+     * 它同时决定越障的<b>起判距离</b>：碰撞体前缘离台阶超过 {@code 探针长度 − 半径} 时探不到。
      * 探到之后每次只推进「前缘贴到台阶」的那一小段，因此探针长不会带来瞬移。
      */
     private static final float PROBE_FORWARD = 1.2f;
@@ -73,8 +74,8 @@ class RigidBodyControllerPrototypeTest {
     /**
      * 抬起来做判决时，脚底要高出台阶顶面多少 (m)。
      * <p>
-     * <b>它必须大于胶囊半径。</b>抬起来之后胶囊在水平方向上仍然要前进
-     * {@link #CLEARANCE_PROBE} 米，而胶囊底部是一个半径 0.4 m 的半球：脚底只高出顶面
+     * <b>它必须大于碰撞体半径。</b>抬起来之后碰撞体在水平方向上仍然要前进
+     * {@link #CLEARANCE_PROBE} 米，而碰撞体底部是一个半径 0.4 m 的半球：脚底只高出顶面
      * {@code δ} 时，半球在水平方向仍伸出 {@code √(r² − (r − δ)²)} ≈ {@code √(2rδ)}，
      * 台阶另一侧的上边缘就落在这段范围内。δ = 0.05 时伸出 0.20 m，判决因此会被
      * 「抬起来之后还是撞到台阶自己」误判成失败——原型的第一次尝试正是这样失败的。
@@ -126,7 +127,7 @@ class RigidBodyControllerPrototypeTest {
      * 倾斜盒上表面的世界高度 (m)。
      * <p>
      * 盒中心在 {@code (0, −0.5, 0)}、半高 0.5，因此底面是一个过原点的平面，绕 X 轴倾斜 θ 后
-     * 其方程是 {@code y = −z·tanθ}。出生点必须按这个高度算，否则胶囊会被摆在斜面内部，
+     * 其方程是 {@code y = −z·tanθ}。出生点必须按这个高度算，否则碰撞体会被摆在斜面内部，
      * 求解器把它挤出来的方向是任意的，量到的「滑落」也就不是摩擦的结果。
      */
     private static float slopeSurfaceY(float degrees, float z) {
@@ -136,8 +137,9 @@ class RigidBodyControllerPrototypeTest {
     /**
      * 控制器刚体：动态、无阻尼、无弹性，旋转自由度由**逐轴** {@code angularFactor} 给出。
      * <p>
-     * 胶囊的本地轴是 +Y（{@code CapsuleCollisionShape} 内部是 {@code btCapsuleShape}），因此单位四元数
-     * 就是「竖直」。{@code (0, 0, 0)} 即全锁；{@code (0, 1, 0)} 是地面状态的形态——锁 pitch / roll、留 yaw。
+     * 碰撞体的本地轴是 +Y（{@code MechaBodyPreset.newBodyShape()} 造出的圆柱把轴建在本地 +Y 上），
+     * 因此单位四元数就是「竖直」。{@code (0, 0, 0)} 即全锁；{@code (0, 1, 0)} 是地面状态的形态
+     * ——锁 pitch / roll、留 yaw。
      * <p>
      * 摩擦系数由调用方给出：本参数即将取代力模型里的 {@code μ_naked} / {@code μ_foot}，
      * 见 {@link #engineFrictionCalibration()}。
@@ -147,7 +149,7 @@ class RigidBodyControllerPrototypeTest {
     private static PhysicsRigidBody newController(PhysicsSpace space, Vector3f feet, float friction,
                                                   Vector3f angularFactor) {
         PhysicsRigidBody body = new PhysicsRigidBody(
-                new CapsuleCollisionShape(CAPSULE_RADIUS, CAPSULE_HEIGHT), MASS);
+                MechaBodyPreset.newBodyShape(), MASS);
         body.setPhysicsLocation(new Vector3f(feet.x, feet.y + HALF_TOTAL, feet.z));
         body.setAngularFactor(angularFactor);
         body.setAngularDamping(0f);
@@ -183,7 +185,7 @@ class RigidBodyControllerPrototypeTest {
     // ═══════════════════════════════════════════════
 
     /**
-     * 动态刚体胶囊在 100 Hz 下站 5 s：脚底不得穿透、不得持续下沉；朝向恒为单位四元数。
+     * 动态刚体碰撞体在 100 Hz 下站 5 s：脚底不得穿透、不得持续下沉；朝向恒为单位四元数。
      * <p>
      * 这条不成立，后面三条都不用谈——它检验的是「锁转刚体是不是一个可用的承载物」。
      */
@@ -283,11 +285,11 @@ class RigidBodyControllerPrototypeTest {
             }
         }
 
-        System.out.printf("[原型②] 顶墙：最前沿 z = %.4f（墙前沿 2.0，胶囊半径 %.2f → 理论止于 %.4f），"
+        System.out.printf("[原型②] 顶墙：最前沿 z = %.4f（墙前沿 2.0，碰撞体半径 %.2f → 理论止于 %.4f），"
                         + "第 40 步水平速率 %.4f m/s，末步水平速率 %.4f m/s%n",
-                maxZ, CAPSULE_RADIUS, 2.0f - CAPSULE_RADIUS, speedAtWall, horizontalSpeed(controller));
+                maxZ, RADIUS, 2.0f - RADIUS, speedAtWall, horizontalSpeed(controller));
 
-        assertTrue(maxZ < 2.0f - CAPSULE_RADIUS + 0.05f,
+        assertTrue(maxZ < 2.0f - RADIUS + 0.05f,
                 "不得穿入墙面，实际最前沿 z = " + maxZ);
         assertTrue(horizontalSpeed(controller) < 0.2f,
                 "顶墙时水平速度应被求解器归零，实际 " + horizontalSpeed(controller));
@@ -374,17 +376,17 @@ class RigidBodyControllerPrototypeTest {
     /**
      * 自写越障：抬升试扫 → 向下探落脚面 → 落地。
      * <p>
-     * 与 KCC 的 {@code stepUp} 同范式（先抬高胶囊再水平扫掠），但三条判据全部由本方法给出，
+     * 与 KCC 的 {@code stepUp} 同范式（先抬高碰撞体再水平扫掠），但三条判据全部由本方法给出，
      * 因此可越障高度是精确的设计值，不含 KCC 那 2 cm 的隐式折扣：
      * <ol>
-     *   <li><b>是否被挡</b> —— 从<b>脚底高度</b>沿移动方向用胶囊形状做水平 sweep。用脚底而不是
-     *       胶囊中心是必须的：障碍只要低于中心就会从中心的射线下方穿过去，那正是「矮台阶探测不到」的成因</li>
+     *   <li><b>是否被挡</b> —— 从<b>脚底高度</b>沿移动方向用碰撞体形状做水平 sweep。用脚底而不是
+     *       碰撞体中心是必须的：障碍只要低于中心就会从中心的射线下方穿过去，那正是「矮台阶探测不到」的成因</li>
      *   <li><b>是不是墙</b> —— 命中面法线的竖直分量足够小才算墙；接近水平的是坡或地面，不是台阶。
      *       墙的法线接近水平时，其 Y 分量就是台阶顶面的高度</li>
-     *   <li><b>抬起来走不走得过去</b> —— 把胶囊抬到台阶顶面之上再沿同方向 sweep 一次；仍被挡说明
+     *   <li><b>抬起来走不走得过去</b> —— 把碰撞体抬到台阶顶面之上再沿同方向 sweep 一次；仍被挡说明
      *       障碍高于步高（或头顶有东西），放弃。这一次 sweep 同时充当越障高度的判决</li>
      * </ol>
-     * 成立则把胶囊放到「前缘抵墙、脚底踏在台阶顶面」的位置。本原型用位姿写入完成这次位移；
+     * 成立则把碰撞体放到「前缘抵墙、脚底踏在台阶顶面」的位置。本原型用位姿写入完成这次位移；
      * 正式实现应改为速度修正，避免每步一次运动学瞬移。
      *
      * @param direction 水平移动方向（无需归一化）
@@ -397,10 +399,10 @@ class RigidBodyControllerPrototypeTest {
         Vector3f dir = direction.normalize();
         Vector3f center = controller.getPhysicsLocation(null);
         float feet = center.y - HALF_TOTAL;
-        CapsuleCollisionShape shape = (CapsuleCollisionShape) controller.getCollisionShape();
+        ConvexShape shape = (ConvexShape) controller.getCollisionShape();
 
         // ① 脚底略上方的水平 sweep：前方 PROBE_FORWARD 米内有没有挡路的东西。
-        //    起点要比脚底高一点点：胶囊是站在地上的，脚底与地面处于接触状态，
+        //    起点要比脚底高一点点：碰撞体是站在地上的，脚底与地面处于接触状态，
         //    从脚底精确起扫会把「脚下的地板」当成 0 距离的命中，于是每次判决都判成
         //    「命中面接近水平 → 不是台阶」而失败。抬 1 cm 即可跳过地面、同时仍低于任何台阶顶面
         float sweepFeet = feet + 0.01f;
@@ -412,7 +414,7 @@ class RigidBodyControllerPrototypeTest {
         if (sweepResults.isEmpty()) {
             return 1;
         }
-        // 命中比例 0 是<b>合法且常见</b>的信号，不是「没探到」：胶囊被求解器按在台阶面上时，
+        // 命中比例 0 是<b>合法且常见</b>的信号，不是「没探到」：碰撞体被求解器按在台阶面上时，
         // 扫掠一出发就接触，引擎给出 0。把它当成失败会让越障只在「还没贴上墙」的那几帧里生效，
         // 而真正需要它的时刻恰恰是贴上墙之后——紧贴障碍时比例恒为 0，越障于是永不触发
         float fraction = sweepResults.get(0).getHitFraction();
@@ -425,15 +427,15 @@ class RigidBodyControllerPrototypeTest {
         }
         float gap = Math.max(fraction, 0f) * PROBE_FORWARD;
 
-        // ② 台阶前缘离胶囊中心还有多远 = 探针走过的距离 + 半径（比例 0 表示已经贴住，距离取半径）。
+        // ② 台阶前缘离碰撞体中心还有多远 = 探针走过的距离 + 半径（比例 0 表示已经贴住，距离取半径）。
         //    它一定是正数，因此可以无条件当作「到台阶面的水平距离」用
-        float toFace = gap + CAPSULE_RADIUS;
-        if (toFace > PROBE_FORWARD + CAPSULE_RADIUS) {
+        float toFace = gap + RADIUS;
+        if (toFace > PROBE_FORWARD + RADIUS) {
             return 4; // 台阶在探针范围之外（防御性，比例已限幅到 1 以内）
         }
 
         // ③ 台阶顶面高度：从「脚底 + 步高」之上往下打。
-        //    起点必须高过台阶顶面：从胶囊中心高度（= 脚底 + 1.2 m）往下打，在台阶还差半步才
+        //    起点必须高过台阶顶面：从碰撞体中心高度（= 脚底 + 1.2 m）往下打，在台阶还差半步才
         //    走到的情况下会先打到脚下的地板，解出的落差恒为 0，越障永远不触发；
         //    而台阶一旦真的走到跟前，探针又正好落在台阶上——表现是「越障只在贴墙那一帧才开始判」，
         //    取高错误与取位错误会互相掩盖
@@ -458,7 +460,7 @@ class RigidBodyControllerPrototypeTest {
 
         // ④ 抬到台阶顶面之上再水平 sweep：仍被挡说明障碍高于步高（或头顶有东西），放弃。
         //    这一次 sweep 同时充当越障高度的判决：墙高 ≤ 步高时抬到顶面之上就畅通，
-        //    高于步高时抬起来的胶囊下半段仍在墙的高度范围内，必然再次命中
+        //    高于步高时抬起来的碰撞体下半段仍在墙的高度范围内，必然再次命中
         Vector3f liftedCenter = new Vector3f(
                 probeX, stepTop + LIFT_CLEARANCE + HALF_TOTAL, probeZ);
         space.sweepTest(shape,
@@ -484,7 +486,7 @@ class RigidBodyControllerPrototypeTest {
      * 地形侧当前是 Bullet 默认 0.5，因此角色侧要取多少才能等价于原来 {@code μ = 1.0} 的手感，
      * 必须实测而不是假定。
      * <p>
-     * 测量方式：在给定倾角的斜面上放一个锁转胶囊，不给任何输入，看它是否静止。
+     * 测量方式：在给定倾角的斜面上放一个锁转碰撞体，不给任何输入，看它是否静止。
      * 「不滑」的最大倾角就是 {@code atan(μ_combined)}。
      */
     @Test
@@ -522,7 +524,7 @@ class RigidBodyControllerPrototypeTest {
     private static float measureSlideOnSlope(float degrees, float characterFriction) {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticSlope(degrees, 0.5f));
-        // 出生点按斜面方程 y = −z·tanθ 取，再抬高半个胶囊，让它落到坡面上而不是被埋在坡里
+        // 出生点按斜面方程 y = −z·tanθ 取，再抬高半个碰撞体，让它落到坡面上而不是被埋在坡里
         float z = 0f;
         float spawnY = slopeSurfaceY(degrees, z) - HALF_TOTAL + 0.02f;
         PhysicsRigidBody controller = newController(space, new Vector3f(0f, spawnY, z), characterFriction);
@@ -545,10 +547,10 @@ class RigidBodyControllerPrototypeTest {
     // ═══════════════════════════════════════════════
 
     /**
-     * 越障探针的取高判据：矮台阶必须用<b>脚底高度</b>的 sweep 去探，胶囊中心高度的射线探不到它。
+     * 越障探针的取高判据：矮台阶必须用<b>脚底高度</b>的 sweep 去探，碰撞体中心高度的射线探不到它。
      * <p>
      * 这条是原型开发中实际踩到的坑，钉住它以免正式实现又退回「从中心打一条射线」的写法：
-     * 半砖顶面只有 0.5 m，而胶囊中心在 1.2 m——从中心水平打出的射线从台阶上方整条穿过去，
+     * 半砖顶面只有 0.5 m，而碰撞体中心在 1.2 m——从中心水平打出的射线从台阶上方整条穿过去，
      * 命中数恒为 0，表现是「越障永不触发」且没有任何报错。
      */
     @Test
@@ -568,7 +570,7 @@ class RigidBodyControllerPrototypeTest {
         assertTrue(rayHits.isEmpty(), "中心高度的射线应从矮台阶上方越过，实际命中 " + rayHits.size() + " 条");
 
         // ② 脚底高度的水平 sweep：探得到，且命中比例恰好等于「前缘贴到台阶」的那一段
-        CapsuleCollisionShape shape = new CapsuleCollisionShape(CAPSULE_RADIUS, CAPSULE_HEIGHT);
+        ConvexShape shape = MechaBodyPreset.newBodyShape();
         Vector3f feetCenter = new Vector3f(0f, HALF_TOTAL, 1.0f);
         List<PhysicsSweepTestResult> sweepHits = new ArrayList<>();
         space.sweepTest(shape,
@@ -576,14 +578,14 @@ class RigidBodyControllerPrototypeTest {
                 new Transform(feetCenter.add(new Vector3f(0f, 0f, PROBE_FORWARD)),
                         new Quaternion(), Vector3f.UNIT_XYZ),
                 sweepHits, 0.0f);
-        System.out.printf("[原型⑥] 同位置的胶囊 sweep：命中 %d 条%s%n", sweepHits.size(),
+        System.out.printf("[原型⑥] 同位置的碰撞体 sweep：命中 %d 条%s%n", sweepHits.size(),
                 sweepHits.isEmpty() ? "" : String.format("，比例 %.4f，法线 (%.3f, %.3f, %.3f)",
                         sweepHits.get(0).getHitFraction(),
                         sweepHits.get(0).getHitNormalLocal(new Vector3f()).x,
                         sweepHits.get(0).getHitNormalLocal(new Vector3f()).y,
                         sweepHits.get(0).getHitNormalLocal(new Vector3f()).z));
 
-        assertTrue(!sweepHits.isEmpty(), "脚底高度的胶囊 sweep 应命中台阶正面");
+        assertTrue(!sweepHits.isEmpty(), "脚底高度的碰撞体 sweep 应命中台阶正面");
         // 命中比例在「出发即接触」时是 0，因此只钉「命中面接近水平（是墙不是坡）」这一条；
         // 距离由 step-up 用 gap = max(fraction, 0) × 探针长度 限幅后使用
         assertTrue(sweepHits.get(0).getHitFraction() >= 0f
@@ -602,7 +604,7 @@ class RigidBodyControllerPrototypeTest {
     private static final float MAX_ANG_ACCEL = 200f;
 
     /**
-     * 对照实验：初始倾角 30° 的胶囊在平地上，两组方案各自的结局。
+     * 对照实验：初始倾角 30° 的碰撞体在平地上，两组方案各自的结局。
      * <p>
      * A 组锁转（{@code setAngularFactor(0)}）、B 组旋转自由度全开且不做任何姿态控制。
      * 两组都不施加行走力，只让物理跑 2 s。
@@ -632,7 +634,7 @@ class RigidBodyControllerPrototypeTest {
      * <p>
      * 姿态控制器按文档的 PD 形式给出角加速度，再经逆惯量主对角线换算成力矩：
      * {@code targetAngAccel = -kP·uprightErr - kD·angVelErr}，{@code torque = invInertia ⊙ targetAngAccel}。
-     * 判据是「能不能把 30° 倾角的胶囊扶正并稳住」，而不是「能不能不动」——后者锁转天然满足。
+     * 判据是「能不能把 30° 倾角的碰撞体扶正并稳住」，而不是「能不能不动」——后者锁转天然满足。
      */
     @Test
     void pdAttitudeControllerCanHoldUprightWithFreeRotation() {
@@ -652,13 +654,13 @@ class RigidBodyControllerPrototypeTest {
         System.out.printf("[原型⑦C] 参考档 kP=8000 kD=200：最大倾角 %.2f°，末倾角 %.2f°%n",
                 controlled.maxTilt(), controlled.finalTilt());
         // 判据钉的是「过程无界」这条实测结论，不是「最终能否扶正」：
-        // 试过的六组增益里没有一组能在过程上有界地把 30° 倾角扶回来，每一组都先让胶囊翻过头
+        // 试过的六组增益里没有一组能在过程上有界地把 30° 倾角扶回来，每一组都先让碰撞体翻过头
         // （最大倾角 178.66°–179.89°），并且在翻的过程中被弹离地面（脚底升到 +0.75 ~ +1.08 m），
         // 峰值角速度 24–28 rad/s。这是「单接触点 + 绕质心回正」的固有形态：力矩扶正的同时把
-        // 接触点甩到质心侧面，接触力随之产生向上的分量，胶囊起飞后失去摩擦、进入自由翻滚。
+        // 接触点甩到质心侧面，接触力随之产生向上的分量，碰撞体起飞后失去摩擦、进入自由翻滚。
         // 站立所需的「过程有界」因此不是调参能达到的
         assertTrue(controlled.maxTilt() > FALLEN_TILT,
-                "实测：PD 姿态控制器在扶正过程中会先让胶囊翻过头，实际最大倾角 " + controlled.maxTilt() + "°");
+                "实测：PD 姿态控制器在扶正过程中会先让碰撞体翻过头，实际最大倾角 " + controlled.maxTilt() + "°");
         assertTrue(locked.maxTilt() < 35f,
                 "对照：锁转时倾角恒为初始值，实际最大 " + locked.maxTilt() + "°");
     }
@@ -696,8 +698,8 @@ class RigidBodyControllerPrototypeTest {
         controller.setAngularFactor(new Vector3f(0f, 1f, 0f));
         controller.getPhysicsRotationMatrix(new Matrix3f());
 
-        // ① 换形：蹲伏轮廓（圆柱段 0.4 m），在世
-        controller.setCollisionShape(new CapsuleCollisionShape(CAPSULE_RADIUS, 0.4f));
+        // ① 换形：蹲伏轮廓（全高 0.4 m），在世
+        controller.setCollisionShape(MechaBodyPreset.newBodyShape(Posture.CROUCH));
         // ② 改质量：损伤后重建质量属性
         controller.setMass(50f);
 
@@ -721,7 +723,7 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 平地站立试验：胶囊初始倾角 30°（绕 Z 轴前倾），可选每步施加 PD 姿态力矩。
+     * 平地站立试验：碰撞体初始倾角 30°（绕 Z 轴前倾），可选每步施加 PD 姿态力矩。
      *
      * @param angularFactor 0 = 锁转，1 = 全开
      * @param kP            姿态控制器的比例增益（rad/s² per rad），0 表示不控制
@@ -926,6 +928,11 @@ class RigidBodyControllerPrototypeTest {
         System.out.printf("    对照 PD kP=8000 kD=200 → 最大倾角 %.2f°，脚底 y ∈ [%+.4f, %+.4f]，"
                         + "峰值角速度 %.1f rad/s%n",
                 pd.maxTilt(), pd.minFeet(), pd.maxFeet(), pd.maxAngularSpeed());
+        SettleOutcome penetrationBaseline = runSettleTrial(0f, LOCKED_PITCH_ROLL);
+        System.out.printf("    对照 只做穿透恢复（不做收敛写入）→ 脚底 y ∈ [%+.4f, %+.4f]，"
+                        + "末倾角 %.2f°%n",
+                penetrationBaseline.minFeet(), penetrationBaseline.maxFeet(),
+                penetrationBaseline.maxTilt());
 
         SettleOutcome locked = runSettleTrial(0.20f, LOCKED_PITCH_ROLL);
         SettleOutcome open = runSettleTrial(0.20f, ALL_FREE);
@@ -933,8 +940,12 @@ class RigidBodyControllerPrototypeTest {
                 "倾角按 (1 − λ) 衰减应在约 0.5 s 内收敛并锁定，实际 " + locked.steps() + " 步");
         assertTrue(locked.maxTilt() < 31f,
                 "过程必须单调：最大倾角不应超过初始的 30°，实际 " + locked.maxTilt() + "°");
-        assertTrue(locked.maxFeet() < 0.02f,
-                "运动学收敛不应把胶囊弹离地面，实际脚底最高 " + locked.maxFeet() + " m");
+        // 脚底读数的说明：初态是「底面贴地之后原地转 30°」，对底面为平面的形体这是几何上不可能的
+        // 姿态——最低点比底面低 半径 × sin 30° = 0.2 m，起步就埋在地里，因此这个读数里含一份
+        // 与控制器无关的穿透恢复（仅穿透恢复、不做收敛写入的那一档实测最高 0.0246 m）。
+        // 阈值按实测取 0.05 m，量级上仍是「几厘米的一次抬起」，不是「弹离地面」（§8.2）
+        assertTrue(locked.maxFeet() < 0.05f,
+                "运动学收敛不应把碰撞体弹离地面，实际脚底最高 " + locked.maxFeet() + " m");
         assertTrue(locked.maxPitchRollAngularSpeed() < 1.0e-4f,
                 "首步即锁 pitch/roll 之后求解器无法注入这两个轴的角速度，实际 "
                         + locked.maxPitchRollAngularSpeed() + " rad/s");
@@ -1156,10 +1167,16 @@ class RigidBodyControllerPrototypeTest {
                 lockedAt, endTilt, 0.5f, maxTilt, minFeet, maxFeet, maxPitchRollAngVel,
                 maxYawDrift, drift);
 
+        SettleOutcome penetrationBaseline = runSettleTrial(0f, LOCKED_PITCH_ROLL);
+        System.out.printf("[原型⑨B] 只做穿透恢复（不做收敛写入）→ 脚底 y ∈ [%+.4f, %+.4f]，末倾角 %.2f°%n",
+                penetrationBaseline.minFeet(), penetrationBaseline.maxFeet(),
+                penetrationBaseline.maxTilt());
         assertTrue(endTilt < 1f,
                 "运动学收敛应把倾角带回竖直，实际 " + endTilt + "°");
         assertTrue(maxTilt < 31f, "过程不应超过初始 30°，实际 " + maxTilt + "°");
-        assertTrue(maxFeet < 0.02f, "不应弹离地面，实际脚底最高 " + maxFeet + " m");
+        // 与 [原型⑧] 同一份说明：初态对底面为平面的形体是几何上不可能的（最低点比底面低 0.2 m），
+        // 读数里含一份与控制器无关的穿透恢复，因此阈值按实测取 0.05 m（§8.2）
+        assertTrue(maxFeet < 0.05f, "不应弹离地面，实际脚底最高 " + maxFeet + " m");
         assertTrue(maxPitchRollAngVel < 1.0e-4f,
                 "首步即锁 pitch/roll 之后求解器无法注入这两个轴的角速度，实际 "
                         + maxPitchRollAngVel + " rad/s");
@@ -1168,9 +1185,9 @@ class RigidBodyControllerPrototypeTest {
     }
 
     /**
-     * 锁转会冻住姿态：倒下的胶囊不会自己站起来，所以「锁」与「摆正」必须分别做。
+     * 锁转会冻住姿态：倒下的碰撞体不会自己站起来，所以「锁」与「摆正」必须分别做。
      * <p>
-     * 胶囊水平躺在地面上时，重力过质心、接触法向也过质心，合力矩为零——这是中性平衡，
+     * 碰撞体水平躺在地面上时，重力过质心、接触法向也过质心，合力矩为零——这是中性平衡，
      * 物理上没有任何东西会把它扶正。因此锁转只负责「不再改变朝向」，摆正必须由姿态写入完成。
      * 这条同时解释了为什么摆正那一小段不能省。
      */
@@ -1179,9 +1196,9 @@ class RigidBodyControllerPrototypeTest {
         PhysicsSpace space = newSpace();
         space.addCollisionObject(staticBox(
                 new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
-        // 躺倒：绕 Z 轴 90°，胶囊轴变成水平
+        // 躺倒：绕 Z 轴 90°，碰撞体轴变成水平
         PhysicsRigidBody controller = newController(space, new Vector3f(0f, 0f, 0f), 2.0f, 0f);
-        controller.setPhysicsLocation(new Vector3f(0f, CAPSULE_RADIUS, 0f));
+        controller.setPhysicsLocation(new Vector3f(0f, RADIUS, 0f));
         controller.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
                 (float) Math.toRadians(90f), new Vector3f(0f, 0f, 1f)));
 
@@ -1189,7 +1206,7 @@ class RigidBodyControllerPrototypeTest {
             space.update(DT, 0, 0x0);
         }
         float tiltAfterFalling = tiltDegrees(controller);
-        System.out.printf("[原型⑨B] 锁转的躺倒胶囊静置 3 s：倾角 %.4f°（初始 90°），角速度 %.6f rad/s%n",
+        System.out.printf("[原型⑨B] 锁转的躺倒碰撞体静置 3 s：倾角 %.4f°（初始 90°），角速度 %.6f rad/s%n",
                 tiltAfterFalling, controller.getAngularVelocity(null).length());
 
         assertTrue(Math.abs(tiltAfterFalling - 90f) < 1f,
@@ -1203,7 +1220,7 @@ class RigidBodyControllerPrototypeTest {
      * <p>
      * 这是收敛律的基准初态，也是唯一一个「绕水平轴的最小旋转恰好不改变朝向」的姿态之一——
      * 用它量倾角衰减最干净，但它测不出朝向有没有被带走，那要 {@link #dropTiltedOffAxis}。
-     * 胶囊绕自身轴旋转对称，俯仰与侧滚对接触几何等价。
+     * 碰撞体绕自身轴旋转对称，俯仰与侧滚对接触几何等价。
      */
     private static void dropTiltedThirtyDegrees(PhysicsRigidBody body) {
         body.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(
@@ -1244,7 +1261,11 @@ class RigidBodyControllerPrototypeTest {
         float maxYawDrift = 0f;
         int lockedAt = -1;
         for (int i = 0; i < 200; i++) {
-            if (settleTowardUpright(controller, lambda, 0.5f)) {
+            // λ ≤ 0 表示不做收敛写入：这一档量的是<b>初态本身的穿透恢复</b>。
+            // 「倾角 30° 且底面贴地」这个初态对底面是平面的形体是几何上不可能的：绕底边
+            // 转过 30° 之后最低点比底面还低 0.19 m，求解器必须先把它推出来。因此
+            // 「脚底最高」这个读数里含着一份与控制器无关的抬升，基线必须单独量（§8.2）
+            if (lambda > 0f && settleTowardUpright(controller, lambda, 0.5f)) {
                 lockedAt = i + 1;
                 break;
             }
@@ -1287,8 +1308,8 @@ class RigidBodyControllerPrototypeTest {
     void printPrototypeSummary() {
         System.out.println();
         System.out.println("══════════ 刚体控制器原型结论 ══════════");
-        System.out.printf("胶囊：半径 %.2f m，圆柱段 %.2f m，全高 %.2f m，质量 %.1f kg，步高 %.2f m%n",
-                CAPSULE_RADIUS, CAPSULE_HEIGHT, CAPSULE_HEIGHT + 2 * CAPSULE_RADIUS, MASS, STEP_HEIGHT);
+        System.out.printf("碰撞体：半径 %.2f m，全高 %.2f m，质量 %.1f kg，步高 %.2f m%n",
+                RADIUS, HEIGHT, MASS, STEP_HEIGHT);
         System.out.println("详见 [原型①]–[原型④] 的逐条输出。");
         System.out.println("════════════════════════════════════════");
     }

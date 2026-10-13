@@ -78,7 +78,7 @@ class MechaCharacterStepTest {
                 new Vector3f(2f, obstacleHeight / 2f, 2f),
                 new Vector3f(0f, obstacleHeight / 2f, 4f)));
 
-        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
+        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newBodyShape(), space);
         kcc.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
         space.addCollisionObject(kcc);
 
@@ -152,7 +152,7 @@ class MechaCharacterStepTest {
                 new Vector3f(-50f, -50f, -50f), new Vector3f(50f, 50f, 50f));
         space.addCollisionObject(staticBox(new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f)));
 
-        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space);
+        MechaCharacter kcc = new MechaCharacter(MechaBodyPreset.newBodyShape(), space);
         kcc.setPhysicsLocation(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
         space.addCollisionObject(kcc);
 

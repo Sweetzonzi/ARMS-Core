@@ -71,7 +71,7 @@ class MechaCharacterWalkPhysicsTest {
 
         // 覆写 getBoostForce() 返回 0：屏蔽助推窗口、只保留冲量相，使空中力学断言
         // （水平速度继承、空中转向、空中闪避）与助推无关
-        kcc = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space) {
+        kcc = new MechaCharacter(MechaBodyPreset.newBodyShape(), space) {
             @Override
             protected float getBoostForce() {
                 return 0f;
@@ -391,7 +391,7 @@ class MechaCharacterWalkPhysicsTest {
         PhysicsSpace heavySpace = new PhysicsSpace(
                 new Vector3f(-500f, -500f, -500f), new Vector3f(500f, 500f, 500f));
         heavySpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
-        MechaCharacter heavy = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), heavySpace) {
+        MechaCharacter heavy = new MechaCharacter(MechaBodyPreset.newBodyShape(), heavySpace) {
             @Override
             public float getControllerMass() {
                 return doubleMass;
@@ -591,7 +591,7 @@ class MechaCharacterWalkPhysicsTest {
         PhysicsSpace rigSpace = new PhysicsSpace(
                 new Vector3f(-500f, -500f, -500f), new Vector3f(500f, 500f, 500f));
         rigSpace.addCollisionObject(staticBox(new Vector3f(400f, 0.5f, 400f), new Vector3f(0f, -0.5f, 0f)));
-        MechaCharacter body = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), rigSpace) {
+        MechaCharacter body = new MechaCharacter(MechaBodyPreset.newBodyShape(), rigSpace) {
             @Override
             public float getControllerMass() {
                 return mass;

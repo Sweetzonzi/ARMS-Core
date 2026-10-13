@@ -281,15 +281,15 @@ public final class MechaCoreRegistry {
     /**
      * 提交「把 KCC 放入物理空间」的任务。
      * <p>
-     * 出生点参数是**胶囊中心**坐标，不是脚底坐标（计划 §3.14）。任务体本身只允许在
+     * 出生点参数是**控制器碰撞体中心**坐标，不是脚底坐标（计划 §3.14）。任务体本身只允许在
      * 物理线程执行，因此这里统一经 {@code SparkLevel.submitImmediateTask} 投递。
      *
      * @param core          目标实例（服务端实例）
-     * @param capsuleCenter 胶囊中心的世界坐标
+     * @param controllerCenter 控制器碰撞体中心的世界坐标
      */
-    public static void enterPhysicsSpace(ArmsCore core, Vector3f capsuleCenter) {
+    public static void enterPhysicsSpace(ArmsCore core, Vector3f controllerCenter) {
         Level level = core.getLevel();
-        Vector3f target = capsuleCenter.clone();
+        Vector3f target = controllerCenter.clone();
         cn.solarmoon.spark_core.api.SparkLevel.submitImmediateTask(level, PPhase.ALL,
                 () -> core.enterPhysicsSpace(target));
     }

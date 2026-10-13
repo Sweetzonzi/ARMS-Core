@@ -111,8 +111,8 @@ public final class ArmsCoreDebugCommand {
         UUID coreId = UUID.randomUUID();
         ArmsCore core = new ArmsCore(level, coreId);
 
-        // 出生点：目标脚底位置 + HALF_TOTAL = 胶囊中心（计划 §3.14）
-        float[] center = MechaBodyPreset.capsuleCenterFromFeet(
+        // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心（计划 §3.14）
+        float[] center = MechaBodyPreset.controllerCenterFromFeet(
                 (float) player.getX(), (float) player.getY(), (float) player.getZ());
         MechaCoreRegistry.enterPhysicsSpace(core,
                 new com.jme3.math.Vector3f(center[0], center[1], center[2]));

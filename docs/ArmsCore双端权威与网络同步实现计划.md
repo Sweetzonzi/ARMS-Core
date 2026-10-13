@@ -91,7 +91,7 @@
 | `:113-126` | `PhysicsLevelTickEvent.Pre` 订阅者调用 `mechaControl.onPhysicsStep(1f / tps)` |
 | `:122-124` | `tickCount % 600 == 0` 时把 KCC `warp` 到玩家坐标 |
 | `:132-158` | 初始化读 `Minecraft.getInstance()`、`player.level()`、`SparkLevel.getPhysicsLevel(player.level())` |
-| `:39-41` | 胶囊常量 `CAPSULE_RADIUS = 0.4f`、`CAPSULE_HEIGHT = 1.6f`（客户端私有） |
+| `:39-41` | 碰撞体常量 `CAPSULE_RADIUS = 0.4f`、`CAPSULE_HEIGHT = 1.6f`（客户端私有） |
 
 `ClientMechaTestRig`（`src/main/java/io/github/sweetzonzi/arms_core/client/ClientMechaTestRig.java:33-48 @ 93924d9`，该类不在当前代码中）是一个最小 `MechaControlHolder` 实现：构造 `MechaCharacter(shape, physicsSpace)` 与 `MechaControl(this, kcc)`，`getRootSubPart()` 返回 `null`，`getAttr()` 返回空存根。
 
@@ -189,7 +189,7 @@ variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
 
 | accessor 常量 | 类型 | 序列化器 | 内容与语义 |
 |---------------|------|----------|------------|
-| `DATA_POS` | `org.joml.Vector3f` | `VECTOR3` | KCC 物理位置（世界坐标，胶囊中心）。它是角色控制器自身的位置，不等于根 SubPart 的位置，也不等于宿主实体的位置（§3.14）。**一个例外**：`docs/宿主位置权威与位移摄入设计.md` §6.2 的 pin 生效期间它填的是该次摄入的目标值（对外声称的权威位姿），pin 解除后回到 KCC 位置 |
+| `DATA_POS` | `org.joml.Vector3f` | `VECTOR3` | KCC 物理位置（世界坐标，控制器碰撞体中心）。它是角色控制器自身的位置，不等于根 SubPart 的位置，也不等于宿主实体的位置（§3.14）。**一个例外**：`docs/宿主位置权威与位移摄入设计.md` §6.2 的 pin 生效期间它填的是该次摄入的目标值（对外声称的权威位姿），pin 解除后回到 KCC 位置 |
 | `DATA_VEL` | `org.joml.Vector3f` | `VECTOR3` | KCC 线速度。**水平与垂直分量单位不同**（§3.10）：水平为每物理步位移，垂直为 m/s。它用于未来本地插值 / 本地物理查询，当前阶段只做透传 |
 | `DATA_YAW` | `net.minecraft.core.Rotations` | `ROTATIONS` | `MechaCharacter.currentYaw`，即 KCC 的**绝对** Y 朝向，单位**度**，仅偏航有效。它与躯干朝向解耦（§1.1、D16、D17）：躯干朝向由 SubPart 通道承载，是受约束牵引的下游量，可以落后、可以倾斜，RAGDOLL 后完全独立 |
 | `DATA_POSTURE` | `String` | `STRING` | `Posture.molangName()` |
@@ -606,9 +606,9 @@ F_max，远在抓地力上限之下。`MechaCharacter.java#equilibriumSpeed` 解
 
 因此 `MechaCharacter.applyPostureShape`（`MechaCharacter.java#applyPostureShape`）是 `@Deprecated` 且恒返回
 `false` 的记录，**调用方不得接入**；`MechaControl.applyLogicOutputToKcc` 的第 ② 步已注释掉。
-`MechaBodyPreset` 里的姿态几何（`CROUCH_HEIGHT` / `PRONE_HEIGHT` / `MIN_CAPSULE_HEIGHT` /
-`capsuleHeightFor` / `halfTotalFor` / `newCapsuleShape(Posture)`）已就位，供将来走通时直接使用；
-`MIN_CAPSULE_HEIGHT = 0.1f` 是防止退化形状（零长度圆柱）触发同一类原生中止的兜底。
+`MechaBodyPreset` 里的姿态几何（`CROUCH_HEIGHT` / `PRONE_HEIGHT` / `MIN_BODY_HEIGHT` /
+`bodyHeightFor` / `halfTotalFor` / `newBodyShape(Posture)`）已就位，供将来走通时直接使用；
+`MIN_BODY_HEIGHT = 0.1f` 是防止退化形状（零高度圆柱）触发同一类原生中止的兜底。
 
 要让蹲伏 / 卧倒真正拥有低矮轮廓，需要换一条**不触碰在世 KCC 形状**的路径，候选：
 
@@ -645,12 +645,12 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 量 | 含义 | 来源 |
 |----|------|------|
 | KCC 物理位置 | **胶囊几何中心**。Bullet 幽灵体的世界变换就是它 | `MechaCharacter.getPhysicsLocation(null)` |
-| 胶囊底面（脚底） | `pos.y - halfTotal`，`halfTotal = shape.getHeight()/2 + shape.getRadius()` | `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 实现了该算式 |
+| 碰撞体底面（脚底） | `pos.y - halfTotal`，`halfTotal = shape.getHeight()/2 + shape.getRadius()` | `common/control/attr/MechaBodyPreset.java#controllerCenterFromFeet` 实现了该算式 |
 | 实体 `setPos` | 原版语义是**包围盒底面中心（脚底）**。`net.minecraft.world.entity.Entity#setPos` 把三个分量存进 `net.minecraft.world.entity.Entity#position`，再以它为原点重建包围盒，重建由 `net.minecraft.world.entity.EntityDimensions#makeBoundingBox` 完成，形状是 `AABB(x − 宽/2, y, z − 宽/2, x + 宽/2, y + 高, z + 宽/2)` | `net.minecraft.world.entity.Entity#setPos` |
 
 因此：
 
-- 服务端出生点由"目标脚底位置 + `halfTotal`"算出 KCC 位置，与 `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 的写法一致；
+- 服务端出生点由"目标脚底位置 + `halfTotal`"算出 KCC 位置，与 `common/control/attr/MechaBodyPreset.java#controllerCenterFromFeet` 的写法一致；
 - 阶段 4 把位姿写进宿主实体时，实体位置字段的语义是包围盒底面，因此写入值是 `KCC 位置 − halfTotal`。交叉验证：`net.minecraft.world.entity.player.Player#DEFAULT_EYE_HEIGHT` 为 `1.62`，只有在"`position.y` 是脚底"的语义下才等于"脚上 1.62 m"。展开见 `docs/IArmsHost宿主接口设计.md` §2.1 与 `docs/宿主接入与伤害管线设计.md` §5.1。
 
 ---
@@ -661,13 +661,13 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 
 ### 阶段 0：前置修正（已完成）
 
-**先定一组临时胶囊参数并写在共享位置。** 当前仓库唯一的胶囊尺寸来源是 `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT`（半径 `0.4f`、圆柱段高 `1.6f`，全高 = 圆柱段 + 2×半径 = `2.4f`）；`docs/角色控制器-行走物理设计.md` 的 §5.1「素体级参数表」不含胶囊尺寸与质量，也没有 `mech_chassis.json` 落地，因此这组值就是本阶段的**临时权威取值**，阶段 4.6 再由素体定义替换。服务端出生点与客户端锚点共用同一组值与 `halfTotal = 全高/2`（§3.14），转换算式在 `#capsuleCenterFromFeet`。
+**先定一组临时碰撞体参数并写在共享位置。** 当前仓库唯一的碰撞体尺寸来源是 `common/control/attr/MechaBodyPreset.java#RADIUS`、`#BODY_HEIGHT`（半径 `0.4f`、全高 `2.4f`）；`docs/角色控制器-行走物理设计.md` 的 §5.1「素体级参数表」不含碰撞体尺寸与质量，也没有 `mech_chassis.json` 落地，因此这组值就是本阶段的**临时权威取值**，阶段 4.6 再由素体定义替换。服务端出生点与客户端锚点共用同一组值与 `halfTotal = 全高/2`（§3.14），转换算式在 `#controllerCenterFromFeet`。
 
 | # | 任务 | 位置 | 完成判据 |
 |---|------|------|----------|
 | 0.1 | `MechaCharacter.currentYaw` 加 `volatile` 并提供 getter | `MechaCharacter.java#viewYaw` | 该字段由物理线程（与主线程）写入、将被主线程读取（§3.5）；当前是普通字段且无 getter |
-| 0.2 | 胶囊常量提到共享位置 | `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
-| 0.3 | 为 `ArmsCore` 增加最小构造参数、查询 API 与 KCC | `ArmsCore.java` 整体 | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；构造时以 `MechaBodyPreset` 的胶囊几何 + `SparkLevel.getPhysicsLevel(level).getWorld()` 创建 `MechaCharacter` 并交给 `MechaControl`；暴露 `getKcc()`；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
+| 0.2 | 碰撞体常量提到共享位置 | `common/control/attr/MechaBodyPreset.java#RADIUS`、`#BODY_HEIGHT` | 上表那组值集中一处，服务端出生点与客户端锚点共用同一组值与 `halfTotal` 算式（D20、§3.14） |
+| 0.3 | 为 `ArmsCore` 增加最小构造参数、查询 API 与 KCC | `ArmsCore.java` 整体 | 构造注入 `Level` 与 `UUID`；`getLevel()` / `getAssemblyId()` 返回注入值；构造时以 `MechaBodyPreset` 的碰撞体几何 + `SparkLevel.getPhysicsLevel(level).getWorld()` 创建 `MechaCharacter` 并交给 `MechaControl`；暴露 `getKcc()`；`getRootSubPart()` / `getAttr()` 返回 `null`（D20） |
 
 客户端不持有 KCC，因此本阶段不包含客户端的控制器生命周期管理：KCC 的初始化、出生点与兜底逻辑都在服务端（阶段 1.5），客户端只维护按 `coreId` 索引的锚点，其生命周期跟随创建 / 移除包（阶段 1.12–1.14）。
 
@@ -689,7 +689,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 1.2 | `MechaCharacter` 的只读出口 | `currentYaw` getter；`getPhysicsLocation` / `getLinearVelocity` 的使用约定（§3.5，注意 `getLinearVelocity(Vector3f)` 需传复用缓冲） |
 | 1.3 | `ArmsCore` 实现 `SyncedDataHolder` | 声明 §2.2 的 7 个 `private static final EntityDataAccessor`；构造器内 `new SynchedEntityData.Builder(this)` 并 `build()`（服务端与客户端共用同一构造路径，§3.2）；提供 `getSyncedData()` 供包处理器调用；实现两个 `onSyncedDataUpdated` 重载 |
 | 1.4 | `ArmsCore` 的 KCC 接线 | 阶段 0.3 已让 `ArmsCore(Level, UUID)` 构造 `MechaCharacter`（胶囊几何取自 `MechaBodyPreset`，物理空间取自 `SparkLevel.getPhysicsLevel(level).getWorld()`），无需再补构造；本项剩余的是把 `prePhysicsTick()` 接上 `mechaControl.onPhysicsStep(dt)` 与逻辑状态发布（1.7）。装配体成员（`partMap` / `getRootSubPart` / `getAttr`）按 D20 留空 |
-| 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `common/control/attr/MechaBodyPreset.java#capsuleCenterFromFeet` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
+| 1.5 | 服务端出生与兜底 | 调试命令在服务端创建 `ArmsCore`、注册，并在 `submitImmediateTask` 内 `setPhysicsLocation` + `space.addCollisionObject`（出生点算式与 `common/control/attr/MechaBodyPreset.java#controllerCenterFromFeet` 同形）；兜底由服务端按"KCC 与宿主 / 目标点距离超过阈值"触发，阈值取值集中定义 |
 | 1.6 | 唯一的物理步驱动 | `PhysicsLevelTickEvent.Pre` 订阅者按 Level 注册表扇出 `ArmsCore.prePhysicsTick()`（§3.6、D9） |
 | 1.7 | 物理线程发布逻辑状态 | 在阶段 1.6 的订阅者所触发的 `ArmsCore.prePhysicsTick()` 中，按 §3.6 伪代码的第 ③ 步构造 `LogicStateSnapshot` 并写入 `volatile` 字段（§3.5）；同时给 `MechaControl` 增加 `snapshotLogicState()`（只读变量容器，返回该不可变 record）。注意 §3.6 伪代码与本节任务号是两套编号：前者是 `prePhysicsTick()` 内部的 ①②③ 执行顺序，后者是阶段 1 的交付物清单 |
 | 1.8 | 客户端夹具退役 | 删除 `ARMSClient` 的 KCC / `MechaControl` 构造与物理步订阅；`ClientMechaTestRig` 整个删除。客户端不存在任何 `MechaCharacter` 实例 |
@@ -818,7 +818,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | `ArmsCore` 身份与同步容器（`SyncedDataHolder`） | `common/ArmsCore.java#ArmsCore`（类声明）、`#DATA_POS`、`#DATA_ENERGY`、`#newClientInstance`、`#prePhysicsTick`、`#enterPhysicsSpace` |
 | 逻辑状态跨线程出口 | `common/control/MechaControl.java#LogicStateSnapshot`、`#snapshotLogicState` |
 | 逻辑层产出到物理的落地（速度倍率 / 闪避） | `common/control/MechaControl.java#applyLogicOutputToKcc`、`#getMoveSpeedModifier`、`#resolveDodgeDirection`；`common/control/MechaCharacter.java#setMoveSpeedModifier`、`#controlForceScale`、`#requestDodgeImpulse`、`#consumeDodgeImpulse`、`#updateWalk`（闪避赋值与地面力律）、`#getHorizontalVelocity`、`#equilibriumSpeed`、`#getEffectiveFriction`；`common/control/state/graph/MechaStateActions.java#gaitPreservingModifier` |
-| 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_CAPSULE_HEIGHT`、`#capsuleHeightFor`、`#halfTotalFor`、`#newCapsuleShape` |
+| 姿态几何（已就位但未接入）与退化形状兜底 | `common/control/attr/MechaBodyPreset.java#CROUCH_HEIGHT`、`#PRONE_HEIGHT`、`#MIN_BODY_HEIGHT`、`#bodyHeightFor`、`#halfTotalFor`、`#newBodyShape` |
 | 「在世 KCC 不可换形状」的库约束 | `../Libbulletjme/src/main/java/com/jme3/bullet/objects/PhysicsCharacter.java#setCollisionShape` |
 | 调试命令入口 | `common/command/ArmsCoreDebugCommand.java` |
 | 装配体注册表 | `common/MechaCoreRegistry.java#addServer`、`#onLevelUnload`、`#sendAllTo` |
@@ -843,7 +843,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 位置与朝向的解耦、各状态的约束设置 | `docs/角色控制器-行走物理设计.md`：§1.2、§2.1、§2.3、§2.4 |
 | KCC 线速度的单位语义（含逐行源码证据与调用方转换规则） | `docs/角色控制器-行走物理设计.md`：§10.3、§11 |
 | 控制器跨线程字段清单 | `docs/角色控制器-行走物理设计.md`：§10.1 |
-| 胶囊尺寸的唯一来源 | `common/control/attr/MechaBodyPreset.java#CAPSULE_RADIUS`、`#CAPSULE_HEIGHT` |
+| 碰撞体尺寸的唯一来源 | `common/control/attr/MechaBodyPreset.java#RADIUS`、`#BODY_HEIGHT` |
 | `ArmsCore` 不注册为世界实体、由宿主序列化 | `docs/总体设计文档.md` §2.1 |
 | 宿主输入路径（玩家按键 → 网络包 → `IArmsHost`） | `docs/总体设计文档.md` §2.4.5、§3.2 |
 | 客户端渲染遍历 `SubPart.body` | `docs/总体设计文档.md` §2.3 |

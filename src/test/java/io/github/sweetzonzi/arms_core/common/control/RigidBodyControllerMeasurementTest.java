@@ -4,10 +4,12 @@ import cn.solarmoon.spark_core.physics.body.CollisionGroups;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.shapes.BoxCollisionShape;
 import com.jme3.bullet.objects.PhysicsRigidBody;
+import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -26,9 +28,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code μN}」，因此 {@code μ_eff·N·û} 那条前馈是否该叠加（{@code usesFrictionFeedforward()}）
  * 必须用数据定，这里把两档一起打出来。
  * <p>
- * <b>本类只输出数值，不做基线断言。</b>断言只有「场景确实成立」这一类前提（越障真的发生、
- * 起步确实在加速），因为场景不成立时量到的数没有意义。基线重建是下一步的事
- * （`docs/角色控制器-刚体动力学方案.md` §11 的 P2 行），要看的就是这里打出来的数。
+ * <b>本类以输出数值为主，不做基线断言。</b>断言只有两类：一是「场景确实成立」这一类前提（越障真的
+ * 发生、起步确实在加速），因为场景不成立时量到的数没有意义；二是两条**判据本身的契约**——
+ * 第 ⑤ 组的「一次越障的抬升量不超过步高」（越障两级吃法的回归）与第 ⑥ 组的「楼梯上得去、
+ * 坡不该由越障接手」（判据认不认得出立面，`docs/角色控制器-刚体原型与引擎约束.md` §11.6 末段）。
+ * 基线重建是下一步的事（`docs/角色控制器-刚体动力学方案.md` §11 的 P2 行），要看的就是这里打出来的数。
  * <p>
  * 与 {@code RigidBodyControllerPrototypeTest} 同类：真 {@code PhysicsSpace}、100 Hz、
  * 不接 Minecraft。差别是本类驱动的是**正式控制器**（{@link MechaCharacter}）而不是原型里的
@@ -84,7 +88,7 @@ class RigidBodyControllerMeasurementTest {
      * @param feedforward 是否叠加摩擦锥前馈（{@code usesFrictionFeedforward()} 的覆写值）
      */
     private static MechaCharacter newController(PhysicsSpace space, boolean feedforward) {
-        MechaCharacter body = new MechaCharacter(MechaBodyPreset.newCapsuleShape(), space) {
+        MechaCharacter body = new MechaCharacter(MechaBodyPreset.newBodyShape(), space) {
             @Override
             protected boolean usesFrictionFeedforward() {
                 return feedforward;
@@ -164,13 +168,13 @@ class RigidBodyControllerMeasurementTest {
             float z = body.getPhysicsLocation(null).z;
 
             // 贴墙前一拍：胶囊前缘离台阶立面不足 2 cm（此时还没有越障，脚底仍在地面）
-            if (Float.isNaN(speedAtWall) && z + MechaBodyPreset.CAPSULE_RADIUS > stepFrontZ - 0.02f) {
+            if (Float.isNaN(speedAtWall) && z + MechaBodyPreset.RADIUS > stepFrontZ - 0.02f) {
                 speedAtWall = speed;
                 speedBeforeStep = speed;
                 wallStep = i;
             }
             // 顶墙期间的最低速率：它回答「贴墙那一拍速度有没有被吃掉」
-            if (z + MechaBodyPreset.CAPSULE_RADIUS > stepFrontZ - 0.5f && stepUpStep < 0) {
+            if (z + MechaBodyPreset.RADIUS > stepFrontZ - 0.5f && stepUpStep < 0) {
                 minSpeedAtWall = Math.min(minSpeedAtWall, speed);
             }
 
@@ -358,5 +362,163 @@ class RigidBodyControllerMeasurementTest {
                         feedforward ? "开" : "关", modifier, speed, MechaWalkingAttr.V_REF * modifier);
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════
+    // ⑤ 越障高度的契约：一次越障不超过步高（§11.6 坑三的回归）
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 一次「正面撞墙」的读数：越障次数、单次最大抬升、脚底最高、终态脚底与终态中心 z。
+     */
+    private record WallRun(int teleports, float maxRise, float maxFeet, float finalFeet, float finalZ) {
+    }
+
+    /**
+     * 从平地直线逼近一堵高 {@code height}、前沿在 {@code z = 2.0} 的完整方块墙。
+     * <p>
+     * 单步抬升超过 5 cm 即记为一次越障——100 Hz 下重力与求解器在一拍里给出的脚底变化比它小两个
+     * 量级，因此这个阈值只认越障那一次位置写入。
+     */
+    private static WallRun driveIntoWall(float height, int maxSteps) {
+        PhysicsSpace space = newSpace();
+        space.addCollisionObject(staticBox(new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
+        space.addCollisionObject(staticBox(
+                new Vector3f(2f, height / 2f, 2f),
+                new Vector3f(0f, height / 2f, 4f), 0.5f));
+        MechaCharacter body = newController(space, true);
+
+        int teleports = 0;
+        float maxRise = 0f;
+        float maxFeet = Float.NEGATIVE_INFINITY;
+        float previousFeet = feetY(body);
+        for (int i = 0; i < maxSteps; i++) {
+            body.setMoveIntent(1f, 0f);
+            body.prePhysicsTick(DT);
+            space.update(DT, 0, 0x0);
+
+            float feet = feetY(body);
+            if (feet - previousFeet > 0.05f) {
+                teleports++;
+                maxRise = Math.max(maxRise, feet - previousFeet);
+            }
+            previousFeet = feet;
+            maxFeet = Math.max(maxFeet, feet);
+        }
+        return new WallRun(teleports, maxRise, maxFeet, feetY(body), body.getPhysicsLocation(null).z);
+    }
+
+    /**
+     * 越障高度的契约：**一次越障的抬升量不超过步高**，因此「高于步高的完整方块」一次都不许触发。
+     * <p>
+     * 这条不变量由落脚面探针的读数保证：探针窗口内，抬高量的读数就是落脚面相对当前脚底的真实
+     * 高度，高于步高的面在**第一次**判决就被拒，脚底没有机会先抬到半路、再由下一拍补齐
+     * （`docs/角色控制器-刚体原型与引擎约束.md` §11.6 坑三）。它同时也是这条契约的可执行形式——
+     * 读数一旦退回「把余量当免费行程」的算法，这里立刻红。
+     */
+    @Test
+    void stepUpRaisesFeetByAtMostOneStepHeight() {
+        float stepHeight = MechaWalkingAttr.STEP_HEIGHT_BASE;
+        WallRun reachable = driveIntoWall(stepHeight, 600);
+        WallRun tooHigh = driveIntoWall(stepHeight + 0.05f, 600);
+
+        System.out.printf("[测量⑤] 越障高度契约（步高 %.2f m）：%n"
+                        + "         正好一步高：越障 %d 次，单次最大抬升 %.4f m，脚底最高 %.4f m%n"
+                        + "         高出 0.05 m：越障 %d 次，脚底最高 %.4f m，终态脚底 %.4f m，"
+                        + "止于中心 z = %.4f%n",
+                stepHeight, reachable.teleports(), reachable.maxRise(), reachable.maxFeet(),
+                tooHigh.teleports(), tooHigh.maxFeet(), tooHigh.finalFeet(), tooHigh.finalZ());
+
+        assertEquals(1, reachable.teleports(),
+                "正好一步高的台阶应当恰好一次越障，实际 " + reachable.teleports() + " 次");
+        assertTrue(Math.abs(reachable.maxRise() - stepHeight) < 0.01f,
+                "一次越障应当正好抬到台阶顶面（" + stepHeight + " m），实际抬升 " + reachable.maxRise() + " m");
+
+        assertEquals(0, tooHigh.teleports(),
+                "高于步高的完整方块不许触发越障——触发即意味着它被分两级吃，实际 "
+                        + tooHigh.teleports() + " 次");
+        assertTrue(tooHigh.maxFeet() < 0.01f,
+                "被拒时脚底应当一直在地面上，实际最高 " + tooHigh.maxFeet() + " m");
+        assertTrue(Math.abs(tooHigh.finalZ() - 1.6f) < 0.05f,
+                "被拒时应当停在贴住立面的位置（中心 z = 1.6），实际 " + tooHigh.finalZ() + " m");
+    }
+
+    // ═══════════════════════════════════════════════
+    // ⑥ 楼梯与坡：两条真实几何的判决（§11.6 末段的回归）
+    // ═══════════════════════════════════════════════
+
+    /** 一次直线行进的读数：越障次数（位置写入次数）、脚底最高、终态中心 z。 */
+    private record LaneRun(int stepUps, float maxFeet, float finalZ) {
+    }
+
+    /** 从 z = 0 沿本体前向直线前进 {@code maxSteps} 步。 */
+    private static LaneRun driveLane(MechaCharacter body, PhysicsSpace space, int maxSteps) {
+        int stepUps = 0;
+        float maxFeet = Float.NEGATIVE_INFINITY;
+        for (int i = 0; i < maxSteps; i++) {
+            body.setMoveIntent(1f, 0f);
+            body.prePhysicsTick(DT);
+            space.update(DT, 0, 0x0);
+            if (body.isSteppedUpThisStep()) {
+                stepUps++;
+            }
+            maxFeet = Math.max(maxFeet, feetY(body));
+        }
+        return new LaneRun(stepUps, maxFeet, body.getPhysicsLocation(null).z);
+    }
+
+    /**
+     * 楼梯（方块地形里<b>最窄</b>的踏板：半格的顶面 0.5 m）必须能上，而<b>坡</b>必须一次都不触发越障。
+     * <p>
+     * 两条断言判的都是「判据有没有认出这是什么面」，而不是某个数值：
+     * <ul>
+     *   <li><b>楼梯。</b>踏板 0.5 m、级高 0.5 m。落位的推进量 {@code STEP_STAND_ON} 的上限正是由它
+     *       定出来的（底面半径 0.4 m，写进踏板 0.1 m 之后底面恰好停在下一级之前），因此这条同时是
+     *       那个上限的回归。</li>
+     *   <li><b>坡。</b>前进扫掠的命中必须是立面（{@code STEP_FACE_MAX_UP}）。坡的法线竖直分量是
+     *       {@code cosθ}，而落位下扫读到的是底面之下最高的那一点——站在坡上时它本来就比脚底高
+     *       {@code 0.1 × tanθ}，判据会每一步都成立（实测 10° 的坡读 0.0112 m，正好越过
+     *       {@code STEP_RISE_MIN}），于是位置写入把角色每秒推 10 m。这里量的是「坡上写了 0 次」。</li>
+     * </ul>
+     * 坡同时要能走：10° 的坡在 {@code μ_eff = 0.30} 的摩擦锥内（{@code tan 10° = 0.176}），因此
+     * 断言里还要求它确实前进了——否则「不触发越障」可能只是因为角色卡在原地。
+     */
+    @Test
+    void measureStepUpOnStairsAndRamps() {
+        // 楼梯：每块 = 下半满砖 + 上半半砖靠外 → 踏面 0.5 m、级高 0.5 m
+        PhysicsSpace stairsSpace = newSpace();
+        stairsSpace.addCollisionObject(staticBox(new Vector3f(50f, 0.5f, 50f), new Vector3f(0f, -0.5f, 0f), 0.5f));
+        for (int k = 0; k < 4; k++) {
+            float bottom = 0.5f * k;
+            float zFrom = 2f + k;
+            stairsSpace.addCollisionObject(staticBox(new Vector3f(8f, 0.25f, 0.5f),
+                    new Vector3f(0f, bottom + 0.25f, zFrom + 0.5f), 0.5f));
+            stairsSpace.addCollisionObject(staticBox(new Vector3f(8f, 0.25f, 0.25f),
+                    new Vector3f(0f, bottom + 0.75f, zFrom + 0.75f), 0.5f));
+        }
+        LaneRun stairs = driveLane(newController(stairsSpace, true), stairsSpace, 900);
+
+        // 坡：绕 X 轴转过 10°，顶面过原点、朝 +Z 抬升，机体出生在原点正好站在坡面上
+        PhysicsSpace rampSpace = newSpace();
+        float radians = (float) Math.toRadians(10f);
+        PhysicsRigidBody ramp = staticBox(new Vector3f(20f, 0.5f, 20f), new Vector3f(
+                0f, -0.5f * (float) Math.cos(radians), 0.5f * (float) Math.sin(radians)), 0.5f);
+        ramp.setPhysicsRotation(new Quaternion().fromAngleNormalAxis(-radians, Vector3f.UNIT_X));
+        rampSpace.addCollisionObject(ramp);
+        LaneRun slope = driveLane(newController(rampSpace, true), rampSpace, 400);
+
+        System.out.printf("[测量⑥] 楼梯（踏面 0.5 m、级高 0.5 m）与坡 10°（μ_eff = %.2f）：%n"
+                        + "         楼梯：越障 %d 次，脚底最高 %.4f m，终态中心 z = %.4f%n"
+                        + "         坡 10°：越障 %d 次，脚底最高 %.4f m，终态中心 z = %.4f%n",
+                MU_EFF, stairs.stepUps(), stairs.maxFeet(), stairs.finalZ(),
+                slope.stepUps(), slope.maxFeet(), slope.finalZ());
+
+        assertTrue(stairs.stepUps() >= 4,
+                "楼梯应当一级一级上去（≥ 4 次越障），实际 " + stairs.stepUps() + " 次");
+        assertEquals(0, slope.stepUps(),
+                "坡不该由越障接手（坡由地面力律的摩擦锥爬），实际写了 " + slope.stepUps() + " 次");
+        assertTrue(slope.finalZ() > 0.3f,
+                "前提：10° 的坡在摩擦锥内（tan 10° = 0.18 < μ_eff），应当确实爬上去了，实际终态 z = "
+                        + slope.finalZ() + " m");
     }
 }
