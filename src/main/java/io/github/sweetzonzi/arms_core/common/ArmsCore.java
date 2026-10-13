@@ -347,7 +347,13 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         control.onPhysicsStep(dt);
 
         // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）
-        this.logicState = control.snapshotLogicState();
+        // 四项与上一步全同时沿用旧对象、不新建：读取端（common/ArmsCoreServerEvents.java#writeSyncedData）
+        // 每 tick 取一次组件值、不比较引用，因此沿用旧对象对它不可见；而逻辑层每个物理子步推进一次、
+        // 主线程每 tick 才取一次读，多数子步的四项与上一步相同。
+        MechaControl.LogicStateSnapshot previous = this.logicState;
+        this.logicState = previous == null
+                ? control.snapshotLogicState()
+                : control.snapshotLogicStateIfChanged(previous);
     }
 
     /**

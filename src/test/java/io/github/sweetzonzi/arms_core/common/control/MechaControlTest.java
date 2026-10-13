@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -23,6 +24,8 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.GAIT;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -376,6 +379,52 @@ class MechaControlTest {
         // 事件不残留到下一帧：再进一帧后本帧批应为空
         control.frameLogic(DT);
         assertFalse(control.hasPendingEvent(MechaEvent.DODGE));
+    }
+
+    /**
+     * 投递端只写缓冲，不得改动已被物理线程取走的本帧批。
+     * <p>
+     * 这条不变量是「空批用共享不可变哨兵 {@code MechaControl#NO_EVENTS}」的前提：
+     * 一旦 {@code postEvent} 改成原地修改当前集合，它就会去改那个共享实例。
+     */
+    @Test
+    void postEventDoesNotMutateTheBatchBeingConsumed() {
+        control.frameLogic(DT);
+        Set<MechaEvent> batch = control.getPendingEvents();
+        assertTrue(batch.isEmpty());
+
+        control.postEvent(MechaEvent.DODGE);
+
+        assertTrue(batch.isEmpty(), "投递不得改动已取走的本帧批");
+        assertFalse(control.hasPendingEvent(MechaEvent.DODGE));
+
+        // 下一帧才消费
+        control.frameLogic(DT);
+        assertTrue(control.hasPendingEvent(MechaEvent.DODGE));
+    }
+
+    // ═══════════════════════════════════════════════
+    // 逻辑状态快照的按变化发布
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 四项全同时必须沿用旧快照（不新建）；任一项变了必须给新快照。
+     */
+    @Test
+    void logicStateSnapshotIsReusedWhileNothingChanges() {
+        control.frameLogic(DT);
+        MechaControl.LogicStateSnapshot published = control.snapshotLogicState();
+
+        assertSame(published, control.snapshotLogicStateIfChanged(published),
+                "四项都未变时不得新建快照");
+
+        StateVariableContainer vars = control.getLogicStateMachine().getVariables();
+        vars.set(ENERGY, vars.get(ENERGY) - 1f);
+
+        MechaControl.LogicStateSnapshot next = control.snapshotLogicStateIfChanged(published);
+        assertNotSame(published, next, "有一项变了就要给新快照");
+        assertEquals(vars.get(ENERGY), next.energy());
+        assertSame(next, control.snapshotLogicStateIfChanged(next));
     }
 
     // ═══════════════════════════════════════════════

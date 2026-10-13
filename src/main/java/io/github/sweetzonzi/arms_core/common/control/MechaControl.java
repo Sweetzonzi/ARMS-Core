@@ -124,14 +124,27 @@ public class MechaControl {
     private volatile MechaConditionSnapshot conditionSnapshot;
 
     /**
+     * 空事件批的共享哨兵（不可变，永不写入）。
+     * <p>
+     * 物理线程每个物理子步都会把缓冲换回"空"。用这个共享实例代替
+     * {@code EnumSet.noneOf(MechaEvent.class)}，无事件的那些步因此不产生分配——
+     * 服务端每 tick 跑 5 个物理子步（{@code tps = baseStep × 20 = 100}），其中多数步没有事件。
+     * <p>
+     * 共享的前提是两端都只读：投递端 {@link #postEvent} 走 copy-on-write（新建集合后
+     * {@code addAll}），读取端只做 {@code contains} 与遍历。任何一端改成原地修改都会破坏
+     * 这条共享，{@code MechaControlTest#postEventDoesNotMutateTheBatchBeingConsumed} 把这一点钉住。
+     */
+    private static final Set<MechaEvent> NO_EVENTS = Set.of();
+
+    /**
      * 事件投递缓冲（主线程追加，物理线程帧首原子取走整批）。
      * <p>
      * postEvent 采用 copy-on-write 的 {@code getAndUpdate}，与帧首
-     * {@code getAndSet(空集)} 交换配合：任意交错下事件既不丢失也不重复，
+     * {@code getAndSet(NO_EVENTS)} 交换配合：任意交错下事件既不丢失也不重复，
      * 只会归属到本帧或下一帧。
      */
     private final AtomicReference<Set<MechaEvent>> pendingEventBuffer =
-            new AtomicReference<>(EnumSet.noneOf(MechaEvent.class));
+            new AtomicReference<>(NO_EVENTS);
 
     /**
      * 本帧事件批（物理线程帧内快照，仅物理线程访问）。
@@ -139,7 +152,7 @@ public class MechaControl {
      * -- GETTER --
      * 本帧待处理事件（帧内快照，只读；跨帧请勿持有）。
      */
-    private Set<MechaEvent> pendingEvents = EnumSet.noneOf(MechaEvent.class);
+    private Set<MechaEvent> pendingEvents = NO_EVENTS;
 
     /** 上一帧是否处于 dodge，用于检出「刚进入 dodge」的那一帧（物理线程独占）。 */
     private boolean dodgingLastFrame;
@@ -318,7 +331,7 @@ public class MechaControl {
      */
     void frameLogic(float dt) {
         // —— 帧首：原子取走主线程投递的事件批 ——
-        pendingEvents = pendingEventBuffer.getAndSet(EnumSet.noneOf(MechaEvent.class));
+        pendingEvents = pendingEventBuffer.getAndSet(NO_EVENTS);
 
         // —— 1. 汇入快照与步进前的控制器状态 ——
         float safeDt = Math.max(dt, 1.0e-6f);
@@ -742,5 +755,32 @@ public class MechaControl {
                 variables.get(GAIT),
                 variables.get(VERTICAL),
                 variables.get(ENERGY));
+    }
+
+    /**
+     * 与 {@link #snapshotLogicState()} 相同，但四项与 {@code previous} 全同时**原样返回
+     * {@code previous}**、不新建对象。
+     * <p>
+     * 给物理线程用来发布逻辑状态：逻辑层每个物理子步推进一次，而主线程每 tick 才取一次读，
+     * 多数子步的四项与上一步相同。读取端（{@code common/ArmsCoreServerEvents.java#writeSyncedData}）
+     * 只取组件值、不比较引用，因此"值相同就沿用旧对象"对它不可见。
+     * <p>
+     * 四个变量各读一次，因此未变的那些步既不分配、也不比 {@link #snapshotLogicState()} 多读。
+     *
+     * @param previous 上一次发布的快照
+     * @return 四项有任意一项变化时是新建的快照，否则就是 {@code previous} 本身
+     */
+    public LogicStateSnapshot snapshotLogicStateIfChanged(LogicStateSnapshot previous) {
+        Posture posture = variables.get(POSTURE);
+        Gait gait = variables.get(GAIT);
+        Vertical vertical = variables.get(VERTICAL);
+        float energy = variables.get(ENERGY);
+        if (posture == previous.posture()
+                && gait == previous.gait()
+                && vertical == previous.vertical()
+                && Float.compare(energy, previous.energy()) == 0) {
+            return previous;
+        }
+        return new LogicStateSnapshot(posture, gait, vertical, energy);
     }
 }
