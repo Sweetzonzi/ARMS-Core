@@ -5,6 +5,7 @@ import cn.solarmoon.spark_core.util.PPhase;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import lombok.Getter;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Locale;
@@ -157,6 +158,7 @@ public final class HostPositionIntake {
     // ═══════════════════════════════════════════════
 
     /** 是否有生效的 pin；读取入口是 {@link #isPinActive()} 与 {@link #getPin()}。 */
+    @Getter
     private boolean pinActive;
 
     /** pin 的目标（胶囊中心），仅在 {@link #pinActive} 为真时有效 */
@@ -191,6 +193,7 @@ public final class HostPositionIntake {
     // ═══════════════════════════════════════════════
 
     /** 已采纳的摄入次数（诊断） */
+    @Getter
     private int intakeCount;
     /** 已打印的日志行数 */
     private int loggedCount;
@@ -487,11 +490,6 @@ public final class HostPositionIntake {
         pinTicksLeft = 0;
     }
 
-    /** 是否有生效的 pin。 */
-    public boolean isPinActive() {
-        return pinActive;
-    }
-
     // ═══════════════════════════════════════════════
     // 动作层：执行 warp
     // ═══════════════════════════════════════════════
@@ -522,11 +520,6 @@ public final class HostPositionIntake {
     // ═══════════════════════════════════════════════
     // 诊断
     // ═══════════════════════════════════════════════
-
-    /** 已采纳的摄入次数。 */
-    public int getIntakeCount() {
-        return intakeCount;
-    }
 
     private void logIntake(float x, float y, float z, String report) {
         if (loggedCount >= INTAKE_LOG_LIMIT) return;
