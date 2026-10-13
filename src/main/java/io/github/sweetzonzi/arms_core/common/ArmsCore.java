@@ -73,7 +73,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // 字段 id 由 defineId 的调用顺序（即下面的文本顺序）决定，因此只允许在末尾追加；
     // 删除、重排或在中间插入会让该位置之后的 id 全部平移，导致双端线上格式错配。
 
-    /** 控制器刚体的物理位置（世界坐标，胶囊中心） */
+    /** 控制器刚体的物理位置（世界坐标，控制器碰撞体中心） */
     public static final EntityDataAccessor<org.joml.Vector3f> DATA_POS =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.VECTOR3);
 
@@ -221,7 +221,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         this.authoritative = authoritative;
         if (authoritative) {
             MechaCharacter body = new MechaCharacter(
-                    MechaBodyPreset.newCapsuleShape(),
+                    MechaBodyPreset.newBodyShape(),
                     SparkLevel.getPhysicsLevel(level).getWorld());
             this.mechaControl = new MechaControl(this, body);
         } else {
@@ -315,7 +315,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 给出 {@code tps = 60}，即约 {@code 0.0167 s}。
      * <p>
      * <b>它不再是速度换算的输入。</b> 刚体的 {@code getLinearVelocity} 三轴统一为 m/s，而宿主实体上
-     * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code × 20}，与物理步长无关
+     * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code ÷ 20}，与物理步长无关
      * （`docs/角色控制器-刚体动力学方案.md` §6）。本值现在的用途是按时长累加的量——物理步长本身、
      * 按秒计时的参数（跳跃助推窗口、闪避无敌）以及诊断。
      *
@@ -369,13 +369,13 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 位置先写、后入世：{@code MechaCharacter} 的构造不读物理空间，重力与扫掠都在入世之后才解析得到，
      * 因此这两步的先后不影响力模型。
      *
-     * @param capsuleCenter 胶囊中心的世界坐标（不是脚底坐标，见计划 §3.14）
+     * @param controllerCenter 控制器碰撞体中心的世界坐标（不是脚底坐标，见计划 §3.14）
      */
-    public void enterPhysicsSpace(com.jme3.math.Vector3f capsuleCenter) {
+    public void enterPhysicsSpace(com.jme3.math.Vector3f controllerCenter) {
         if (!authoritative) return;
         PhysicsLevel physicsLevel = SparkLevel.getPhysicsLevel(level);
         MechaCharacter body = getBody();
-        body.setPhysicsLocation(capsuleCenter);
+        body.setPhysicsLocation(controllerCenter);
         if (inPhysicsSpace.compareAndSet(false, true)) {
             physicsLevel.getWorld().addCollisionObject(body);
         }

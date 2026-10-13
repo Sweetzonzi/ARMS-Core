@@ -41,7 +41,7 @@ public interface IArmsHost {
     void setControlledArmsCore(@Nullable ArmsCore core);
 
     /** 把 KCC 的位置写进宿主实体。由 ArmsCore 在服务端主线程调用。 */
-    void applyPose(Vec3 capsuleCenter, float yRot, float yHeadRot);
+    void applyPose(Vec3 controllerCenter, float yRot, float yHeadRot);
 
     /** 把 KCC 的线速度写进宿主实体。由 ArmsCore 在服务端主线程调用。 */
     void applyVelocity(Vec3 velocity, float physicsStepSeconds);
@@ -54,7 +54,7 @@ public interface IArmsHost {
 
 | 参数 | 基准 / 单位 | 依据 |
 | --- | --- | --- |
-| `capsuleCenter` | **世界坐标，胶囊中心**（不是脚底） | `common/control/attr/MechaBodyPreset.java#HALF_TOTAL` 定义了脚底与胶囊中心的换算；`common/ArmsCore.java#enterPhysicsSpace` 的入参也是胶囊中心 |
+| `controllerCenter` | **世界坐标，控制器碰撞体中心**（不是脚底） | `common/control/attr/MechaBodyPreset.java#HALF_TOTAL` 定义了脚底与控制器碰撞体中心的换算；`common/ArmsCore.java#enterPhysicsSpace` 的入参也是控制器碰撞体中心 |
 | `yRot` / `yHeadRot` | 度制，与 `net.minecraft.world.entity.Entity#setYRot`、`net.minecraft.world.entity.Entity#setYHeadRot` 同一约定 | 玩家宿主**不写**这两个参数，理由见 §5.2；保留在签名里供模型朝向与实体朝向分离的宿主使用 |
 | `velocity` | **水平分量是每物理步位移，垂直分量是 m/s** | `docs/角色控制器-行走物理设计.md` 的单位约定；这一条不对称，实现方不得当作统一的速度矢量处理 |
 | `physicsStepSeconds` | 单个物理步的时长 (s) | `common/ArmsCore.java#physicsStepSeconds`，取自 `Spark-Core` 的 `PhysicsLevel#tps`。服务端物理空间是 `baseStep = 5`（100 Hz，`0.01 s`），客户端是 `baseStep = 3`（60 Hz，约 `0.0167 s`），两端不同 |
@@ -68,9 +68,9 @@ public interface IArmsHost {
 
 `20` 是 Minecraft 的 TPS 常数（`net.minecraft.server.MinecraftServer` 的 tick 频率），`physicsStepSeconds` 是每 tick 内的物理步数（`20 × physicsStepSeconds`）的倒数。这个换算只在宿主侧做一次——`common/ArmsCore.java#DATA_VEL` 走的是 KCC 原生单位，两者不要互相套用。
 
-`net.minecraft.world.entity.Entity#position` 的语义是**包围盒底面中心（脚底）**，而胶囊中心比胶囊底面高 `HALF_TOTAL`。写位置时必须明确是哪一个：把胶囊中心直接写进 `net.minecraft.world.entity.Entity#setPos` 会把宿主整体抬高 `HALF_TOTAL`（当前素体取值下为 `1.2 m`），这是本项目已经登记过一次的"差一个身高的经典错误"（`docs/ArmsCore双端权威与网络同步实现计划.md` §3.14）。
+`net.minecraft.world.entity.Entity#position` 的语义是**包围盒底面中心（脚底）**，而控制器碰撞体中心比碰撞体底面高 `HALF_TOTAL`。写位置时必须明确是哪一个：把控制器碰撞体中心直接写进 `net.minecraft.world.entity.Entity#setPos` 会把宿主整体抬高 `HALF_TOTAL`（当前素体取值下为 `1.2 m`），这是本项目已经登记过一次的"差一个身高的经典错误"（`docs/ArmsCore双端权威与网络同步实现计划.md` §3.14）。
 
-**`capsuleCenter` 这一行的时效。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，届时 `applyPose` 失去调用方（当前唯一调用点是 `common/ArmsCoreServerEvents.java#applyPoseToHost`），位置基准随之下沉到「客户端按 `DATA_POS` 摆放实体」那一条路径（换算见 `client/ClientHostPoseEvents.java#applySyncedPose`）。接口是否保留一个位置落地入口供非玩家宿主使用，在该设计的实现阶段一并定；本行在此之前仍然成立。
+**`controllerCenter` 这一行的时效。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，届时 `applyPose` 失去调用方（当前唯一调用点是 `common/ArmsCoreServerEvents.java#applyPoseToHost`），位置基准随之下沉到「客户端按 `DATA_POS` 摆放实体」那一条路径（换算见 `client/ClientHostPoseEvents.java#applySyncedPose`）。接口是否保留一个位置落地入口供非玩家宿主使用，在该设计的实现阶段一并定；本行在此之前仍然成立。
 
 基准由原版的两处实现共同确定：`setPos` 把分量存进 `position` 后以它为原点重建包围盒，重建由 `net.minecraft.world.entity.EntityDimensions#makeBoundingBox` 完成，形状是 `AABB(x − 宽/2, y, z − 宽/2, x + 宽/2, y + 高, z + 宽/2)`；交叉验证是 `net.minecraft.world.entity.player.Player#DEFAULT_EYE_HEIGHT` 为 `1.62`，只有在"`position.y` 是脚底"的语义下才等于"脚上 1.62 m"。
 
@@ -101,7 +101,7 @@ public interface IArmsHost {
 - 语义准确：`applyPose` 读作"把外部权威算出的位姿施加到本宿主"，而 `setPosition` 读作"设置本宿主的位置"——后者暗示宿主自己有位置状态可以独立设置，与"位姿权威在 KCC"这一事实相反。
 - 与本仓库既有词汇一致：位姿或运动产出的落地一律用 `apply`（`common/control/MechaControl.java#applyFacing`、`#applyMoveIntent`、`#applyLogicOutputToKcc`）。
 
-参数名 `capsuleCenter` 同样是有意的：它让每个调用点都自带"这不是脚底坐标"的提示。
+参数名 `controllerCenter` 同样是有意的：它让每个调用点都自带"这不是脚底坐标"的提示，并且把基准钉在**谁的中心**上——角色控制器那个碰撞体的中心，与碰撞体取什么形状无关（接口因此不随形体更换而失效）。
 
 ## 四、明确不进接口的成员
 
@@ -140,9 +140,9 @@ public interface IArmsHost {
 ### 5.2 方法体
 
 - `getHostEntity()` 返回 `this`。
-- `applyPose(capsuleCenter, yRot, yHeadRot)` 写位置。参数是**胶囊中心**，而实体位置字段的语义是包围盒底面，因此实现必须先换算：`setPos(capsuleCenter.x, capsuleCenter.y − MechaBodyPreset.HALF_TOTAL, capsuleCenter.z)`（§2.1）。玩家实体的包围盒底面与胶囊底面因此对齐，**不**直接把 `capsuleCenter` 写进去。
+- `applyPose(controllerCenter, yRot, yHeadRot)` 写位置。参数是**控制器碰撞体中心**，而实体位置字段的语义是包围盒底面，因此实现必须先换算：`setPos(controllerCenter.x, controllerCenter.y − MechaBodyPreset.HALF_TOTAL, controllerCenter.z)`（§2.1）。玩家实体的包围盒底面与碰撞体底面因此对齐，**不**直接把 `controllerCenter` 写进去。
 - **`yRot` / `yHeadRot` 不写。** 朝向的权威在客户端：视野偏航由客户端上行，服务端 `MechaControl#applyFacing` 把它绝对赋值给 KCC 的 `currentYaw`，`common/ArmsCore.java#DATA_YAW` 只是这个值的下行回显（消费者是渲染路径）。若把它写回宿主实体的 `yRot`，而客户端下一次上行读的又正是这个字段（`client/ARMSClient.java#collectAndSend`），两点之间就构成「本机视角 → 上行 → 服务端 → 下行 → 本机视角」的滞后反馈环，表现为**视角持续抖动**。位置没有这个问题：客户端上行的位置被服务端采纳后立即被本轮 KCC 的产物覆盖，是单向下行。
-- `applyVelocity(velocity, physicsStepSeconds)` 写 `deltaMovement`，**必须先做 §2.1 的两条换算**（水平 `× 20 × physicsStepSeconds`、垂直 `÷ 20`）：入参是 KCC 的原生单位，而 `deltaMovement` 三个分量统一是每 tick 位移，直接透传会同时错两次。`physicsStepSeconds` 由调用方传入而不是在宿主里写死，因为服务端 100 Hz 与客户端 60 Hz 的因子不同。`noPhysics` 为真时该值不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实速度。
+- `applyVelocity(velocity)` 写 `deltaMovement`，**必须先做 m/s → 每 tick 位移的换算（三轴统一 `÷ 20`）**：1 tick = 1/20 s，因此 1 m/s 就是每 tick 走 1/20 格，与物理步频无关。`noPhysics` 为真时该值不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实速度。
 - **位置回写是过渡态。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，只留速度那一笔：位置由客户端上报与 §5 的位移摄入通道维护。理由是每 tick 的位置回写会覆盖同一 tick 的外部位移，使控制器不知道 `/tp` 一类的写入发生过。
 - 位置回写后调用 `net.minecraft.world.entity.Entity#resetFallDistance`——实体被外部搬动时原版会按位置差累计坠落距离，不重置会让玩家持续受到坠落伤害。位置回写移除之后，这一职责要重新指派：当前它是服务端唯一的坠距重置点（`common/PlayerHostEvents.java#onPlayerTickPost` 走的是 `Player#tick` 末尾的玩家 tick 事件，服务端玩家不在该路径上），可选落点是对账用的 `net.minecraft.server.network.ServerGamePacketListenerImpl#handleMovePlayer` 采纳分支。
 - 绑定字段的每一次变化都要重置输入状态，否则状态机会卡在上一帧（例如 `jumpPressed` 永久为真，`docs/ArmsCore双端权威与网络同步实现计划.md` R11）。`common/MechaInputHandler.java#resetInput` 已提供该动作，绑定实现调用它即可。

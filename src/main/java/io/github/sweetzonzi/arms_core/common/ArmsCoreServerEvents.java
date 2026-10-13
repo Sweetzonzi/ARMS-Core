@@ -209,7 +209,7 @@ public final class ArmsCoreServerEvents {
      * 真实速度，因此它与位置回写不构成两个运动权威。
      * <p>
      * <b>换算因子不必再传。</b> 刚体的速度三个轴统一是 m/s，而 {@code deltaMovement} 的三个分量统一是
-     * 每 tick 位移，换算就是 {@code × 20}（每 tick 20 个物理步），与物理空间自己的 {@code baseStep} 无关。
+     * 每 tick 位移，换算就是 {@code ÷ 20}（1 tick = 1/20 s），与物理空间自己的 {@code baseStep} 无关。
      * <p>
      * 宿主引用为 {@code null}（尚未绑定宿主、或客户端实例）时整个回写是 no-op。
      */

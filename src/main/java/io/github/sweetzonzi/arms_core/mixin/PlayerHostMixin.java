@@ -106,8 +106,8 @@ public class PlayerHostMixin implements IArmsHost {
     /**
      * 落地 KCC 的位置。
      * <p>
-     * 参数是<b>胶囊中心</b>，而实体位置字段的语义是包围盒底面，因此这里先减
-     * {@link MechaBodyPreset#HALF_TOTAL}。直接写胶囊中心会把宿主整体抬高
+     * 参数是<b>控制器碰撞体中心</b>，而实体位置字段的语义是包围盒底面，因此这里先减
+     * {@link MechaBodyPreset#HALF_TOTAL}。直接写控制器碰撞体中心会把宿主整体抬高
      * {@code HALF_TOTAL}（当前素体取值下为 {@code 1.2 m}）。
      * <p>
      * <b>朝向参数被忽略，这是有意的。</b> 朝向的权威在客户端：客户端上行视野偏航，服务端
@@ -120,9 +120,9 @@ public class PlayerHostMixin implements IArmsHost {
      * 受到坠落伤害（与兄弟仓库 Machine-Max 的 {@code SeatSubsystem#onTick} 对乘客所做的处理同形）。
      */
     @Override
-    public void applyPose(Vec3 capsuleCenter, float yRot, float yHeadRot) {
+    public void applyPose(Vec3 controllerCenter, float yRot, float yHeadRot) {
         Player self = (Player) (Object) this;
-        self.setPos(capsuleCenter.x, capsuleCenter.y - MechaBodyPreset.HALF_TOTAL, capsuleCenter.z);
+        self.setPos(controllerCenter.x, controllerCenter.y - MechaBodyPreset.HALF_TOTAL, controllerCenter.z);
         self.resetFallDistance();
     }
 
@@ -133,7 +133,7 @@ public class PlayerHostMixin implements IArmsHost {
      * 因子，不需要再区分轴（`docs/角色控制器-刚体动力学方案.md` §6 的量纲统一）：
      *
      * <pre>
-     * m/s → 每 tick 位移：× 20    （每 tick 20 个物理步）
+     * m/s → 每 tick 位移：÷ 20    （1 tick = 1/20 s，1 m/s 即每 tick 走 1/20 格）
      * </pre>
      *
      * {@code noPhysics} 为真时该值不产生实际位移，写入的作用只是让外部查询看到控制器的真实速度。
@@ -141,9 +141,9 @@ public class PlayerHostMixin implements IArmsHost {
     @Override
     public void applyVelocity(Vec3 velocity) {
         ((Player) (Object) this).setDeltaMovement(
-                velocity.x * 20f,
-                velocity.y * 20f,
-                velocity.z * 20f);
+                velocity.x / 20f,
+                velocity.y / 20f,
+                velocity.z / 20f);
     }
 
     // ==========================================

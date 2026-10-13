@@ -53,12 +53,12 @@ public interface IArmsHost {
      * {@code yRot} / {@code yHeadRot} 两个参数保留在签名里，供将来的非玩家宿主使用（模型朝向与实体
      * 朝向分离的 Doll 等）；玩家宿主的实现忽略它们。
      *
-     * @param capsuleCenter 胶囊中心的世界坐标（<b>不是</b>包围盒底面；实体位置字段的语义是底面，
+     * @param controllerCenter 控制器碰撞体中心的世界坐标（<b>不是</b>包围盒底面；实体位置字段的语义是底面，
      *                      两者相差 {@link io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset#HALF_TOTAL}）
      * @param yRot          度制偏航；玩家宿主不写，见上
      * @param yHeadRot      度制头部偏航；玩家宿主不写，见上
      */
-    void applyPose(Vec3 capsuleCenter, float yRot, float yHeadRot);
+    void applyPose(Vec3 controllerCenter, float yRot, float yHeadRot);
 
     /**
      * 把控制器刚体的线速度写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
@@ -67,14 +67,12 @@ public interface IArmsHost {
      * 不再有「水平是每物理步位移、垂直是 m/s」那种混合语义，因此换算只剩一个因子：
      *
      * <pre>
-     * m/s → 每 tick 位移：× 20
+     * m/s → 每 tick 位移：÷ 20
      * </pre>
      * <p>
      * 宿主实体的 {@code net.minecraft.world.entity.Entity#setDeltaMovement} 三个分量统一是
-     * <b>每 tick 位移</b>，物理步频与服务端 tick 的比值就是 {@code 20}（每 tick 20 个物理步），
-     * 与物理空间自己的 {@code baseStep} 无关，因此不需要再传物理步长。
-     * <p>
-     * {@code noPhysics} 为真时该值不产生实际位移，写入的作用只是让外部查询看到真实速度。
+     * <b>每 tick 位移</b>，而 1 tick = 1/20 s，因此 1 m/s 就是每 tick 走 1/20 格。这个因子与物理步频
+     * 无关，不需要再传物理步长。
      *
      * @param velocity 控制器线速度 (m/s)，三个轴同单位
      */
