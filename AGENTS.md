@@ -133,6 +133,7 @@
 - 使用 **Lombok**：`@Getter` / `@Setter` 注解已启用，主源码集与测试源码集各声明一次（`repositories.gradle:127-133`）。字段上的 `@NotNull` / `@Nullable`（JetBrains）会被 Lombok 拷到生成的 getter 上，因此接口的返回值可空性靠字段注解维持。
 - 使用 **Mixin**（`arms_core.mixins.json`），新增 Mixin 需同步写入该文件的 `mixins` 或 `client` 数组。**该文件的 `package` 是一个 Mixin 独占包**：`io.github.sweetzonzi.arms_core.mixin.*` 下的类不能在别处被直接引用（`@Mixin` 目标之外的类放进这个包会报 `cannot be referenced directly`）。
 - **Mixin 注入的成员在普通 Java 编译期不存在于目标类上。** 调用方必须写成 `((IArmsHost) player).applyPose(...)` 或 `player instanceof IArmsHost host` 后经 `host` 调用；`player.applyPose(...)` 这类直接调用**编译不过**。`common/ArmsCore.java#bindHostOf` 是这一形态的便捷封装。
+- **网络包可能被分两遍处理：收包线程那一遍把真正的处理排进服务端任务队列后退出，服务端线程在 tick 尾相位再跑一遍（这一遍才执行方法体）。** 所以 `@WrapMethod` 的包装体两遍都会进入——状态只在执行方法体的那一遍持有，`common/HostPositionIntake.java` 的作用域栈是服务端线程独占的普通字段。
 - 编码统一为 UTF-8（`build.gradle` 的 `options.encoding` 与 `ProcessResources.filteringCharset`）。
 - 包结构：`io.github.sweetzonzi.arms_core.*`，与 `mod_group_id` 一致。
 

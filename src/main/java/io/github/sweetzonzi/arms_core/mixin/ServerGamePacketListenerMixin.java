@@ -6,6 +6,7 @@ import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.HostPositionIntake;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import org.spongepowered.asm.mixin.Mixin;
 
@@ -47,7 +48,16 @@ public abstract class ServerGamePacketListenerMixin {
      */
     @WrapMethod(method = "handleMovePlayer")
     private void armsCore$wrapHandleMovePlayer(ServerboundMovePlayerPacket packet, Operation<Void> original) {
-        if (!(((Object) this) instanceof IArmsHost host)) {
+        ServerPlayer player = ((ServerGamePacketListenerImpl) (Object) this).player;
+        // 收包线程那一遍不碰作用域：本方法首行的 PacketUtils#ensureRunningOnSameThread 会在非服务端线程上把
+        // 真正的处理排进服务端任务队列、抛 RunningOnDifferentThreadException 退出，服务端线程在 tick 尾相位
+        // 排空队列时再跑一遍、只有这一遍执行方法体。作用域只能由后者持有——否则收包线程会跨线程写这份
+        // 主线程状态，服务端 tick 末尾的平衡断言可能刚好读到它。
+        if (!player.serverLevel().getServer().isSameThread()) {
+            original.call(packet);
+            return;
+        }
+        if (!(player instanceof IArmsHost host)) {
             original.call(packet);
             return;
         }
