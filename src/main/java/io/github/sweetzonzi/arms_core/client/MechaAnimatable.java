@@ -67,7 +67,7 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     @NotNull
     private final ArmsCore animatable;
 
-    /** 占位模型标识；构造期即被 {@link ModelController} 读取，必须先于它就位 */
+    /** 素体模型标识（{@link MechaModelPreset#FRAME_MODEL}）；构造期即被 {@link ModelController} 读取，必须先于它就位 */
     @Getter
     @NotNull
     private final ModelIndex defaultModelIndex;
@@ -121,7 +121,8 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
         this.modelController = new ModelController(this);
         this.animController = new AnimController(this);
         this.molangContext = new SparkMolangContext<>(this);
-        // 模型名带 .geo 后缀、贴图另放一层目录，默认推导出的路径不存在，必须显式指定
+        // 贴图另放一层同名目录（frame/bmpt/bmpt.png），ModelInstance 默认推导的
+        // textures/frame/bmpt.png 不存在，必须显式指定
         this.modelController.setTextureLocation(MechaModelPreset.FRAME_TEXTURE);
     }
 
