@@ -2,20 +2,26 @@ package io.github.sweetzonzi.arms_core.common.control;
 
 import cn.solarmoon.spark_core.physics.body.CollisionGroups;
 import com.jme3.bullet.PhysicsSpace;
+import com.jme3.bullet.PhysicsTickListener;
 import com.jme3.bullet.SolverMode;
+import com.jme3.bullet.StepFlag;
 import com.jme3.bullet.collision.shapes.BoxCollisionShape;
 import com.jme3.bullet.collision.ManifoldPoints;
 import com.jme3.bullet.collision.PersistentManifolds;
+import com.jme3.bullet.collision.PhysicsCollisionObject;
 import com.jme3.bullet.collision.shapes.CompoundCollisionShape;
 import com.jme3.bullet.collision.shapes.CylinderCollisionShape;
 import com.jme3.bullet.objects.PhysicsRigidBody;
+import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -218,11 +224,391 @@ class TerrainSeamContactTest {
     /** 地形侧旋钮的第二档：逐 section 的子形状碰撞边距放大到 0.20。 */
     private static final float LOOSE_BOX_MARGIN_20 = 0.20f;
 
+    /** 危险车道之一：接缝处那堵墙的高度 (m) */
+    private static final float WALL_HEIGHT = 2f;
+
+    /** 危险车道之二：台阶的高度 (m)，正好是半砖 */
+    private static final float STEP_HEIGHT = 0.5f;
+
+    /** 危险车道之三：悬出棱线的量 (m)，③ 组量过它与两档底缘边距下的沉降 */
+    private static final float HAZARD_OVERHANG = 0.30f;
+
+    /** 危险车道之三：静置的步数 */
+    private static final int STAND_STEPS = 200;
+
+    // ═══════════════════════════════════════════════
+    // 接触修正（窄相回调）
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 判据的「门」：哪些接触对进得来。
+     * <p>
+     * 上线形态的这道门是 {@code pco.getUserObject() instanceof PhysicsChunkSection}：Spark-Core 的
+     * {@code owner} 就是 jme3 的 {@code userObject}
+     * （{@code ../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/body/PhysicsBodyExtension.kt#owner}），
+     * 而全仓 {@code CollisionGroups.TERRAIN} 只赋给地形 section 与 Create 装置两处
+     * （{@code .../physics/terrain/PhysicsChunkSection.kt#createPhysicsBody} 与
+     * {@code .../compat/create/CreateContraptionPhysicsHost.kt}），因此这道门恰好等于「只碰地形、不碰装置」。
+     * 本测试里造不出 {@code PhysicsChunkSection}，用「对方是这次搭出来的地形刚体」
+     * （{@link CorrectingSpace#markSection}）代替。
+     */
+    private enum Gate {
+        /** 只看「本体参与」，不看对方是谁 */
+        SUBJECT,
+        /** 在「本体参与」之上再要求对方是地形刚体 */
+        SECTION
+    }
+
+    /** 判据命中之后在回调里写什么。 */
+    private enum Write {
+        /** 不写（{@link Correction#NONE} 的占位） */
+        NONE,
+        /** 法线改成竖直，符号沿用读到的 {@code n.y}，接触点与距离原样保留 */
+        VERTICAL,
+        /** 同 {@link #VERTICAL}，但距离按新法线重投影（见 {@code CorrectingSpace#projectedGap}） */
+        VERTICAL_PROJ,
+        /** 同 {@link #VERTICAL}，但距离归零（把推测接触当成已贴上） */
+        VERTICAL_ZERO,
+        /** 调生产判据本体（{@link TerrainSeamContactCorrection#correctNormal}），不用本用例里的等价实现 */
+        PRODUCTION,
+        /** 法线吸到最近的那条世界轴 */
+        AXIS,
+        /** 距离设成大正数，等于丢弃这条接触 */
+        DISCARD,
+        /** 从 {@code onContactConceived} 返回 {@code false}：这条点根本不进 manifold */
+        CANCEL
+    }
+
+    /** 在哪个回调里写；{@link #BOTH} 两处都写。 */
+    private enum Hook {
+        CONCEIVED,
+        PROCESSED,
+        BOTH,
+        AFTER_STEP
+    }
+
+    /**
+     * 一个「门 × 写什么 × 含不含贴着的 × 写在哪个回调」的组合。
+     * <p>
+     * 距离门由 {@link #touch} 给出：{@code false} 只处理 {@code 距离 > 0} 的推测接触，
+     * {@code true} 连已经贴着的（{@code 距离 ≤ 0}）一起处理。法线门由 {@link Write} 给出：
+     * {@link Write#VERTICAL} 用 {@code 0.2 < |n.y| < 0.999}，{@link Write#AXIS} 用「已经贴着某条世界轴
+     * 就放行」。
+     * <p>
+     * 方块地形的真实表面只有水平面与竖直面，碰撞形状又是轴对齐盒（{@code .../physics/terrain/BlockMerger.kt#toCollisionShape}），
+     * 因此真实的面接触法线在世界系里必然贴着某条轴——{@link Write#AXIS} 这一支对真实接触是<b>幂等</b>的，
+     * 能被它改动的只有核心棱上那条幻影法线。
+     */
+    private enum Correction {
+        /** 对照组：不注册回调 */
+        NONE("不修正", Gate.SUBJECT, Write.NONE, false, Hook.BOTH),
+        /** 窄相回调里把法线改成竖直（保留接触点与距离） */
+        VERTICAL("窄相改法线", Gate.SUBJECT, Write.VERTICAL, false, Hook.BOTH),
+        /** 窄相回调里把距离设成大正数（等于丢弃这条接触） */
+        DISCARD("窄相丢弃", Gate.SUBJECT, Write.DISCARD, false, Hook.BOTH),
+        /** 同 {@link #VERTICAL}，但连已经贴着的（距离 ≤ 0）斜法线一起改 */
+        VERTICAL_ALL("窄相改法线(含贴着)", Gate.SUBJECT, Write.VERTICAL, true, Hook.BOTH),
+        /** 反例：同样的判据，但写在 {@code physicsTick} 里（步进之后），用来对照时机 */
+        AFTER_STEP("步进后改", Gate.SUBJECT, Write.VERTICAL, false, Hook.AFTER_STEP),
+        /** {@link Gate#SECTION} 门 + 只推测 + 改竖直：与 {@link #VERTICAL} 成对，用来证明门本身不改读数 */
+        SECTION_VERTICAL("地形门·改竖直", Gate.SECTION, Write.VERTICAL, false, Hook.BOTH),
+        /** {@link Gate#SECTION} 门 + 含贴着 + 改竖直 */
+        SECTION_VERTICAL_ALL("地形门·改竖直(含贴着)", Gate.SECTION, Write.VERTICAL, true, Hook.BOTH),
+        /** {@link Gate#SECTION} 门 + 只推测 + 吸最近轴（对真实接触幂等） */
+        SECTION_AXIS("地形门·吸最近轴", Gate.SECTION, Write.AXIS, false, Hook.BOTH),
+        /** {@link Gate#SECTION} 门 + 含贴着 + 吸最近轴 */
+        SECTION_AXIS_ALL("地形门·吸最近轴(含贴着)", Gate.SECTION, Write.AXIS, true, Hook.BOTH),
+        /** {@link Gate#SECTION} 门 + 取消这条点（走 {@code onContactConceived} 的返回值） */
+        SECTION_CANCEL("地形门·取消这条点", Gate.SECTION, Write.CANCEL, false, Hook.CONCEIVED),
+        /** 同 {@link #SECTION_CANCEL}，但连已经贴着的一起取消 */
+        SECTION_CANCEL_ALL("地形门·取消(含贴着)", Gate.SECTION, Write.CANCEL, true, Hook.CONCEIVED),
+        /** 同 {@link #SECTION_VERTICAL_ALL}，但只在 {@code onContactConceived} 里写 */
+        SECTION_CONCEIVED("地形门·只写conceived", Gate.SECTION, Write.VERTICAL, true, Hook.CONCEIVED),
+        /** 同 {@link #SECTION_VERTICAL_ALL}，但只在 {@code onContactProcessed} 里写 */
+        SECTION_PROCESSED("地形门·只写processed", Gate.SECTION, Write.VERTICAL, true, Hook.PROCESSED),
+        /** 同 {@link #SECTION_CONCEIVED}，但距离按新法线重投影：问「深度要不要一起改」 */
+        SECTION_PROJ("地形门·改竖直+距离重投影", Gate.SECTION, Write.VERTICAL_PROJ, true, Hook.CONCEIVED),
+        /** 同 {@link #SECTION_CONCEIVED}，但距离归零：问「距离这个数到底进不进入读数」 */
+        SECTION_ZERO_GAP("地形门·改竖直+距离归零", Gate.SECTION, Write.VERTICAL_ZERO, true, Hook.CONCEIVED),
+        /** 生产判据本体：{@link TerrainSeamContactCorrection#correctNormal}，与门（owner 是 section）分开 */
+        SECTION_PRODUCTION("地形门·生产判据", Gate.SECTION, Write.PRODUCTION, true, Hook.CONCEIVED);
+
+        private final String label;
+        private final Gate gate;
+        private final Write write;
+        private final boolean touch;
+        private final Hook hook;
+
+        Correction(String label, Gate gate, Write write, boolean touch, Hook hook) {
+            this.label = label;
+            this.gate = gate;
+            this.write = write;
+            this.touch = touch;
+            this.hook = hook;
+        }
+
+        String label() {
+            return label;
+        }
+
+        Gate gate() {
+            return gate;
+        }
+
+        Write write() {
+            return write;
+        }
+
+        boolean touch() {
+            return touch;
+        }
+
+        Hook hook() {
+            return hook;
+        }
+    }
+
+    /**
+     * 本场景里地面接触读到的法线是 {@code (0, -1, 0)}（{@code dumpContacts} 的第一条），
+     * 因此「改成竖直」要按读到的符号写，不能假定朝上。
+     */
+
+    /**
+     * 覆写了 {@code ContactListener} 两个回调的物理空间：回调由原生侧在窄相里调用
+     * （{@code onContactConceived} 在接触点加入 manifold 之前、{@code onContactProcessed} 在该点
+     * 被刷新之后），两者都在求解器之前，因此在这里写 {@code ManifoldPoints} 会进入本步的解算。
+     * {@link Correction#AFTER_STEP} 那条走 {@link PhysicsTickListener}，写点在步进之后——
+     * 它是对照组：证明「改得对不对」之外还有「改在什么时候」。
+     */
+    private static final class CorrectingSpace extends PhysicsSpace {
+        /** {@link Write#VERTICAL} 的法线门：{@code |n.y|} 落在这个开区间里才算「朝上但歪」。 */
+        private static final float NY_FLOOR = 0.2f;
+        private static final float NY_CEIL = 0.999f;
+
+        /** {@link Write#AXIS} 的幂等门：最大分量到这个程度就算已经贴着某条世界轴。 */
+        private static final float AXIS_TOLERANCE = 1.0e-3f;
+
+        private final Correction correction;
+        /** 本次搭出来的地形刚体（{@link Gate#SECTION} 用），对应上线形态里 owner 为 section 的那些 */
+        private final Set<Long> sectionIds = new HashSet<>();
+        private final Vector3f scratch = new Vector3f();
+        private final Vector3f rewrite = new Vector3f();
+
+        private PhysicsCollisionObject subject;
+        int conceived;
+        int processed;
+        int changed;
+        /** 回调里读到的全部点的统计，用来核对判据为什么命中或不命中 */
+        int positive;
+        float maxDistance;
+        float minNy = 1f;
+        String firstChange = "";
+        String firstConceivedRaw = "";
+        String firstProcessedRaw = "";
+
+        CorrectingSpace(Correction correction) {
+            super(new Vector3f(-200f, -200f, -200f), new Vector3f(200f, 200f, 200f));
+            this.correction = correction;
+            configureSpace(this);
+            if (correction.hook() == Hook.AFTER_STEP) {
+                addTickListener(new PhysicsTickListener() {
+                    @Override
+                    public void prePhysicsTick(PhysicsSpace space, float timeStep) {
+                    }
+
+                    @Override
+                    public void physicsTick(PhysicsSpace space, float timeStep) {
+                        for (long manifoldId : listManifoldIds()) {
+                            for (long pointId : PersistentManifolds.listPointIds(manifoldId)) {
+                                change(pointId, Hook.AFTER_STEP);
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        @Override
+        public boolean onContactConceived(long pointId, long manifoldId,
+                                          PhysicsCollisionObject pcoA, PhysicsCollisionObject pcoB) {
+            if (!inGate(pcoA, pcoB)) {
+                return true;
+            }
+            conceived++;
+            return !change(pointId, Hook.CONCEIVED);
+        }
+
+        @Override
+        public void onContactProcessed(PhysicsCollisionObject pcoA, PhysicsCollisionObject pcoB,
+                                       long manifoldPointId) {
+            if (!inGate(pcoA, pcoB)) {
+                return;
+            }
+            processed++;
+            change(manifoldPointId, Hook.PROCESSED);
+        }
+
+
+        /** 本体要在建出来之后才拿得到；只处理它参与的接触对（回调是全空间的）。 */
+        void setSubject(PhysicsCollisionObject subject) {
+            this.subject = subject;
+        }
+
+        /** 登记一个地形刚体：{@link Gate#SECTION} 只看对方在不在这张表里。 */
+        void markSection(PhysicsCollisionObject terrainBody) {
+            sectionIds.add(terrainBody.nativeId());
+        }
+
+        /** 本体参与、且门要求时对方是地形刚体的接触对。 */
+        private boolean inGate(PhysicsCollisionObject pcoA, PhysicsCollisionObject pcoB) {
+            if (correction.write() == Write.NONE || subject == null) {
+                return false;
+            }
+            PhysicsCollisionObject partner = null;
+            if (pcoA.nativeId() == subject.nativeId()) {
+                partner = pcoB;
+            } else if (pcoB.nativeId() == subject.nativeId()) {
+                partner = pcoA;
+            }
+            if (partner == null) {
+                return false;
+            }
+            return correction.gate() == Gate.SUBJECT || sectionIds.contains(partner.nativeId());
+        }
+
+        /**
+         * 判据 + 改写。两道门见 {@link Correction}；诊断读到的原始值无论命不命中都记下来，
+         * 这样「为什么没命中」也能量。
+         *
+         * @param where 这次调用来自哪个回调；{@link Hook#BOTH} 那一档两个回调都会调到这里
+         * @return true 表示这条点应当被取消（只有 {@link Write#CANCEL} 会给出 true）
+         */
+        private boolean change(long pointId, Hook where) {
+            Hook hook = correction.hook();
+            if (hook != Hook.BOTH && hook != where) {
+                return false;
+            }
+            float distance = ManifoldPoints.getDistance1(pointId);
+            ManifoldPoints.getNormalWorldOnB(pointId, scratch);
+            String raw = String.format("距离 %+.6f，法线 n.y %+.3f，n.x %+.3f", distance,
+                    scratch.y, scratch.x);
+            if (where == Hook.CONCEIVED) {
+                if (firstConceivedRaw.isEmpty()) {
+                    firstConceivedRaw = raw;
+                }
+            } else if (where == Hook.PROCESSED && firstProcessedRaw.isEmpty()) {
+                firstProcessedRaw = raw;
+            }
+            float ny = Math.abs(scratch.y);
+            if (distance > 0f) {
+                positive++;
+                maxDistance = Math.max(maxDistance, distance);
+                minNy = Math.min(minNy, ny);
+            }
+            if (!correction.touch() && distance <= 0f) {
+                return false;
+            }
+            switch (correction.write()) {
+                case VERTICAL, VERTICAL_PROJ, VERTICAL_ZERO -> {
+                    if (ny <= NY_FLOOR || ny >= NY_CEIL) {
+                        return false;
+                    }
+                    // 重投影要在改法线之前算：它用的就是「还没被改的」旧法线与两个接触点
+                    float gap = correction.write() == Write.VERTICAL_PROJ
+                            ? projectedGap(pointId)
+                            : correction.write() == Write.VERTICAL_ZERO ? 0f : distance;
+                    noteWrite(distance, gap);
+                    ManifoldPoints.setNormalWorldOnB(pointId,
+                            rewrite.set(0f, Math.signum(scratch.y), 0f));
+                    if (gap != distance) {
+                        ManifoldPoints.setDistance1(pointId, gap);
+                    }
+                }
+                case AXIS -> {
+                    // 已经贴着某条世界轴的接触原样放行：真实的面接触全在这一支里
+                    if (axisAligned(scratch)) {
+                        return false;
+                    }
+                    noteWrite(distance, distance);
+                    ManifoldPoints.setNormalWorldOnB(pointId, nearestAxis(scratch, rewrite));
+                }
+                case DISCARD -> {
+                    if (ny <= NY_FLOOR || ny >= NY_CEIL) {
+                        return false;
+                    }
+                    noteWrite(distance, 500f);
+                    ManifoldPoints.setDistance1(pointId, 500f);
+                }
+                case CANCEL -> {
+                    if (ny <= NY_FLOOR || ny >= NY_CEIL) {
+                        return false;
+                    }
+                    noteWrite(distance, distance);
+                    return true;
+                }
+                case PRODUCTION -> {
+                    // 生产判据自己读法线、自己写；这里只用它的返回值记数（scratch 仍是原读数）
+                    if (TerrainSeamContactCorrection.correctNormal(pointId, scratch, rewrite)) {
+                        noteWrite(distance, distance);
+                    }
+                }
+                case NONE -> {
+                }
+            }
+            return false;
+        }
+
+        /** 记下第一条被改写的接触（原始读数 + 改写后的距离），并计数。 */
+        private void noteWrite(float distance, float rewrittenDistance) {
+            if (changed == 0) {
+                firstChange = String.format("法线 (%+.3f, %+.3f, %+.3f)，距离 %+.6f → %+.6f m",
+                        scratch.x, scratch.y, scratch.z, distance, rewrittenDistance);
+            }
+            changed++;
+        }
+
+        /**
+         * 把同一个间隙换一个方向量：两个接触点之差在新法线（竖直）上的投影。
+         * <p>
+         * 窄相给的 {@code distance1} 是沿<b>原来那条</b>法线量的；法线被改成竖直线之后，
+         * 这两个数就不再是同一方向上的量。两个接触点之差恒等于「旧距离 × 旧法线」（它们就是那对
+         * 最近点），因此 {@code (p_A − p_B)·新法线 = 旧距离 × (旧法线·新法线) = 旧距离 × |n.y|}——
+         * 也就是说重投影只是把间隙按 {@code |n.y|} 缩一下，倾斜越大改得越多。
+         */
+        private float projectedGap(long pointId) {
+            Vector3f pointA = new Vector3f();
+            Vector3f pointB = new Vector3f();
+            ManifoldPoints.getPositionWorldOnA(pointId, pointA);
+            ManifoldPoints.getPositionWorldOnB(pointId, pointB);
+            return (pointA.y - pointB.y) * Math.signum(scratch.y);
+        }
+
+        /** 法线是否已经贴着某条世界轴：{@link Write#AXIS} 的幂等门。 */
+        private static boolean axisAligned(Vector3f normal) {
+            return Math.max(Math.max(Math.abs(normal.x), Math.abs(normal.y)), Math.abs(normal.z))
+                    >= 1f - AXIS_TOLERANCE;
+        }
+
+        /** 与最大分量同号的那条单位轴。 */
+        private static Vector3f nearestAxis(Vector3f normal, Vector3f store) {
+            float ax = Math.abs(normal.x);
+            float ay = Math.abs(normal.y);
+            float az = Math.abs(normal.z);
+            if (ax >= ay && ax >= az) {
+                return store.set(Math.signum(normal.x), 0f, 0f);
+            }
+            if (ay >= az) {
+                return store.set(0f, Math.signum(normal.y), 0f);
+            }
+            return store.set(0f, 0f, Math.signum(normal.z));
+        }
+    }
+
     // ═══════════════════════════════════════════════
     // 地形
     // ═══════════════════════════════════════════════
 
-    /** 四档地形拼法。 */
+    /** 七档地形拼法。 */
     private enum Terrain {
         /** 一个盒，无接缝 */
         MONOLITH("一整块盒"),
@@ -237,7 +623,11 @@ class TerrainSeamContactTest {
         /** 同 {@link #SECTIONS}，但子形状的碰撞边距放大到 {@link #LOOSE_BOX_MARGIN_10} */
         SECTIONS_LOOSE_10("逐section、盒边距0.10"),
         /** 同 {@link #SECTIONS}，但子形状的碰撞边距放大到 {@link #LOOSE_BOX_MARGIN_20} */
-        SECTIONS_LOOSE_20("逐section、盒边距0.20");
+        SECTIONS_LOOSE_20("逐section、盒边距0.20"),
+        /** 同 {@link #SECTIONS}，再接缝 {@code x = 0} 上立一堵高 {@link #WALL_HEIGHT} 的墙 */
+        SECTIONS_WALL("逐section+接缝一堵墙"),
+        /** 同 {@link #SECTIONS}，但 {@code x ≥ 0} 那一侧高出 {@link #STEP_HEIGHT}（半砖台阶） */
+        SECTIONS_STEP("逐section+半砖台阶");
 
         private final String label;
 
@@ -250,24 +640,45 @@ class TerrainSeamContactTest {
         }
     }
 
-    private static void build(PhysicsSpace space, Terrain terrain) {
-        switch (terrain) {
-            case MONOLITH -> addMonolith(space);
-            case TILED -> addTiledMonolith(space, SEAM_STRIP_FROM, SEAM_STRIP_TO);
+    /**
+     * 搭一档地形，并把这次搭出来的地形刚体按顺序交回去（{@link CorrectingSpace#markSection} 要用）。
+     */
+    private static List<PhysicsRigidBody> build(PhysicsSpace space, Terrain terrain) {
+        return switch (terrain) {
+            case MONOLITH -> List.of(addMonolith(space));
+            case TILED -> List.of(addTiledMonolith(space, SEAM_STRIP_FROM, SEAM_STRIP_TO));
             case SECTIONS -> addSectionStrip(space, SEAM_STRIP_FROM, SEAM_STRIP_TO, DEFAULT_MARGIN, 0f);
             case SECTIONS_TIGHT -> addSectionStrip(space, SEAM_STRIP_FROM, SEAM_STRIP_TO, 1.0e-4f, 0f);
-            case SECTIONS_OVERLAP -> addSectionStrip(space, SEAM_STRIP_FROM, SEAM_STRIP_TO, DEFAULT_MARGIN,
-                    OVERLAP_EXTEND);
+            case SECTIONS_OVERLAP -> addSectionStrip(
+                    space, SEAM_STRIP_FROM, SEAM_STRIP_TO, DEFAULT_MARGIN, OVERLAP_EXTEND);
             case SECTIONS_LOOSE_10 -> addSectionStrip(
                     space, SEAM_STRIP_FROM, SEAM_STRIP_TO, LOOSE_BOX_MARGIN_10, 0f);
             case SECTIONS_LOOSE_20 -> addSectionStrip(
                     space, SEAM_STRIP_FROM, SEAM_STRIP_TO, LOOSE_BOX_MARGIN_20, 0f);
-        }
+            case SECTIONS_WALL -> {
+                List<PhysicsRigidBody> bodies = new ArrayList<>(
+                        addSectionStrip(space, SEAM_STRIP_FROM, SEAM_STRIP_TO, DEFAULT_MARGIN, 0f));
+                bodies.add(wall(space, WALL_HEIGHT));
+                yield bodies;
+            }
+            case SECTIONS_STEP -> {
+                List<PhysicsRigidBody> bodies = new ArrayList<>(
+                        addSectionStrip(space, SEAM_STRIP_FROM, SEAM_STRIP_TO, DEFAULT_MARGIN, 0f));
+                bodies.add(step(space, STEP_HEIGHT));
+                yield bodies;
+            }
+        };
     }
 
     private static PhysicsSpace newSpace() {
         PhysicsSpace space = new PhysicsSpace(
                 new Vector3f(-200f, -200f, -200f), new Vector3f(200f, 200f, 200f));
+        configureSpace(space);
+        return space;
+    }
+
+    /** 两种空间共用的两项设置：重力、解算器模式。 */
+    private static void configureSpace(PhysicsSpace space) {
         space.setGravity(new Vector3f(0f, -MechaWalkingAttr.GRAVITY, 0f));
         // 解算器模式取 PhysicsWorld 构造时的那一组（../Spark-Core/.../physics/level/PhysicsWorld.kt 的
         // init 块）：接缝处必然同时出现多条接触，CacheFriendly / SIMD / Interleave 决定它们的迭代
@@ -278,7 +689,6 @@ class TerrainSeamContactTest {
                 | SolverMode.CacheDirection
                 | SolverMode.ArticulatedWarmStart
                 | SolverMode.Interleave);
-        return space;
     }
 
     /** 地形刚体的公共参数：静态、地形组、只与地形与角色碰撞。 */
@@ -322,20 +732,54 @@ class TerrainSeamContactTest {
     }
 
     /** 沿 X 拼接的一排 section 刚体，接缝在 {@code x = 16k} 上。 */
-    private static void addSectionStrip(PhysicsSpace space, int fromSx, int toSx, float boxMargin,
-                                        float horizontalExtend) {
+    private static List<PhysicsRigidBody> addSectionStrip(PhysicsSpace space, int fromSx, int toSx,
+                                                          float boxMargin, float horizontalExtend) {
+        List<PhysicsRigidBody> bodies = new ArrayList<>();
         for (int sx = fromSx; sx <= toSx; sx++) {
-            section(space, sx, LANE_SZ, boxMargin, horizontalExtend);
+            bodies.add(section(space, sx, LANE_SZ, boxMargin, horizontalExtend));
         }
+        return bodies;
     }
 
     /** 一整块静态盒，顶面同样在 {@code y = SURFACE_Y}：没有接缝的对照组。 */
-    private static void addMonolith(PhysicsSpace space) {
+    private static PhysicsRigidBody addMonolith(PhysicsSpace space) {
         PhysicsRigidBody body = new PhysicsRigidBody(
                 new BoxCollisionShape(new Vector3f(200f, 8f, 200f)), 0f);
         body.setPhysicsLocation(new Vector3f(0f, SURFACE_Y - 8f, 0f));
         configureTerrain(body);
         space.addCollisionObject(body);
+        return body;
+    }
+
+    /**
+     * 危险车道之一：立面的墙。一个静态盒，左面正好压在接缝 {@code x = 0} 上、高 {@code wallHeight}。
+     * <p>
+     * 探的是「竖直面的接触会不会被法线门碰」：墙的法线是水平的，{@link Write#VERTICAL} 的
+     * {@code |n.y|} 窗口与 {@link Write#AXIS} 的轴对齐门都不该命中它。
+     */
+    private static PhysicsRigidBody wall(PhysicsSpace space, float wallHeight) {
+        PhysicsRigidBody body = new PhysicsRigidBody(
+                new BoxCollisionShape(new Vector3f(1f, wallHeight / 2f, SECTION_SPAN / 2f)), 0f);
+        body.setPhysicsLocation(new Vector3f(1f, SURFACE_Y + wallHeight / 2f, LANE_Z));
+        configureTerrain(body);
+        space.addCollisionObject(body);
+        return body;
+    }
+
+    /**
+     * 危险车道之二：台阶。一个静态盒，顶面在 {@code y = stepHeight}、只占接缝另一侧 {@code x ≥ 0}。
+     * <p>
+     * 探的是「台阶顶棱上那条接触」：底缘跨过顶棱时它与接缝那条幻影同源（圆柱核心的底缘对盒核心的棱），
+     * 但位置在真实的凸棱上——{@link Write#AXIS} 该放行它，{@link Write#VERTICAL} 会把往后的那一份
+     * 推力改成向上的。
+     */
+    private static PhysicsRigidBody step(PhysicsSpace space, float stepHeight) {
+        PhysicsRigidBody body = new PhysicsRigidBody(new BoxCollisionShape(
+                new Vector3f(SECTION_SPAN / 2f, stepHeight / 2f, SECTION_SPAN / 2f)), 0f);
+        body.setPhysicsLocation(new Vector3f(SECTION_SPAN / 2f, SURFACE_Y + stepHeight / 2f, LANE_Z));
+        configureTerrain(body);
+        space.addCollisionObject(body);
+        return body;
     }
 
     /**
@@ -343,7 +787,7 @@ class TerrainSeamContactTest {
      * 几何与逐 section 拼接<b>完全相同</b>（同样的接缝、同样的凸棱），区别只在它们是同一个
      * {@code btCollisionObject}。用来把「接缝几何」与「多个刚体」两个原因分开。
      */
-    private static void addTiledMonolith(PhysicsSpace space, int fromSx, int toSx) {
+    private static PhysicsRigidBody addTiledMonolith(PhysicsSpace space, int fromSx, int toSx) {
         CompoundCollisionShape compound = new CompoundCollisionShape();
         for (int sx = fromSx; sx <= toSx; sx++) {
             for (int levelY = 0; levelY < SECTION_LAYERS; levelY++) {
@@ -359,6 +803,7 @@ class TerrainSeamContactTest {
         body.setPhysicsLocation(new Vector3f(0f, 0f, 0f));
         configureTerrain(body);
         space.addCollisionObject(body);
+        return body;
     }
 
     /**
@@ -440,6 +885,18 @@ class TerrainSeamContactTest {
         return body.getPhysicsLocation(null).y - MechaBodyPreset.HALF_TOTAL - SURFACE_Y;
     }
 
+    /**
+     * 刚体绕世界 Y 的转角（度）。
+     * <p>
+     * 接触点位置喂给求解器的只有力臂：锁转（{@code angularFactor = (0, 1, 0)}）把 pitch / roll 力矩
+     * 丢掉了，剩下的唯一通道就是 yaw——法向力是竖直的，绕 Y 的力矩为 0，只有摩擦那两项还能给 yaw。
+     * 因此「接触点要不要跟着改」这条问题，读数上只有这一个通道能看见。
+     */
+    private static float yawDegrees(PhysicsRigidBody body) {
+        Quaternion rotation = body.getPhysicsRotation(null);
+        return (float) Math.toDegrees(2.0 * Math.atan2(rotation.getY(), rotation.getW()));
+    }
+
     // ═══════════════════════════════════════════════
     // ① 裸圆柱定速滑行
     // ═══════════════════════════════════════════════
@@ -458,7 +915,8 @@ class TerrainSeamContactTest {
      * @param trace      过缝前后的逐步轨迹（{@code trace} 为真时才填）
      */
     private record Slide(float restFeet, float maxLift, float liftX, float maxVy, float minFeet,
-                         float maxJolt, int maxFlight, float finalX, List<String> trace) {
+                         float maxJolt, int maxFlight, float finalX, float finalYaw,
+                         List<String> trace) {
     }
 
     /**
@@ -470,12 +928,45 @@ class TerrainSeamContactTest {
      */
     private static Slide slide(Terrain terrain, float speed, float startX, float rimMargin,
                                boolean trace) {
-        PhysicsSpace space = newSpace();
-        build(space, terrain);
+        return slide(terrain, speed, startX, rimMargin, trace, Correction.NONE, null, null);
+    }
+
+    /**
+     * 同 {@link #slide(Terrain, float, float, float, boolean)}，但不带「第一条改动」的读数。
+     */
+    private static Slide slide(Terrain terrain, float speed, float startX, float rimMargin,
+                               boolean trace, Correction correction, int[] counters) {
+        return slide(terrain, speed, startX, rimMargin, trace, correction, counters, null);
+    }
+
+    /**
+     * 同 {@link #slide(Terrain, float, float, float, boolean)}，但可以带上窄相接触修正。
+     *
+     * @param correction 修正模式；{@link Correction#NONE} 时不注册回调、步进标志保持 0
+     * @param counters   长度 ≥ 3 的计数数组（conceived / processed / changed），可为 null
+     * @param last       用来带出第一条被改接触的原始读数，可为 null
+     */
+    private static Slide slide(Terrain terrain, float speed, float startX, float rimMargin,
+                               boolean trace, Correction correction, int[] counters,
+                               LastChange last) {
+        PhysicsSpace space = correction == Correction.NONE
+                ? newSpace()
+                : new CorrectingSpace(correction);
+        List<PhysicsRigidBody> terrainBodies = build(space, terrain);
         PhysicsRigidBody body = bareCylinder(space, startX, rimMargin);
+        if (space instanceof CorrectingSpace correcting) {
+            correcting.setSubject(body);
+            for (PhysicsRigidBody terrainBody : terrainBodies) {
+                correcting.markSection(terrainBody);
+            }
+        }
+        // 回调只有在步进时带上标志才会被原生侧调用；AFTER_STEP 那条故意不带
+        int stepFlags = correction == Correction.NONE || correction.hook() == Hook.AFTER_STEP
+                ? 0x0
+                : StepFlag.contactConceived | StepFlag.contactProcessed;
 
         for (int i = 0; i < SETTLE_STEPS; i++) {
-            space.update(DT, 0, 0x0);
+            space.update(DT, 0, stepFlags);
         }
         float restFeet = feet(body);
 
@@ -492,7 +983,7 @@ class TerrainSeamContactTest {
         Vector3f velocity = new Vector3f();
         for (int i = 0; i < 400; i++) {
             body.setLinearVelocity(velocity.set(speed, body.getLinearVelocity(null).y, 0f));
-            space.update(DT, 0, 0x0);
+            space.update(DT, 0, stepFlags);
 
             Vector3f position = body.getPhysicsLocation(null);
             Vector3f after = body.getLinearVelocity(null);
@@ -523,8 +1014,31 @@ class TerrainSeamContactTest {
                 break;
             }
         }
+        if (space instanceof CorrectingSpace correcting) {
+            if (counters != null) {
+                counters[0] += correcting.conceived;
+                counters[1] += correcting.processed;
+                counters[2] += correcting.changed;
+            }
+            if (last != null) {
+                if (last.text.isEmpty() && !correcting.firstChange.isEmpty()) {
+                    last.text = correcting.firstChange;
+                }
+                if (last.firstConceivedRaw.isEmpty()) {
+                    last.firstConceivedRaw = correcting.firstConceivedRaw;
+                }
+                if (last.firstProcessedRaw.isEmpty()) {
+                    last.firstProcessedRaw = correcting.firstProcessedRaw;
+                }
+                if (correcting.positive > 0) {
+                    last.positive = Math.max(last.positive, correcting.positive);
+                    last.maxDistance = Math.max(last.maxDistance, correcting.maxDistance);
+                    last.minNy = Math.min(last.minNy, correcting.minNy);
+                }
+            }
+        }
         return new Slide(restFeet, maxLift, liftX, maxVy, minFeet, maxJolt, maxFlight,
-                body.getPhysicsLocation(null).x, traceLines);
+                body.getPhysicsLocation(null).x, yawDegrees(body), traceLines);
     }
 
     // ═══════════════════════════════════════════════
@@ -653,12 +1167,16 @@ class TerrainSeamContactTest {
      * @param worstJolt         裸圆柱：所有相位里被求解器吃掉的最大水平速率 (m/s)
      * @param worstStepUps      控制器：最坏相位的越障写入次数
      * @param worstGroundLosses 控制器：最坏相位的着地翻假次数
+     * @param furthestX         所有相位里跑得最远的那次终态中心 x (m)：危险车道上用来判「有没有穿过去」；
+     *                          控制器那条车道不填（{@code NaN}）
+     * @param maxYaw            所有相位里终态 yaw 与 0 的最大偏差（度）：接触点位置喂给求解器的
+     *                          只有力臂，而锁转把 pitch/roll 力矩丢掉了，yaw 是<b>唯一</b>还剩的通道
      * @param trace             最坏相位的逐步轨迹
      */
     private record Sweep(float speed, float restFeet, float worstLift, float worstLiftX, int popping,
                          float worstVy,
                          int worstFlight, float worstJolt, float worstPenetration, int worstStepUps,
-                         int worstGroundLosses, List<String> trace) {
+                         int worstGroundLosses, float furthestX, float maxYaw, List<String> trace) {
     }
 
     /**
@@ -666,6 +1184,18 @@ class TerrainSeamContactTest {
      * {@code v·Δt} 内均匀散开），报最坏的那个相位，并把它的轨迹取回来。
      */
     private static Sweep sweepBare(Terrain terrain, float speed, float rimMargin) {
+        return sweepBare(terrain, speed, rimMargin, Correction.NONE, null, null);
+    }
+
+    /** 同 {@link #sweepBare(Terrain, float, float)}，但不带「第一条改动」的读数。 */
+    private static Sweep sweepBare(Terrain terrain, float speed, float rimMargin,
+                                   Correction correction, int[] counters) {
+        return sweepBare(terrain, speed, rimMargin, correction, counters, null);
+    }
+
+    /** 同 {@link #sweepBare(Terrain, float, float)}，但可以带上窄相接触修正与回调计数。 */
+    private static Sweep sweepBare(Terrain terrain, float speed, float rimMargin,
+                                   Correction correction, int[] counters, LastChange last) {
         float pitch = speed * DT;
         float worstLift = 0f;
         float worstLiftX = Float.NaN;
@@ -676,10 +1206,14 @@ class TerrainSeamContactTest {
         int popping = 0;
         float worstStart = BARE_START_X;
         float restFeet = 0f;
+        float furthestX = Float.NEGATIVE_INFINITY;
+        float maxYaw = 0f;
         for (int k = 0; k < PHASES; k++) {
             float startX = BARE_START_X + k * pitch / PHASES;
-            Slide s = slide(terrain, speed, startX, rimMargin, false);
+            Slide s = slide(terrain, speed, startX, rimMargin, false, correction, counters, last);
             restFeet = s.restFeet();
+            furthestX = Math.max(furthestX, s.finalX());
+            maxYaw = Math.max(maxYaw, Math.abs(s.finalYaw()));
             if (s.maxLift() > POP_LIFT) {
                 popping++;
             }
@@ -694,10 +1228,10 @@ class TerrainSeamContactTest {
             worstFlight = Math.max(worstFlight, s.maxFlight());
         }
         List<String> trace = worstLift > POP_LIFT
-                ? slide(terrain, speed, worstStart, rimMargin, true).trace()
+                ? slide(terrain, speed, worstStart, rimMargin, true, correction, null, null).trace()
                 : List.of();
         return new Sweep(speed, restFeet, worstLift, worstLiftX, popping, worstVy, worstFlight,
-                worstJolt, worstPenetration, 0, 0, trace);
+                worstJolt, worstPenetration, 0, 0, furthestX, maxYaw, trace);
     }
 
     /** 正式控制器的相位扫描，与 {@link #sweepBare} 同构。 */
@@ -733,7 +1267,7 @@ class TerrainSeamContactTest {
                 ? crossing(terrain, dodges, worstStart, rimMargin, true).trace()
                 : List.of();
         return new Sweep(speed, restFeet, worstLift, worstLiftX, popping, worstVy, worstFlight,
-                0f, 0f, worstStepUps, worstGroundLosses, trace);
+                0f, 0f, worstStepUps, worstGroundLosses, Float.NaN, Float.NaN, trace);
     }
 
     /**
@@ -747,10 +1281,10 @@ class TerrainSeamContactTest {
     private static void printBareSweep(float speed, Sweep sweep) {
         System.out.printf("         %6.1f m/s（步长 %.3f m）：最坏相位抬升 %+.4f m（x = %+7.3f），"
                         + "踩上的相位 %d/%d，峰值 vy %+.4f m/s，最长离地 %d 步，"
-                        + "最深下压 %+.4f m，最大水平顿挫 %.3f m/s%n",
+                        + "最深下压 %+.4f m，最大水平顿挫 %.3f m/s，终态 |yaw| %.3f°%n",
                 speed, speed * DT, sweep.worstLift(), sweep.worstLiftX(), sweep.popping(),
                 PHASES, sweep.worstVy(), sweep.worstFlight(), sweep.worstPenetration(),
-                sweep.worstJolt());
+                sweep.worstJolt(), sweep.maxYaw());
     }
 
     @Test
@@ -869,7 +1403,27 @@ class TerrainSeamContactTest {
      * 之后接触只剩圆角那一段，求解器沿斜法线把机体往棱线的另一侧推，脚底随之沉下去。
      */
     private static EdgeRun edgeOverhang(float rimMargin, float overhang, int steps) {
-        PhysicsSpace space = newSpace();
+        return edgeOverhang(rimMargin, overhang, steps, Correction.NONE);
+    }
+
+    /**
+     * 同 {@link #edgeOverhang(float, float, int)}，但可以带上窄相接触修正。
+     * <p>
+     * 这是「含贴着」那两档的危险车道：底缘悬出棱线时支撑接触的法线本来就是斜的（真实的凸棱接触，
+     * 不是幻影），法线门一旦命中它，求解器沿这条法线把机体往棱线另一侧推的那一份就没有了，
+     * 脚底会沉下去、中心也不再被推回。
+     */
+    private static EdgeRun edgeOverhang(float rimMargin, float overhang, int steps,
+                                        Correction correction) {
+        return edgeOverhang(rimMargin, overhang, steps, correction, null);
+    }
+
+    /** 同 {@link #edgeOverhang(float, float, int, Correction)}，另外把回调计数带回去。 */
+    private static EdgeRun edgeOverhang(float rimMargin, float overhang, int steps,
+                                        Correction correction, int[] counters) {
+        PhysicsSpace space = correction == Correction.NONE
+                ? newSpace()
+                : new CorrectingSpace(correction);
         PhysicsRigidBody ledge = new PhysicsRigidBody(
                 new BoxCollisionShape(new Vector3f(8f, 8f, 8f)), 0f);
         ledge.setPhysicsLocation(new Vector3f(-8f, SURFACE_Y - 8f, LANE_Z));
@@ -880,9 +1434,21 @@ class TerrainSeamContactTest {
         body.setPhysicsLocation(new Vector3f(
                 overhang, SURFACE_Y + MechaBodyPreset.HALF_TOTAL, LANE_Z));
         space.addCollisionObject(body);
+        if (space instanceof CorrectingSpace correcting) {
+            correcting.setSubject(body);
+            correcting.markSection(ledge);
+        }
+        int stepFlags = correction == Correction.NONE || correction.hook() == Hook.AFTER_STEP
+                ? 0x0
+                : StepFlag.contactConceived | StepFlag.contactProcessed;
         for (int i = 0; i < steps; i++) {
             body.prePhysicsTick(DT);
-            space.update(DT, 0, 0x0);
+            space.update(DT, 0, stepFlags);
+        }
+        if (space instanceof CorrectingSpace correcting && counters != null) {
+            counters[0] += correcting.conceived;
+            counters[1] += correcting.processed;
+            counters[2] += correcting.changed;
         }
         float x = body.getPhysicsLocation(null).x;
         return new EdgeRun(feet(body), x - overhang, body.isOnGround());
@@ -927,5 +1493,187 @@ class TerrainSeamContactTest {
                         overhang, edge.restFeet(), edge.driftX(), edge.grounded() ? "是" : "否");
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════
+    // ④ 窄相接触修正
+    // ═══════════════════════════════════════════════
+
+    /**
+     * 第 ④ 组：在窄相回调里处置那条「推测的、朝上的、歪的」接触，看接缝踢起还剩多少。
+     * <p>
+     * 场景与第 ① 组相同（逐 section 拼接的平地、裸圆柱、每档扫 {@link #PHASES} 个相位取最坏），
+     * 差别只在步进时带上 {@code contactConceived / contactProcessed} 标志，并覆写
+     * {@link PhysicsSpace#onContactConceived} 与 {@link PhysicsSpace#onContactProcessed}。
+     * 三件事一起量：
+     * <ol>
+     *   <li><b>门</b>（{@link Gate}）——{@link Correction#VERTICAL} 与 {@link Correction#SECTION_VERTICAL}
+     *       只差这道门：两者读数相同即证明「只处理地形」不改结论（这条车道上除本体之外全是地形刚体）</li>
+     *   <li><b>写什么</b>（{@link Write}）——改竖直 / 吸最近轴 / 改距离丢弃 / 取消这条点</li>
+     *   <li><b>写在哪个回调</b>（{@link Hook}）——只写 {@code conceived} 与只写 {@code processed} 两档对照。
+     *       上线走的是刚体上的 per-body 事件，它正好分成 {@code Collide.Pre} 与 {@code Collide.Processed}
+     *       两条（{@code ../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/PhysicsWorld.kt#onContactConceived}）</li>
+     * </ol>
+     * {@link Correction#AFTER_STEP} 是对照组：判据与写法完全相同，只把时机挪到步进之后
+     * （走 {@link PhysicsTickListener}），用来把「改什么」与「改在什么时候」分开。
+     */
+    @Test
+    void measureContactCorrection() {
+        final float[] speeds = {6f, 24f};
+
+        System.out.printf("[接缝④] 窄相接触修正（逐 section 拼接、裸圆柱、底缘边距 %.2f m、"
+                        + "%d 个相位取最坏；两道门见 Correction 的注释）：%n",
+                REFERENCE_RIM_MARGIN, PHASES);
+        for (Correction correction : Correction.values()) {
+            System.out.println("         ── " + correction.label() + " ──");
+            for (float speed : speeds) {
+                int[] counters = new int[3];
+                LastChange last = new LastChange();
+                Sweep sweep = sweepBare(
+                        Terrain.SECTIONS, speed, REFERENCE_RIM_MARGIN, correction, counters, last);
+                printBareSweep(speed, sweep);
+                System.out.printf("                  回调读数：conceived %d，processed %d，改动 %d；"
+                                + "回调里距离 > 0 的点 %d 个（最大 %+.6f m，最小 |n.y| %+.3f）%n",
+                        counters[0], counters[1], counters[2], last.positive, last.maxDistance,
+                        last.minNy);
+                if (!last.firstConceivedRaw.isEmpty()) {
+                    System.out.println("                  首条 conceived：" + last.firstConceivedRaw);
+                }
+                if (!last.firstProcessedRaw.isEmpty()) {
+                    System.out.println("                  首条 processed：" + last.firstProcessedRaw);
+                }
+                if (!last.text.isEmpty()) {
+                    System.out.println("                  首条改动：" + last.text);
+                }
+            }
+        }
+    }
+
+    /**
+     * 第 ④ 组的危险车道：同一批判据放在「斜法线在几何上是真的」那些地方，看它会不会误伤。
+     * <p>
+     * 三条车道各对应一种误伤方式：
+     * <ol>
+     *   <li><b>悬出棱线</b> —— 底缘悬在方块棱上静止落定：支撑接触的法线本来就是斜的，
+     *       改掉它就没有那份把机体往棱线另一侧推的力，脚底会沉、中心也不再被推回</li>
+     *   <li><b>接缝一堵墙</b> —— 6 / 24 m/s 撞墙：墙的法线是水平的，
+     *       {@link Write#VERTICAL} 的 {@code |n.y|} 窗口与 {@link Write#AXIS} 的轴对齐门都不该命中它；
+     *       一旦命中，终态 x 会穿过墙面</li>
+     *   <li><b>半砖台阶</b> —— 6 m/s 撞上 0.5 m 台阶：顶棱那条接触与接缝幻影同源，但位置在真实的凸棱上，
+     *       吸最近轴该放行，改竖直会把往后的推力变成向上的</li>
+     * </ol>
+     */
+    @Test
+    void measureContactCorrectionHazards() {
+        final Correction[] variants = {
+            Correction.NONE, Correction.SECTION_VERTICAL, Correction.SECTION_VERTICAL_ALL,
+            Correction.SECTION_AXIS, Correction.SECTION_AXIS_ALL
+        };
+        // 悬出 0.30 m 配 0.10 / 0.20 两档底缘边距：③ 组量过它们的沉降，支撑接触确实落在斜法线上
+        // （0.04 那一档平底半径 0.36 m 盖得住 0.30 m 的悬出，接触是平底对顶面、不含斜法线）
+        final float[] margins = {0.10f, 0.20f};
+
+        System.out.printf("[接缝④·危险车道] 同一批判据放在真实斜法线上（悬出棱线 %.2f m）：%n",
+                HAZARD_OVERHANG);
+        for (Correction correction : variants) {
+            System.out.println("         ── " + correction.label() + " ──");
+            for (float margin : margins) {
+                int[] counters = new int[3];
+                EdgeRun edge = edgeOverhang(margin, HAZARD_OVERHANG, 100, correction, counters);
+                System.out.printf("         悬出棱线 %.2f m / 底缘边距 %.2f m：落定脚底 %+.5f m，"
+                                + "中心位移 %+.5f m，着地 %s，回调改动 %d/%d%n",
+                        HAZARD_OVERHANG, margin, edge.restFeet(), edge.driftX(),
+                        edge.grounded() ? "是" : "否", counters[2], counters[0]);
+            }
+            printStand(correction);
+            printHazard("撞墙 6 m/s", Terrain.SECTIONS_WALL, 6f, correction);
+            printHazard("撞墙 24 m/s", Terrain.SECTIONS_WALL, 24f, correction);
+            printHazard("半砖台阶 6 m/s", Terrain.SECTIONS_STEP, 6f, correction);
+        }
+    }
+
+    /** 站在接缝上的静置读数：五个起点取最坏的那个。 */
+    private static void printStand(Correction correction) {
+        final float[] starts = {-0.30f, -0.15f, 0f, 0.15f, 0.30f};
+        float worstFeet = 0f;
+        float worstX = Float.NaN;
+        float worstDrift = 0f;
+        int changed = 0;
+        int conceived = 0;
+        for (float start : starts) {
+            int[] counters = new int[3];
+            EdgeRun stand = seamStand(start, correction, counters);
+            changed += counters[2];
+            conceived += counters[0];
+            if (stand.restFeet() < worstFeet) {
+                worstFeet = stand.restFeet();
+                worstX = start;
+                worstDrift = stand.driftX();
+            }
+        }
+        System.out.printf("         站在缝上：最深脚底 %+.5f m（x = %+.2f，中心位移 %+.5f m），"
+                        + "回调改动 %d/%d%n", worstFeet, worstX, worstDrift, changed, conceived);
+    }
+
+    /**
+     * 危险车道之三：在接缝附近静置 — 底缘就压在邻块那条棱附近，接触是<b>贴着</b>的、法线在几何上
+     * 就是斜的，判据一命中它，支撑就少一份。位置取在棱线两侧各两处加正中。
+     *
+     * @return 落定后的脚底高度与中心位移；{@code grounded} 记「脚底落在 ±5 mm 内」
+     */
+    private static EdgeRun seamStand(float x, Correction correction, int[] counters) {
+        PhysicsSpace space = correction == Correction.NONE
+                ? newSpace()
+                : new CorrectingSpace(correction);
+        List<PhysicsRigidBody> terrainBodies = build(space, Terrain.SECTIONS);
+        PhysicsRigidBody body = bareCylinder(space, x, REFERENCE_RIM_MARGIN);
+        if (space instanceof CorrectingSpace correcting) {
+            correcting.setSubject(body);
+            for (PhysicsRigidBody terrainBody : terrainBodies) {
+                correcting.markSection(terrainBody);
+            }
+        }
+        int stepFlags = correction == Correction.NONE || correction.hook() == Hook.AFTER_STEP
+                ? 0x0
+                : StepFlag.contactConceived | StepFlag.contactProcessed;
+        for (int i = 0; i < STAND_STEPS; i++) {
+            space.update(DT, 0, stepFlags);
+        }
+        if (space instanceof CorrectingSpace correcting && counters != null) {
+            counters[0] += correcting.conceived;
+            counters[1] += correcting.processed;
+            counters[2] += correcting.changed;
+        }
+        float rest = feet(body);
+        float drift = body.getPhysicsLocation(null).x - x;
+        return new EdgeRun(rest, drift, Math.abs(rest) < 0.005f);
+    }
+
+    /**
+     * 危险车道上的一行读数：终态 x 是「有没有穿过去」的判据，{@code 改动/回调} 是判据到底命中了几条
+     * ——「读数没变」既可能是判据没命中，也可能是命中了但没影响，两者必须分开。
+     */
+    private static void printHazard(String label, Terrain terrain, float speed, Correction correction) {
+        int[] counters = new int[3];
+        LastChange last = new LastChange();
+        Sweep sweep = sweepBare(terrain, speed, REFERENCE_RIM_MARGIN, correction, counters, last);
+        System.out.printf("         %-16s 抬升 %+.4f m，踩上 %d/%d，峰值 vy %+.4f m/s，"
+                        + "最深下压 %+.4f m，顿挫 %.3f m/s，最远终态 x %+7.4f m，回调改动 %d/%d%n",
+                label, sweep.worstLift(), sweep.popping(), PHASES, sweep.worstVy(),
+                sweep.worstPenetration(), sweep.worstJolt(), sweep.furthestX(), counters[2],
+                counters[0]);
+        if (!last.text.isEmpty()) {
+            System.out.println("                  首条改动：" + last.text);
+        }
+    }
+
+    /** 把回调里读到的统计从 {@link CorrectingSpace} 里带出来。 */
+    private static final class LastChange {
+        String text = "";
+        String firstConceivedRaw = "";
+        String firstProcessedRaw = "";
+        int positive;
+        float maxDistance;
+        float minNy = 1f;
     }
 }

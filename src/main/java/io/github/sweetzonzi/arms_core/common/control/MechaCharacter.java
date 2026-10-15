@@ -493,6 +493,11 @@ public class MechaCharacter extends PhysicsRigidBody {
         // 碰撞过滤：只与地形碰撞（§2.2 选择 4）。与躯干的接触由约束层处理，不靠碰撞组
         setCollisionGroup(CollisionGroups.PAWN);
         setCollideWithGroups(CollisionGroups.TERRAIN);
+
+        // 地形拼缝的窄相修正：只认 owner 是地形 section 的对方，把「朝上但歪」的接触法线摆正
+        // （机制见 docs/角色控制器-刚体原型与引擎约束.md §11.10，判据与本体的实现见
+        // common/control/TerrainSeamContactCorrection.java）
+        TerrainSeamContactCorrection.attachTo(this);
     }
 
     // ═══════════════════════════════════════════════
