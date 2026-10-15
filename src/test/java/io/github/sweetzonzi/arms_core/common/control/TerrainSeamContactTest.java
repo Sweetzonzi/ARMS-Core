@@ -202,9 +202,9 @@ class TerrainSeamContactTest {
     /**
      * 圆柱底缘边距的<b>参照档</b> (m)：Bullet / jme3 对凸体的默认碰撞边距。
      * <p>
-     * ①② 两组（接缝对比与速度阶梯）固定在这一档，这样它们的读数不随现役形体取值变动；
-     * 边距本身的扫描在 ③ 组（{@link #measureCylinderRimMarginLadder}）里做，现役取值见
-     * {@link MechaBodyPreset#RIM_MARGIN}。
+     * ①② 两组（接缝对比与速度阶梯）固定在这一档；边距本身的扫描在 ③ 组
+     * （{@link #measureCylinderRimMarginLadder}）里做，五档对照见
+     * `docs/角色控制器-刚体原型与引擎约束.md` §11.10。
      */
     private static final float REFERENCE_RIM_MARGIN = 0.04f;
 
@@ -807,8 +807,8 @@ class TerrainSeamContactTest {
     }
 
     /**
-     * 控制器碰撞体：取 {@link MechaBodyPreset#newBodyShape()}（它已带上现役的
-     * {@link MechaBodyPreset#RIM_MARGIN}），{@code rimMargin > 0} 时把碰撞边距改写成该值。
+     * 控制器碰撞体：取 {@link MechaBodyPreset#newBodyShape()}（它不写碰撞边距，取引擎默认
+     * 0.04 m），{@code rimMargin > 0} 时把碰撞边距改写成该值。
      * 因此本方法的调用方一律传显式取值，读数不随现役取值漂移。
      * <p>
      * Bullet 的碰撞边距把凸体的棱做成一圈圆角：圆柱底面因此是「平底 + 半径等于边距的圆角底缘」，
@@ -829,7 +829,7 @@ class TerrainSeamContactTest {
     /**
      * 裸圆柱：与控制器同一个形状、质量、摩擦与姿态自由度，但不跑任何控制器逻辑。
      *
-     * @param rimMargin 圆柱形状的碰撞边距 (m)；{@code > 0} 时覆盖 {@link MechaBodyPreset#RIM_MARGIN}，
+     * @param rimMargin 圆柱形状的碰撞边距 (m)；{@code > 0} 时覆盖形状自带的默认边距，
      *                  {@link #TIGHT_RIM_MARGIN} 是削尖底缘那一档
      */
     private static PhysicsRigidBody bareCylinder(PhysicsSpace space, float x, float rimMargin) {
@@ -1461,7 +1461,7 @@ class TerrainSeamContactTest {
      *   <li><b>过缝</b> —— 裸圆柱 6 / 24 m/s 与正式控制器 24 m/s（闪避 2 次）的最坏相位</li>
      *   <li><b>悬出棱线 0.10 / 0.30 m</b> —— 底缘倒圆的代价：脚底沉多少、中心被推回多少</li>
      * </ol>
-     * {@link #REFERENCE_RIM_MARGIN} 一档是 Bullet / jme3 的默认 0.04 m，也是现役形体的原始取值；
+     * {@link #REFERENCE_RIM_MARGIN} 一档是 Bullet / jme3 的默认 0.04 m，也是现役形体取到的值；
      * {@link MechaBodyPreset#RADIUS} 那一档是阶梯的端点（核心半径 0，底面变成半球）。
      */
     @Test
@@ -1476,7 +1476,7 @@ class TerrainSeamContactTest {
         for (float margin : margins) {
             System.out.printf("         ── 边距 %.3f m（平底半径 %.3f m）%s──%n",
                     margin, MechaBodyPreset.RADIUS - margin,
-                    margin == shipping ? "← 现役 MechaBodyPreset#RIM_MARGIN" : "");
+                    margin == shipping ? "← 现役形体取值（引擎默认）" : "");
 
             Slide flat = slide(Terrain.MONOLITH, 6f, BARE_START_X, margin, false);
             System.out.printf("         平地落定：脚底 %+.5f m（应为 0，否则外表面也被改了）%n",

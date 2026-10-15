@@ -7,8 +7,8 @@ import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
  * 控制器碰撞体几何参数（临时权威取值）。
  * <p>
  * <b>形体是圆柱</b>：本地轴 +Y，半径 {@link #RADIUS}、全高 {@link #BODY_HEIGHT}，底面是平面——
- * 平面部分的半径是 {@code RADIUS − RIM_MARGIN}，外面那圈是半径 {@link #RIM_MARGIN} 的圆角底缘
- * （Bullet 的碰撞边距语义，见 {@link #RIM_MARGIN}）。
+ * 碰撞边距不显式写，取 Bullet / jme3 对凸体的默认 0.04 m，它把底缘倒成半径 0.04 m 的圆角，
+ * 底面的平面部分半径因此是 {@code RADIUS − 0.04}。
  * 选它而不是胶囊，是因为底面为平面这一条同时决定了两件事——落到方块棱线上时脚底停在顶面高度
  * 而不下沉（胶囊的下半球会在棱线上滚进楔形，实测悬出 0.30 m 时脚底沉到顶面以下 0.17 m 且仍在
  * 下沉），以及顶住立面时接触法线保持水平（胶囊下半球压棱线时实测法线竖直分量高达 0.969，
@@ -71,51 +71,18 @@ public final class MechaBodyPreset {
     public static final float MIN_BODY_HEIGHT = 0.1f;
 
     /**
-     * 控制器碰撞体的碰撞边距 (m) —— <b>实机回归期的临时取值</b>。
-     * <p>
-     * Bullet 的碰撞边距把凸体的棱做成一圈圆角：本值就是圆柱底缘的圆角半径，底面的平面部分
-     * 半径因此是 {@code RADIUS − 本值 = 0.3 m}。外表面不变（jme3 的
-     * {@code ../Spark-Core/src/main/java/com/jme3/bullet/collision/shapes/CollisionShape.java#setMargin}
-     * 会同步缩掉核心的隐式尺寸），因此 {@link #BODY_HEIGHT}、{@link #HALF_TOTAL}、出生点与
-     * 脚底换算都不受本值影响。
-     * <p>
-     * 取 0.1 是实测的折中，数据见 `docs/角色控制器-刚体原型与引擎约束.md` §11.10。地形拼缝上被
-     * 踢起来的抬升在 0.04 / 0.10 / 0.20 三档下，正式控制器的行走档（6 m/s）是
-     * 0.032 / 0.018 / 0.005 m，离地步数 7 / 0 / 0，着地翻假 1 / 0 / 0 次；24 m/s 闪避档是
-     * 0.994 / 0.868 / 0.728 m。成因是圆柱核心底缘压过邻块盒核心的棱时窄相报出的一条歪法线，
-     * 两条碰撞边距只以和的形式进入（本值与地形盒的默认 0.04 m 之和是 0.14 m）；行走档的踢起要
-     * 到两值之和 0.33 m 以上才一个冲量都不产生，这是 0.20 档能把行走档清到 0/12 相位的由来。
-     * 阶梯的端点是把本值取满 {@link #RADIUS}（底面成半球），那一档行走档 0.003 m、24 m/s 档
-     * 仍有 0.506 m。代价是悬出方块棱线 0.30 m 时脚底从 0 沉到 5.8 mm（0.20 档是 44.8 mm，
-     * 已是求解器自身接触边距 −14.6 mm 的三倍）。可执行判据是
-     * {@code src/test/java/io/github/sweetzonzi/arms_core/common/control/TerrainSeamContactTest.java#measureCylinderRimMarginLadder}。
-     * <p>
-     * <b>实机回归要看的三件事</b>：① 走过区块边界时还弹不弹；② 上下楼梯 / 半砖与踩方块边缘时
-     * 脚底有没有下沉或卡住——底缘变圆会改落位下扫的读数，而
-     * `docs/角色控制器-刚体原型与引擎约束.md` §11.6 那张掠射接触读数表是在平底上量的，这一条
-     * 尚未回归；③ 越障高度是否仍落在 §11.6 那张读数表上（0.25 / 0.50 / 0.60 m 台阶各一次越障）。
- * 回归之后再定本值的去留。
-     */
-    public static final float RIM_MARGIN = 0.1f;
-
-    /**
      * 创建控制器碰撞形状。
      * <p>
      * 轴向取 {@code PhysicsSpace.AXIS_Y}（值 1），即圆柱的轴与本地 +Y 对齐——这与刚体姿态
      * 写入所依赖的「上轴 = 本地 +Y」是同一个方向，两者的对应关系写在
-     * {@code common/control/MechaCharacter.java#writeFacing}。底缘圆角半径取
-     * {@link #RIM_MARGIN}。
+     * {@code common/control/MechaCharacter.java#writeFacing}。碰撞边距不写，取引擎默认值；
+     * 这条旋钮的实测阶梯（五档底缘边距与四档地形盒边距）见
+     * `docs/角色控制器-刚体原型与引擎约束.md` §11.10。
      *
      * @return 新的圆柱形状实例（Bullet 形状不可跨物理空间共享，每次构造新实例）
      */
     public static CylinderCollisionShape newBodyShape() {
-        return withRimMargin(new CylinderCollisionShape(RADIUS, BODY_HEIGHT, 1));
-    }
-
-    /** 给形状写上底缘圆角半径 {@link #RIM_MARGIN}，构造与换形两条路共用同一处。 */
-    private static CylinderCollisionShape withRimMargin(CylinderCollisionShape shape) {
-        shape.setMargin(RIM_MARGIN);
-        return shape;
+        return new CylinderCollisionShape(RADIUS, BODY_HEIGHT, 1);
     }
 
     /**
@@ -181,6 +148,6 @@ public final class MechaBodyPreset {
      * @return 新的圆柱形状实例
      */
     public static CylinderCollisionShape newBodyShape(Posture posture) {
-        return withRimMargin(new CylinderCollisionShape(RADIUS, bodyHeightFor(posture), 1));
+        return new CylinderCollisionShape(RADIUS, bodyHeightFor(posture), 1);
     }
 }

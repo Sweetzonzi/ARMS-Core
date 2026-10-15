@@ -1,6 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.attr;
 
 import com.jme3.bullet.PhysicsSpace;
+import com.jme3.bullet.collision.shapes.CylinderCollisionShape;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import org.junit.jupiter.api.Test;
@@ -36,9 +37,11 @@ class MechaBodyPresetTest {
         assertEquals(MechaBodyPreset.RADIUS, halfExtents.x, 1.0e-6f);
         assertEquals(MechaBodyPreset.RADIUS, halfExtents.z, 1.0e-6f);
         assertEquals(MechaBodyPreset.BODY_HEIGHT, shape.getHeight(), 1.0e-6f);
-        // 底缘圆角半径 = 碰撞边距（实机回归期的临时取值，见 MechaBodyPreset#RIM_MARGIN）
+        // 碰撞边距不由本类写入：取引擎对凸体的默认值，即与直接构造的同尺寸形状一致。
         // 它只改底缘圆角、不改外表面，因此上面的半径与全高读数不受影响
-        assertEquals(MechaBodyPreset.RIM_MARGIN, shape.getMargin(), 1.0e-6f);
+        var unsetMargin = new CylinderCollisionShape(
+                MechaBodyPreset.RADIUS, MechaBodyPreset.BODY_HEIGHT, 1);
+        assertEquals(unsetMargin.getMargin(), shape.getMargin(), 1.0e-6f);
     }
 
     @Test
