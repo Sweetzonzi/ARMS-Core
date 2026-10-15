@@ -5,11 +5,14 @@ import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import cn.solarmoon.spark_core.state_machine.presets.StateVariableKeys;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.presentation.MechaAnimPresenter;
 import io.github.sweetzonzi.arms_core.common.control.state.MechaLogicStateMachine;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
+import io.github.sweetzonzi.arms_core.common.control.state.graph.MechaStateActions;
 import lombok.Getter;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.Set;
@@ -44,6 +47,21 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  * <p>
  * 不依赖 Machine-Max 信号总线（ISignalBus）。输入由 Holder 直接传入。
  * 子系统合力叠加（推进器等）通过 {@code addSubsystemForce} 汇聚后施加到控制器刚体。
+ *
+ * <h3>双端权威不变量</h3>
+ * 本类在两端都被构造，但职责不同。以下三条是后续改动的边界，不要越过：
+ * <ol>
+ *   <li><b>客户端实例没有身体、没有权威。</b> 客户端的 {@link #body} 恒为 {@code null}，
+ *       {@link #logicStateMachine} 也不构造；客户端不推进逻辑状态机、不施力、不写刚体、
+ *       不产生任何会被回传服务端的量。</li>
+ *   <li><b>客户端的逻辑四项只能来自下行通道。</b> {@link #variables} 里的 POSTURE / GAIT /
+ *       VERTICAL / ENERGY 及其 one-hot 派生由 {@link #applySyncedLogicState(LogicStateSnapshot)}
+ *       发布、{@link #applySyncedLogicState()} 在物理步帧首写入，不得由客户端本地的任何状态机推导。
+ *       客户端因此也不调用 {@link #logicStateMachine} 的 reset——构造期那次写入会把样式表默认值
+ *       变成一次本地产出。</li>
+ *   <li><b>表现层是单向消费者。</b> {@link #presentation} 只读 {@link #variables}、只驱动动画，
+ *       不写任何会被回传服务端的量。</li>
+ * </ol>
  *
  * @author Sweetzonzi
  */
@@ -92,9 +110,15 @@ public class MechaControl {
     @Getter
     private final MechaControlHolder holder;
 
-    /** 控制器刚体（动力学胶囊：地面力律 + 跳跃 + 着地判据 + 越障） */
+    /**
+     * 控制器刚体（动力学胶囊：地面力律 + 跳跃 + 着地判据 + 越障）。
+     * <p>
+     * 客户端实例为 {@code null}：客户端没有输入权威与地形权威，本地建的刚体会在台阶与边缘处得出
+     * 与服务端不同的着地结论，同一个 GAIT 因此在两端落到不同动画上，比一个网络往返的延迟更难排查。
+     * 为空的成本是零——表现层首版不求控制器产出的任何状态量。判空统一走 {@link #hasBody()}。
+     */
     @Getter
-    private final MechaCharacter body;
+    private final @Nullable MechaCharacter body;
 
     /** 逻辑层共享变量容器；父状态机和全部活跃子机共用。 */
     private final StateVariableContainer variables;
@@ -102,9 +126,36 @@ public class MechaControl {
     /** 逻辑层共享 GameplayTag 容器。 */
     private final GameplayTagContainer tags;
 
-    /** posture + gait/vertical 子机组成的逻辑状态机树。 */
+    /**
+     * posture + gait/vertical 子机组成的逻辑状态机树。
+     * <p>
+     * 客户端实例为 {@code null}：客户端不推进逻辑树（四项来自下行通道），而构造它就要在构造期
+     * {@code reset()} 一次，那会把 POSTURE 一类产出写成主线程的本地写入。见类注释的不变量 2。
+     */
     @Getter
-    private final MechaLogicStateMachine logicStateMachine;
+    private final @Nullable MechaLogicStateMachine logicStateMachine;
+
+    /**
+     * 本帧使用的下行逻辑状态 —— 主线程发布、物理线程帧首读取。
+     * <p>
+     * 与 {@link #conditionSnapshot} 同构（volatile 引用 + 不可变 record），方向相反：那个是主线程
+     * 采集的输入，本字段是下行通道送来的逻辑层产出。权威侧从不发布到它，因此它在服务端恒为
+     * {@code null}、消费端是 no-op；客户端没有逻辑树，容器里的四项只可能来自这里。
+     * <p>
+     * 同一 record 在这条通道上两个方向的语义相反：服务端方向是<b>产出</b>
+     * （{@link #snapshotLogicState()} 从容器读出，供主线程写同步数据），客户端方向是<b>输入</b>
+     * （{@code common/ArmsCoreServerEvents.java#onPostTick} 从同步数据写入容器）。
+     */
+    private volatile @Nullable LogicStateSnapshot syncedLogicState;
+
+    /**
+     * 表现层编排器：常驻并行动画层与四台姿态状态机。
+     * <p>
+     * 两端都建、都由 {@link #onPhysicsStep(float)} 推进；权威侧没有注入动画目标（首版唯一的
+     * 目标是客户端对象），因此在那边是空转。它的建立与物理步推进都不依赖 {@link #body}。
+     */
+    @Getter
+    private final MechaAnimPresenter presentation;
 
     /** 采集控制器速度时复用，避免物理帧内分配临时向量。 */
     private final Vector3f stateVelocity = new Vector3f();
@@ -213,18 +264,37 @@ public class MechaControl {
 
     /**
      * @param holder 持有者（ArmsCore 或 MechControllerSubsystem），不可为 null
-     * @param body    已入物理空间的动力学角色控制器
+     * @param body   已入物理空间的动力学角色控制器；客户端传 {@code null}（见类注释的不变量 1）
      */
-    public MechaControl(MechaControlHolder holder, MechaCharacter body) {
+    public MechaControl(MechaControlHolder holder, @Nullable MechaCharacter body) {
         this.holder = holder;
         this.body = body;
         this.conditionSnapshot = MechaConditionSnapshot.EMPTY;
         this.variables = new StateVariableContainer();
         this.tags = new GameplayTagContainer();
-        this.logicStateMachine = new MechaLogicStateMachine(variables, tags);
-        this.logicStateMachine.reset();
-        // 能量初始化为满值，sprint 等能量门控立即可用（消耗/恢复后续实现）
-        this.variables.set(ENERGY, INITIAL_ENERGY);
+        // 表现层与逻辑层共用同一对容器，因此先建它、再建逻辑树；两者都只被物理线程读写
+        this.presentation = new MechaAnimPresenter(variables, tags);
+        if (body != null) {
+            this.logicStateMachine = new MechaLogicStateMachine(variables, tags);
+            this.logicStateMachine.reset();
+            // 能量初始化为满值，sprint 等能量门控立即可用（消耗/恢复后续实现）
+            this.variables.set(ENERGY, INITIAL_ENERGY);
+        } else {
+            // 客户端：不构造、不启动逻辑树。四项与 one-hot 由下行通道写入（不变量 2）
+            this.logicStateMachine = null;
+        }
+    }
+
+    /**
+     * 本实例是否持有角色控制器 —— 权威分支的开关。
+     * <p>
+     * 权威侧：构造了控制器刚体与逻辑状态机，物理步跑完整的帧逻辑并驱动刚体。
+     * 客户端：两者都没有，物理步只跑下行状态写入与表现层推进。
+     *
+     * @return {@code body != null}
+     */
+    public boolean hasBody() {
+        return body != null;
     }
 
     // ==========================================
@@ -241,6 +311,45 @@ public class MechaControl {
      */
     public void applyConditionSnapshot(MechaConditionSnapshot snapshot) {
         this.conditionSnapshot = snapshot;
+    }
+
+    /**
+     * 发布一份下行逻辑状态（主线程 → 物理线程帧首）。
+     * <p>
+     * 调用点是客户端主线程每 tick 的投影（{@code common/ArmsCoreServerEvents.java#onPostTick}）：
+     * 它从同步数据读出 POSTURE / GAIT / VERTICAL / ENERGY 三个字符串与一个浮点、翻成枚举，
+     * 组装成本 record 后交给本方法。权威侧不调用它。
+     * <p>
+     * record 的 final 字段 + volatile 引用保证安全发布，不会撕裂。四项与已发布的完全相同时本方法
+     * 不替换引用（record 的 equals 按值比较），因此调用方每 tick 无脑调用即可，不会持续产生新对象。
+     *
+     * @param snapshot 本帧下行通道的逻辑状态
+     */
+    public void applySyncedLogicState(LogicStateSnapshot snapshot) {
+        LogicStateSnapshot current = this.syncedLogicState;
+        if (current != null && current.equals(snapshot)) return;
+        this.syncedLogicState = snapshot;
+    }
+
+    /**
+     * 把下行逻辑状态写进变量容器（物理步帧首）。
+     * <p>
+     * one-hot 派生复用状态机动作的同一份实现（{@link MechaStateActions} 的容器级入口），
+     * 不另写一遍：姿态机的条件读的正是一批 one-hot 布尔。
+     * <p>
+     * gait 用「保留倍率」那一支：客户端不消费 MOVE_SPEED_MODIFIER，写它只会让客户端出现一个
+     * 没有消费者的数值。
+     * <p>
+     * 本方法在权威侧是 no-op：那边从不发布到 {@link #syncedLogicState}，它们的四项由逻辑树
+     * 自己写入，若在这里再覆盖一次就会用上一 tick 的陈旧值盖掉本步产出。
+     */
+    private void applySyncedLogicState() {
+        LogicStateSnapshot state = syncedLogicState;
+        if (state == null) return;
+        MechaStateActions.writePostureFlags(variables, state.posture());
+        MechaStateActions.writeGaitPreservingFlags(variables, state.gait());
+        MechaStateActions.writeVerticalFlags(variables, state.vertical());
+        variables.set(ENERGY, state.energy());
     }
 
     /**
@@ -286,39 +395,48 @@ public class MechaControl {
     // ==========================================
 
     /**
-     * 每物理帧主流程，由 Holder 在物理步中调用。
+     * 每物理帧主流程，由 Holder 在物理步中调用。两端都跑，按 {@link #hasBody()} 分段。
      * <p>
      * 执行顺序：
      * <ol>
-     *   <li>帧首原子取走主线程投递的事件批</li>
-     *   <li>汇入快照和控制器状态到 StateVariableContainer，并把视野偏航写进控制器作为朝向权威
-     *       （{@link #applyFacing}，早于一切按朝向解算的量）</li>
-     *   <li>广播离散事件并推进逻辑状态机</li>
-     *   <li>逻辑状态机在推进完成后合并最终输入许可</li>
-     *   <li>按旁路观测/反向控制模式转发玩家输入到控制器</li>
-     *   <li>提取动画根骨骼位移 → body.setAnimRootDelta（当前 TODO 空实现）</li>
-     *   <li>控制器物理步（{@code body.prePhysicsTick(dt)}：位姿写入 / 着地 / 力 / 越障）</li>
+     *   <li><b>下行状态写入</b>（{@link #applySyncedLogicState()}）——把客户端主线程投影过来的
+     *       四项与 one-hot 写进变量容器。<b>必须在 {@link #hasBody()} 之外</b>：客户端容器里的
+     *       四项只由这里写入，漏掉它，四台姿态机会停在键的默认值上（IS_STANDING 与 IS_IDLE 的
+     *       默认都是 true），全部停在待机而不报任何错。</li>
+     *   <li><b>帧逻辑</b>（仅权威侧，{@link #frameLogic(float)}）——帧首取走事件批、汇入快照与
+     *       控制器状态、写朝向、广播事件、推进逻辑树、产出回写、转发输入。</li>
+     *   <li><b>表现层推进</b>（{@link #presentation}）——状态机推进 + 动画时间推进。位置沿用
+     *       「帧逻辑之后、提取动画根位移之前」这段空档，不改变权威侧既有的顺序。</li>
+     *   <li><b>动画根位移与控制器物理步</b>（仅权威侧）——{@code extractAnimRootDelta()} 读的是
+     *       上一段推进后的骨骼姿态；最后是 {@code body.prePhysicsTick(dt)}：位姿写入 / 着地 /
+     *       行走力 / 越障。</li>
      * </ol>
      *
      * @param dt 物理步长 (s)
      */
     public void onPhysicsStep(float dt) {
-        frameLogic(dt);
+        // —— 1. 下行状态写入（两端） ——
+        applySyncedLogicState();
 
-        // —— 5. 注入 MoLang ——
-        // TODO: molangContext.setVariables(variables);
+        // —— 2. 帧逻辑（仅权威侧） ——
+        if (hasBody()) {
+            frameLogic(dt);
 
-        // —— 6. 驱动表现层中央状态机 ——
-        // TODO: centralMachines.forEach((name, machine) -> machine.progress(dt));
+            // —— 2b. 注入 MoLang ——
+            // TODO: molangContext.setVariables(variables);
 
-        // —— 7. 分发事件到本地动画状态机 ——
-        // TODO: dispatchEventsToLocalMachines();
+            // —— 2c. 分发事件到本地动画状态机 ——
+            // TODO: dispatchEventsToLocalMachines();
+        }
 
-        // —— 8. 提取动画根骨骼位移 ——
-        extractAnimRootDelta();
+        // —— 3. 表现层推进（两端；权威侧没有注入动画目标，因此是空转） ——
+        presentation.progress(dt);
 
-        // —— 9. 控制器物理步（位姿写入 / 着地 / 行走力 / 越障） ——
-        body.prePhysicsTick(dt);
+        // —— 4. 动画根位移与控制器物理步（仅权威侧） ——
+        if (hasBody()) {
+            extractAnimRootDelta();
+            body.prePhysicsTick(dt);
+        }
     }
 
     /**
@@ -672,14 +790,18 @@ public class MechaControl {
     // 查询 API
     // ==========================================
 
-    /** 当前合并后的水平移动许可。 */
+    /**
+     * 当前合并后的水平移动许可。
+     * <p>
+     * 仅权威侧有逻辑树；客户端返回 {@code false}。这条许可只服务权威侧的门控，客户端不消费它。
+     */
     public boolean canMove() {
-        return logicStateMachine.canMove();
+        return logicStateMachine != null && logicStateMachine.canMove();
     }
 
-    /** 当前合并后的开始跳跃许可。 */
+    /** 当前合并后的开始跳跃许可。同 {@link #canMove()}，客户端没有逻辑树时返回 {@code false}。 */
     public boolean canJump() {
-        return logicStateMachine.canJump();
+        return logicStateMachine != null && logicStateMachine.canJump();
     }
 
     /** 本帧是否有待处理事件（物理线程帧内视图）。 */
@@ -703,12 +825,17 @@ public class MechaControl {
         return value == null ? 1.0f : value;
     }
 
-    /** 逻辑层本帧产出的姿态。同 {@link #getMoveSpeedModifier()} 的读取注意。 */
+    /**
+     * 逻辑层本帧的姿态。同 {@link #getMoveSpeedModifier()} 的读取注意。
+     * <p>
+     * 权威侧是逻辑树的本步产出；客户端是下行通道写入的值，两者默认值都是键自带的默认值
+     * （POSTURE 默认 STAND、GAIT 默认 IDLE）。
+     */
     public Posture getCurrentPosture() {
         return variables.get(POSTURE);
     }
 
-    /** 逻辑层本帧产出的水平移动模式。同 {@link #getMoveSpeedModifier()} 的读取注意。 */
+    /** 逻辑层本帧的水平移动模式。语义与空值行为同 {@link #getCurrentPosture()}。 */
     public Gait getCurrentGait() {
         return variables.get(GAIT);
     }
@@ -723,7 +850,10 @@ public class MechaControl {
      * 唯一的消费者是同步写包路径——主线程据它填 `DATA_POSTURE` / `DATA_GAIT` /
      * `DATA_VERTICAL` / `DATA_ENERGY`
      * （`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.5）。
-     * 客户端读的是同步后的 {@code SynchedEntityData} 字段，不读本快照。
+     * <b>同一 record 在下行通道上方向相反。</b> 权威侧方向是产出：容器由逻辑树写、快照由
+     * {@link #snapshotLogicState()} 读出，供主线程写同步数据。客户端方向是输入：主线程从同步数据
+     * 读出字段、组装成同一个 record 后经 {@link #applySyncedLogicState(LogicStateSnapshot)}
+     * 发布，物理线程在帧首把它写回容器。客户端因此不读本快照，也不从容器反推状态。
      * <p>
      * 它不属于网络协议类型，因此与 {@code MechaConditionSnapshot} 同放在
      * {@code common/control/} 下，作为 {@link MechaControl} 的嵌套类型。

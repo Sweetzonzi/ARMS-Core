@@ -11,6 +11,7 @@ import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
+import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -33,6 +34,7 @@ import net.neoforged.neoforge.client.event.RenderPlayerEvent;
 import org.joml.Matrix4f;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -104,9 +106,26 @@ public final class MechaPlayerRenderer {
         ANIMATABLES.keySet().removeIf(id -> MechaCoreRegistry.get(level, id) == null);
 
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
-            ANIMATABLES.computeIfAbsent(core.getAssemblyId(), id -> new MechaAnimatable(core))
-                    .clientTick(tick);
+            MechaAnimatable animatable = ANIMATABLES.computeIfAbsent(
+                    core.getAssemblyId(), id -> new MechaAnimatable(core));
+            animatable.clientTick(tick);
+            injectAnimTarget(core, animatable);
         }
+    }
+
+    /**
+     * 把动画目标注入该装配体的表现层编排器（幂等）。
+     * <p>
+     * 首版的注入内容就是这一个动画体（单元素列表）。装配体改为逐零件渲染之后，注入者换成装配体、
+     * 内容换成全体零件的动画体，presenter 与这里的调用形状都不变。
+     * <p>
+     * 注入放在本相位而不是绘制时：这里每 tick 都会跑到，而且它早于本 tick 的物理步，动画因此能更早
+     * 开始推进。注入是幂等的，因此重复调用不会反复重建表现层。
+     */
+    private static void injectAnimTarget(ArmsCore core, MechaAnimatable animatable) {
+        MechaControl control = core.getMechaControl();
+        if (control == null) return;
+        control.getPresentation().attach(List.of(animatable));
     }
 
     /**

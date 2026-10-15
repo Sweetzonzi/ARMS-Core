@@ -152,9 +152,9 @@ variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
 
 `gait` 的 `idle ↔ drift` 使用阈值化的 `SPEED`，`air` 的 `fall ↔ jump_boost` 镜像 `KCC_JUMP_BOOSTING`（`.../state/preset/VerticalSubGraphs.java#buildAirVert`）。两份 KCC 一旦分毫不同，就会在着地判定边界产生不同的 `ON_GROUND`，进而分出不同的 `posture`，再分出不同的 `CAN_MOVE`。**状态机放大差异，不收敛差异。**
 
-因此本计划确立：**服务端是唯一权威端；客户端不运行 KCC，只消费同步结果。** 状态机不需要同步，它只存在于权威端；跟随端若需要状态用于渲染与动画门控，从同步变量重建。
+因此本计划确立：**服务端是唯一权威端；客户端不运行角色控制器，只消费同步结果。** 逻辑状态机不需要同步，它只存在于权威端；跟随端若需要状态用于渲染与动画门控，从同步变量重建。
 
-由此派生一条硬约束，贯穿全部阶段：**阶段 1 起 KCC 只在服务端构造，客户端不持有 `MechaCharacter` / `MechaControl`。** `ClientMechaTestRig` 在阶段 1 退役（阶段 1.8），客户端只保留按 `coreId` 索引的可视锚点。该形态下每台权威端各自驱动自己的 `ArmsCore`，不存在两个驱动源。单一客户端 KCC 的做法列在附录 A.1。
+由此派生一条硬约束，贯穿全部阶段：**阶段 1 起控制器刚体只在服务端构造，客户端不持有 `MechaCharacter`。** `MechaControl` 在客户端也有一个实例，但那个实例没有身体、也没有逻辑状态树，只承载表现层编排（`docs/表现层动画接入实现计划.md` D1、§4.1.1），判据是 `common/control/MechaControl.java#hasBody`。`ClientMechaTestRig` 在阶段 1 退役（阶段 1.8），客户端只保留按 `coreId` 索引的可视锚点。该形态下每台权威端各自驱动自己的 `ArmsCore`，不存在两个驱动源。单一客户端 KCC 的做法列在附录 A.1。
 
 ---
 
@@ -164,7 +164,7 @@ variables.set(KCC_JUMP_BOOSTING, kcc.isBoosting());
 
 | 编号 | 决策 | 理由 |
 |------|------|------|
-| D1 | 服务端为唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine` | §1.3 |
+| D1 | 服务端为唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`；客户端仍构造 `MechaControl`，但它是无身体、无逻辑树的形态，四项逻辑状态由下行通道写入 | §1.3、`docs/表现层动画接入实现计划.md` §4.1 |
 | D2 | `ArmsCore` 的网络身份使用 `UUID` | 它是装配体级对象，与 `VehicleCore` 同级；宿主形态各异，UUID 免去整数 id 在双端之间的交接 |
 | D3 | 服务端 → 客户端的位姿与状态增量载体为原版 `SynchedEntityData`，由 `ArmsCore` 自身实现 `SyncedDataHolder` 并持有该实例 | 增量同步与变更门控是现成的（§3.3）；`ArmsCore` 已经依赖 `net.minecraft.world.level.Level`，不引入新的分层代价 |
 | D4 | 增量字段固定为 8 项，见 §2.2；**只追加** | 覆盖 KCC 位姿与逻辑层状态；宿主绑定不进增量 |

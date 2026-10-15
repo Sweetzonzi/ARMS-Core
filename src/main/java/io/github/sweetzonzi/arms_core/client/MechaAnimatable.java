@@ -52,8 +52,12 @@ import java.util.Map;
  * 由 {@link MechaPlayerRenderer} 在主线程按装配体 UUID 创建并驱动（一个客户端实例只在一个维度，
  * 与 {@code MechaCoreRegistry} 的客户端表同寿命）：每客户端 tick 采样一次
  * （{@link #clientTick(long)}）并调 {@code AnimController.tick()} 发布骨骼姿态，渲染在同一线程读取。
- * 当前没有动画层，{@code AnimController.physTick()} 不需要调用（无活跃层时它立即返回），
- * 因此本类不涉及物理线程。
+ * <p>
+ * 另一半在物理线程：本对象作为动画目标注入表现层编排器
+ * （{@code common/control/presentation/MechaAnimPresenter.java}），由后者在每个物理子步推进动画
+ * 时间与权重（{@code AnimController.physTick()}）并混合骨骼。这是 Spark-Core 自身的分工
+ * （{@code physTick} 在物理线程、{@code tick} 在主线程），不是本项目的取舍。因此本对象被两个线程
+ * 触碰：主线程调 {@link #clientTick(long)}，物理线程调 {@code AnimController.physTick()}。
  *
  * @author Sweetzonzi
  */
@@ -152,6 +156,11 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      * Spark-Core 在资源 / 数据包加载阶段读入，时序上可能晚于创建包到达客户端，
      * 因此每次 tick 做一次廉价检查：模型表里有本模型、而当前姿态没有骨骼时，重建一次
      * {@link ModelInstance}（与 `BlockEntityItemRenderer.java:55` 的做法一致）。
+     * <p>
+     * <b>本方法只覆盖「当前姿态从来就没有骨骼」这一段。</b> 内容包重载之后旧姿态里留着的仍是旧骨骼
+     * 对象，上面那条判据不再成立，重建由表现层编排器统一触发（它每物理步比较
+     * {@code OAnimationSet.getORIGINS()} 与 {@code OModel.getORIGINS()} 里的对象引用），
+     * 本方法不参与，两者因此不会各有一套重建路径。
      */
     private void refreshModelIfNeeded() {
         ModelInstance model = modelController.getModel();

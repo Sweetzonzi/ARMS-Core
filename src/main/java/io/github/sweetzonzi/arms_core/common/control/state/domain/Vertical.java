@@ -1,5 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.state.domain;
 
+import org.jetbrains.annotations.Nullable;
+
 /**
  * 垂直模式枚举 —— 区分在地面、空中蹬伸助推、空中摔落、滑翔、悬浮、飞行等持久状态。
  *
@@ -40,4 +42,20 @@ public enum Vertical {
 
     /** MoLang 表达式中使用的字符串值 */
     public String molangName() { return molangName; }
+
+    /**
+     * {@link #molangName()} 的反向换算：字符串 → 枚举。
+     * <p>
+     * 供客户端从同步数据还原逻辑层状态用：{@code common/ArmsCore.java#DATA_VERTICAL} 携带的是
+     * {@link #molangName()}，而姿态机与表现层的条件读的是枚举。
+     *
+     * @param name MoLang 名
+     * @return 对应枚举；{@code null} 或未知字符串返回 {@code null}
+     */
+    public static @Nullable Vertical fromMolangName(String name) {
+        for (Vertical value : values()) {
+            if (value.molangName.equals(name)) return value;
+        }
+        return null;
+    }
 }

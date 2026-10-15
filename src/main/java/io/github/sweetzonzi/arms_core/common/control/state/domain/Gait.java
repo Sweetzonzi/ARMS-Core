@@ -1,5 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.state.domain;
 
+import org.jetbrains.annotations.Nullable;
+
 /**
  * 水平移动模式枚举 —— 所有姿态共用同一词表，各自有不同速度倍率。
  *
@@ -61,6 +63,22 @@ public enum Gait {
 
     /** MoLang 表达式中使用的字符串值 */
     public String molangName() { return molangName; }
+
+    /**
+     * {@link #molangName()} 的反向换算：字符串 → 枚举。
+     * <p>
+     * 供客户端从同步数据还原逻辑层状态用：{@code common/ArmsCore.java#DATA_GAIT} 携带的是
+     * {@link #molangName()}，而姿态机与表现层的条件读的是枚举。
+     *
+     * @param name MoLang 名
+     * @return 对应枚举；{@code null} 或未知字符串返回 {@code null}
+     */
+    public static @Nullable Gait fromMolangName(String name) {
+        for (Gait value : values()) {
+            if (value.molangName.equals(name)) return value;
+        }
+        return null;
+    }
 
     /** stand 姿态下的基础速度倍率，各姿态建图时乘上姿态倍率 */
     public float baseSpeedModifier() { return baseSpeedModifier; }

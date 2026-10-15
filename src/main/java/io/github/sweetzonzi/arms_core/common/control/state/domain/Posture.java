@@ -1,5 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.state.domain;
 
+import org.jetbrains.annotations.Nullable;
+
 /**
  * 机娘姿态枚举 —— 逻辑层 posture 顶层状态机的可能取值。
  *
@@ -59,6 +61,22 @@ public enum Posture {
 
     /** MoLang 表达式中使用的字符串值，如 {@code ctrl.posture == 'stand'} */
     public String molangName() { return molangName; }
+
+    /**
+     * {@link #molangName()} 的反向换算：字符串 → 枚举。
+     * <p>
+     * 供客户端从同步数据还原逻辑层状态用：{@code common/ArmsCore.java#DATA_POSTURE} 携带的是
+     * {@link #molangName()}，而姿态机与表现层的条件读的是枚举。
+     *
+     * @param name MoLang 名
+     * @return 对应枚举；{@code null} 或未知字符串返回 {@code null}
+     */
+    public static @Nullable Posture fromMolangName(String name) {
+        for (Posture value : values()) {
+            if (value.molangName.equals(name)) return value;
+        }
+        return null;
+    }
 
     /** 姿态基准速度倍率。最终 MOVE_SPEED_MODIFIER = speedModifier × gait.baseSpeedModifier */
     public float speedModifier() { return speedModifier; }

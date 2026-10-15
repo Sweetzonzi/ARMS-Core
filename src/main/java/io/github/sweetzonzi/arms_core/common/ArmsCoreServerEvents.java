@@ -5,6 +5,9 @@ import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
 import io.github.sweetzonzi.arms_core.network.payload.MechaCoreSyncPayload;
 import net.minecraft.core.Rotations;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -27,22 +30,31 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * {@link ArmsCore} 的服务端生命周期与两个相位的事件接线。
+ * {@link ArmsCore} 的生命周期与两个相位的双端事件接线。
+ * <p>
+ * 类名保留了它最初只接服务端时的形态。落地之后两个订阅者都在两端生效、职责按相位划分，
+ * 权威侧与客户端各自做属于自己的一半；重命名会牵动文档里数十处 {@code 路径#符号} 引用，
+ * 因此以这段说明承接，不以此为由把类名与实现拉齐。
  * <p>
  * 两个相位的职责（计划 D8、D9、§3.9）：
  * <ul>
- *   <li>{@code PhysicsLevelTickEvent.Pre}（物理线程）：按 Level 扇出
- *       {@link ArmsCore#prePhysicsTick(float)}，每步恰好一次。与 {@code VehicleCore} 的
+ *   <li>{@code PhysicsLevelTickEvent.Pre}（物理线程，两端）：按 Level 扇出
+ *       {@link ArmsCore#prePhysicsTick(float)}，每步恰好一次。两端各有自己的物理级别
+ *       （服务端 {@code tps = 100}、客户端 {@code tps = 60}），而 {@code dt = 1f / tps} 是同一个
+ *       公式，因此动画在两端都按物理子步推进。与 {@code VehicleCore} 的
  *       {@code ObjectManager.onPrePhysicsTick} 同相位。</li>
- *   <li>{@code LevelTickEvent.Post}（主线程）：读逻辑状态快照与 KCC 位姿 → 写
- *       {@code syncedData} → {@code packDirty()} → 非空则广播。</li>
+ *   <li>{@code LevelTickEvent.Post}（主线程，两端）：服务端读逻辑状态快照与控制器位姿 →
+ *       写 {@code syncedData} → {@code packDirty()} → 非空则广播；客户端从 {@code syncedData}
+ *       读出四项 → 翻成枚举 → 发布到下行通道（{@link #projectLogicState(ArmsCore)}）。</li>
  * </ul>
+ * <p>
+ * 两端都注册的根据是本类不标注 {@code Dist}，而两个事件在客户端同样触发：物理级别由
+ * Spark-Core 在客户端建立（{@code ClientPhysicsLevelApplier}），{@code LevelTickEvent} 由
+ * {@code Minecraft#tick} 与 {@code MinecraftServer#tickChildren(BooleanSupplier)} 两处发出。
+ * 客户端的 {@link ArmsCore} 实例由创建包构造，因此客户端注册表也可用。
  * <p>
  * 不在 {@code LevelTickEvent.Pre} 做同步：Spark-Core 自身在该相位（{@code HIGH}）调用
  * {@code physicsLevel.requestStep()}，避开与请求步进竞争。
- * <p>
- * 本类不标注 {@code Dist}，因此其订阅者只在存在服务端的 JVM 中生效；单人游戏的集成服务端
- * 也走这条路径，专用服务端同理。
  *
  * @author Sweetzonzi
  */
@@ -67,7 +79,6 @@ public final class ArmsCoreServerEvents {
     @SubscribeEvent
     public static void onPrePhysicsTick(PhysicsLevelTickEvent.Pre event) {
         Level level = event.getLevel().getMcLevel();
-        if (level.isClientSide()) return;
         float dt = 1f / event.getLevel().getTps();
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             core.prePhysicsTick(dt);
@@ -78,14 +89,51 @@ public final class ArmsCoreServerEvents {
     // 主线程：同步写包
     // ==========================================
 
-    /** 主线程每 tick 采样一次位姿与逻辑状态，按脏数据发包。 */
+    /**
+     * 主线程每 tick 一次，两端各做一件事。
+     * <p>
+     * 权威侧：采样位姿与逻辑状态，按脏数据发包。
+     * <p>
+     * 客户端：把同步数据里的四项投影进本地变量容器（{@link #projectLogicState(ArmsCore)}）。
+     * 这一遍是客户端唯一的逻辑状态来源，也是表现层能按姿态选片的前提。
+     */
     @SubscribeEvent(priority = EventPriority.NORMAL)
     public static void onPostTick(LevelTickEvent.Post event) {
         Level level = event.getLevel();
-        if (level.isClientSide()) return;
+        if (level.isClientSide()) {
+            for (ArmsCore core : MechaCoreRegistry.all(level)) {
+                projectLogicState(core);
+            }
+            return;
+        }
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             syncToClients(core);
         }
+    }
+
+    /**
+     * 客户端主线程投影：把同步数据里的四项读出来、翻成枚举，发布到下行通道。
+     * <p>
+     * 三个字符串字段的换算走各枚举的 fromMolangName；任一字段暂时读不出枚举（同步数据还没到过、
+     * 或服务端写入了本端不认识的取值）就整份跳过，保留上一次发布的快照，不把 {@code null}
+     * 写进容器。能量是浮点，直接透传。
+     * <p>
+     * 发布本身按值比较，四项都没变时不替换引用（见
+     * {@code common/control/MechaControl.java#applySyncedLogicState(LogicStateSnapshot)}），
+     * 因此这里的每 tick 调用不会持续产生新对象。
+     */
+    private static void projectLogicState(ArmsCore core) {
+        MechaControl control = core.getMechaControl();
+        if (control == null) return;
+
+        SynchedEntityData data = core.getSyncedData();
+        Posture posture = Posture.fromMolangName(data.get(ArmsCore.DATA_POSTURE));
+        Gait gait = Gait.fromMolangName(data.get(ArmsCore.DATA_GAIT));
+        Vertical vertical = Vertical.fromMolangName(data.get(ArmsCore.DATA_VERTICAL));
+        if (posture == null || gait == null || vertical == null) return;
+
+        control.applySyncedLogicState(new MechaControl.LogicStateSnapshot(
+                posture, gait, vertical, data.get(ArmsCore.DATA_ENERGY)));
     }
 
     /**

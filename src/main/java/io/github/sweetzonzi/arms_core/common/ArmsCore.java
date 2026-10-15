@@ -39,12 +39,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
  * （见 `docs/总体设计文档.md:82`）。
  * <p>
- * <b>权威归属</b>：服务端是唯一权威端，客户端不运行控制器与状态机
- * （`docs/ArmsCore双端权威与网络同步实现计划.md` D1、§1.3）。因此本类有两条构造路径：
+ * <b>权威归属</b>：服务端是唯一权威端，客户端不运行角色控制器、不推进逻辑状态树
+ * （`docs/ArmsCore双端权威与网络同步实现计划.md` D1、§1.3）。两条构造路径都持有
+ * {@link MechaControl}——表现层编排住在它里面，客户端也要有——差别只在身体与逻辑树：
  * <ul>
- *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID)}）：构造控制器刚体，由 Level 级注册表在物理线程驱动；</li>
- *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID)}）：不构造控制器，只作为
- *       {@link SynchedEntityData} 的客户端副本载体与可视锚点的宿主。</li>
+ *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID)}）：构造控制器刚体与逻辑状态树，由 Level 级
+ *       注册表在物理线程驱动；</li>
+ *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID)}）：构造一个没有身体、没有逻辑树的
+ *       {@link MechaControl}，并作为 {@link SynchedEntityData} 的客户端副本载体与可视锚点的宿主。
+ *       逻辑四项不在这里推导，由下行通道写入。</li>
  * </ul>
  * <p>
  * <b>构造前置（仅服务端路径）</b>：构造器会直接从所在 Level 取物理空间
@@ -135,10 +138,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     private final boolean authoritative;
 
     /**
-     * 运动控制编排器。
+     * 运动控制编排器，两端都非 {@code null}。
      * <p>
-     * 服务端路径持有完整的控制器刚体与状态机；客户端路径为 {@code null}
-     * （客户端不运行控制器与状态机，见 D1）。读取入口是
+     * 两端持有的是不同形态：服务端有控制器刚体与逻辑状态树，客户端两者都没有、只有表现层
+     * （动画层的建立与推进住在编排器里，因此客户端也必须有它）。判据是
+     * {@link MechaControl#hasBody()} 而不是本引用是否为空。读取入口是
      * {@link MechaControlHolder#getMechaControl()}，本字段生成的 getter 满足该契约。
      */
     @Getter
@@ -152,7 +156,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 逻辑层状态的不可变快照，物理线程每步发布、主线程读取。
      * <p>
      * 主线程安全：该引用指向不可变 record，物理线程只会替换引用、不会修改已发布对象。
-     * 客户端路径、以及物理线程尚未步进过时恒为 {@code null}。
+     * 客户端路径恒为 {@code null}——客户端不从容器反推状态，发布它没有消费者
+     * （见 {@link #prePhysicsTick(float)}）；物理线程尚未步进过时同样为 {@code null}。
      */
     @Getter
     private volatile MechaControl.@Nullable LogicStateSnapshot logicState;
@@ -225,7 +230,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
                     SparkLevel.getPhysicsLevel(level).getWorld());
             this.mechaControl = new MechaControl(this, body);
         } else {
-            this.mechaControl = null;
+            // 客户端也建编排器，但不给身体：表现层编排（常驻并行动画层、姿态状态机）住在它里面，
+            // 客户端必须有一个实例才能推进动画。客户端的那一份不推进逻辑树、不碰刚体，
+            // 四项由下行通道写入（见 common/control/MechaControl.java 的类注释）。
+            this.mechaControl = new MechaControl(this, null);
         }
         this.syncedData = buildSyncedData(this);
         // 放在最后：HostPositionIntake 的判据会读 level 与 authoritative，两者此时都已就位。
@@ -234,10 +242,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     /**
-     * 客户端构造：不创建控制器与状态机，只承载同步数据。
+     * 客户端构造：不创建控制器刚体与逻辑状态树，只承载同步数据。
      * <p>
      * 客户端不运行物理模拟（D1），因此这里不读物理空间，也就不受服务端那条
-     * 「物理空间必须已初始化」的构造前置约束。
+     * 「物理空间必须已初始化」的构造前置约束。表现层编排器仍然建立（见 {@link #mechaControl}），
+     * 但没有身体、没有逻辑树。
      *
      * @param level      客户端所在世界
      * @param assemblyId 装配体 UUID（与服务端一致）
@@ -333,8 +342,9 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <ol>
      *   <li>Part 层动画混合 —— 必须早于 {@code extractAnimRootDelta()}，后者读取
      *       {@code body_root} 骨骼位姿，而该位姿由 Part 的物理步产出（装配体图接入后生效）</li>
-     *   <li>状态机推进 → 动画根位移提取 → 控制器物理步（顺序由 {@link MechaControl} 内部保证）</li>
-     *   <li>发布逻辑状态快照供主线程读取</li>
+     *   <li>下行状态写入 → 状态机推进 → 表现层推进（状态机与动画时间）→ 动画根位移提取 →
+     *       控制器物理步（顺序由 {@link MechaControl#onPhysicsStep(float)} 内部保证）</li>
+     *   <li>发布逻辑状态快照供主线程读取（仅权威侧，见下）</li>
      * </ol>
      *
      * @param dt 物理步长 (s)
@@ -343,10 +353,13 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         MechaControl control = this.mechaControl;
         if (control == null) return;
 
-        // ② 状态机推进 → extractAnimRootDelta → 控制器物理步
+        // ② 下行状态写入 → 帧逻辑（仅权威侧） → 表现层推进 → extractAnimRootDelta → 控制器物理步
         control.onPhysicsStep(dt);
 
-        // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）
+        // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）。
+        // 仅权威侧：客户端不从容器反推状态——它的四项是下行通道送来的，发布它们没有消费者，
+        // 而同一条容器又会被下一步的下行写入覆盖，等于给同一个量造出两个来源。
+        if (!authoritative) return;
         // 四项与上一步全同时沿用旧对象、不新建：读取端（common/ArmsCoreServerEvents.java#writeSyncedData）
         // 每 tick 取一次组件值、不比较引用，因此沿用旧对象对它不可见；而逻辑层每个物理子步推进一次、
         // 主线程每 tick 才取一次读，多数子步的四项与上一步相同。
@@ -478,7 +491,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      */
     public MechaCharacter getBody() {
         MechaControl control = this.mechaControl;
-        if (control == null) {
+        if (control == null || !control.hasBody()) {
             throw new IllegalStateException(
                     "客户端 ArmsCore 不持有控制器（计划 D1：客户端不运行物理模拟）");
         }

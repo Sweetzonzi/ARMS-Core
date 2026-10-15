@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.common.control.state.graph;
 
 import cn.solarmoon.spark_core.state_machine.graph.StateAction;
 import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;
+import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableKey;
 import com.mojang.serialization.MapCodec;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
@@ -89,12 +90,17 @@ public final class MechaStateActions {
     // ═══════════════════════════════════════════════
 
     /**
-     * 写入 posture 枚举 + 8 个 one-hot 布尔键。
+     * 把 posture 枚举 + 7 个 one-hot 布尔键写进变量容器。
+     * <p>
+     * 这是 {@link #postureFlags} 的实现主体，独立成容器级入口是为了让没有
+     * {@link StateGraphController} 的调用方复用同一份口径——客户端的下行状态通道按它填入
+     * （{@code docs/表现层动画接入实现计划.md} §4.1.3），不必再写一遍 one-hot 派生。
      *
-     * @param p 当前姿态
+     * @param variables 目标变量容器
+     * @param p         当前姿态
      */
-    public static StateAction postureFlags(Posture p) {
-        return new BatchWriteAction(Map.of(
+    public static void writePostureFlags(StateVariableContainer variables, Posture p) {
+        writeAll(variables, Map.of(
                 POSTURE, p,
                 IS_STANDING, p == Posture.STAND,
                 IS_AIRBORNE, p == Posture.AIR,
@@ -104,6 +110,15 @@ public final class MechaStateActions {
                 IS_RIDING, p == Posture.RIDING,
                 IS_RAGDOLLED, p == Posture.RAGDOLL
         ));
+    }
+
+    /**
+     * 写入 posture 枚举 + 7 个 one-hot 布尔键的状态动作。
+     *
+     * @param p 当前姿态
+     */
+    public static StateAction postureFlags(Posture p) {
+        return new ContainerWriteAction(vars -> writePostureFlags(vars, p));
     }
 
     // ═══════════════════════════════════════════════
@@ -124,9 +139,21 @@ public final class MechaStateActions {
      * @param speedMod  姿态特化移动速度倍率（KCC 直接读取）
      */
     public static StateAction gaitWithModifier(Gait g, float speedMod) {
-        java.util.Map<StateVariableKey<?>, Object> entries = gaitEntries(g);
-        entries.put(MOVE_SPEED_MODIFIER, speedMod);
-        return new BatchWriteAction(entries);
+        return new BatchWriteAction(gaitEntriesWithModifier(g, speedMod));
+    }
+
+    /**
+     * 把 gait 枚举 + 移动速度修正系数 + all one-hot 布尔 + 派生键写进变量容器。
+     * <p>
+     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的
+     * （{@code docs/表现层动画接入实现计划.md} §4.1.3），口径与状态机动作同源。
+     *
+     * @param variables 目标变量容器
+     * @param g         当前 gait 枚举值
+     * @param speedMod  姿态特化移动速度倍率
+     */
+    public static void writeGaitFlags(StateVariableContainer variables, Gait g, float speedMod) {
+        writeAll(variables, gaitEntriesWithModifier(g, speedMod));
     }
 
     /**
@@ -145,6 +172,27 @@ public final class MechaStateActions {
      */
     public static StateAction gaitPreservingModifier(Gait g) {
         return new BatchWriteAction(gaitEntries(g));
+    }
+
+    /**
+     * 把 gait 枚举与 one-hot 布尔写进变量容器，<b>不动</b> {@code MOVE_SPEED_MODIFIER}。
+     * <p>
+     * 是 {@link #gaitPreservingModifier} 的容器级版本，语义与它逐字一致。
+     *
+     * @param variables 目标变量容器
+     * @param g         当前 gait 枚举值
+     */
+    public static void writeGaitPreservingFlags(StateVariableContainer variables, Gait g) {
+        writeAll(variables, gaitEntries(g));
+    }
+
+    /**
+     * gait 状态进入动作的公共部分，在 {@link #gaitEntries} 之上补上 {@code MOVE_SPEED_MODIFIER}。
+     */
+    private static java.util.Map<StateVariableKey<?>, Object> gaitEntriesWithModifier(Gait g, float speedMod) {
+        java.util.Map<StateVariableKey<?>, Object> entries = gaitEntries(g);
+        entries.put(MOVE_SPEED_MODIFIER, speedMod);
+        return entries;
     }
 
     /**
@@ -177,12 +225,16 @@ public final class MechaStateActions {
     // ═══════════════════════════════════════════════
 
     /**
-     * 写入 vertical 枚举 + 6 个 one-hot 布尔键。
+     * 把 vertical 枚举 + 6 个 one-hot 布尔键写进变量容器。
+     * <p>
+     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的
+     * （{@code docs/表现层动画接入实现计划.md} §4.1.3）。
      *
-     * @param v 当前垂直模式
+     * @param variables 目标变量容器
+     * @param v         当前垂直模式
      */
-    public static StateAction verticalFlags(Vertical v) {
-        return new BatchWriteAction(Map.of(
+    public static void writeVerticalFlags(StateVariableContainer variables, Vertical v) {
+        writeAll(variables, Map.of(
                 VERTICAL, v,
                 IS_GROUNDED, v == Vertical.GROUND,
                 IS_JUMP_BOOSTING, v == Vertical.JUMP_BOOST,
@@ -191,6 +243,15 @@ public final class MechaStateActions {
                 IS_HOVERING, v == Vertical.HOVER,
                 IS_FLYING, v == Vertical.FLY
         ));
+    }
+
+    /**
+     * 写入 vertical 枚举 + 6 个 one-hot 布尔键的状态动作。
+     *
+     * @param v 当前垂直模式
+     */
+    public static StateAction verticalFlags(Vertical v) {
+        return new ContainerWriteAction(vars -> writeVerticalFlags(vars, v));
     }
 
     // ═══════════════════════════════════════════════
@@ -235,6 +296,14 @@ public final class MechaStateActions {
     // ═══════════════════════════════════════════════
 
     /**
+     * 把一批键值对写进目标容器：枚举 / String / Boolean / Float 都经 Object 擦除后按 key 收回。
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void writeAll(StateVariableContainer variables, Map<StateVariableKey<?>, Object> entries) {
+        entries.forEach((key, value) -> variables.set((StateVariableKey) key, value));
+    }
+
+    /**
      * 批量写入动作——一次性设置多个键值对。
      * <p>
      * Map 的值类型有 Posture/Gait/Vertical 枚举、String、Boolean、Float，
@@ -248,10 +317,8 @@ public final class MechaStateActions {
         }
 
         @Override
-        @SuppressWarnings({"unchecked", "rawtypes"})
         public void execute(StateGraphController controller) {
-            var vars = controller.getVariables();
-            entries.forEach((key, value) -> vars.set((StateVariableKey) key, value));
+            writeAll(controller.getVariables(), entries);
         }
 
         @Override
@@ -263,6 +330,33 @@ public final class MechaStateActions {
         @Override
         public String toString() {
             return "BatchWrite(" + entries.size() + " keys)";
+        }
+    }
+
+    /**
+     * 只接收容器的写入动作——给不依赖控制器状态、只写变量的那些工厂用。
+     */
+    private static final class ContainerWriteAction implements StateAction {
+        private final java.util.function.Consumer<StateVariableContainer> writer;
+
+        ContainerWriteAction(java.util.function.Consumer<StateVariableContainer> writer) {
+            this.writer = writer;
+        }
+
+        @Override
+        public void execute(StateGraphController controller) {
+            writer.accept(controller.getVariables());
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public MapCodec<? extends StateAction> getCodec() {
+            return MapCodec.unit(this);
+        }
+
+        @Override
+        public String toString() {
+            return "ContainerWrite";
         }
     }
 }
