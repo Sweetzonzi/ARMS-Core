@@ -40,7 +40,7 @@
 
 - **命令一律带 `--offline`。** 本仓库的依赖已经全部落在本地 Gradle 缓存里，联网解析会白白花掉十几分钟：同一份 `.\gradlew test` 联网 **14 分 32 秒**、带 `--offline` **12～16 秒**，而编译与用例本身是秒级（联网那一轮的输出里 23 个任务全部 `UP-TO-DATE`，时间全在依赖解析）。只有确实要拉新依赖时才去掉它：升级 `neo_version` / `minecraft_version`、新增 Maven 依赖、或改了 `gradle.properties` 里的版本号。带 `--offline` 时若真有依赖缺失，Gradle 会直接报「No cached version available for offline mode」，不会静默地少解析一部分。
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的三条：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率、越障高度契约），以输出数值为主、不做基线断言（例外是两条判据契约：越障高度契约判「一次越障的抬升量不超过步高」这条不变量本身，楼梯与坡那条判「判据认不认得出立面」——楼梯一级一级上去、坡一次都不触发），结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10 与 `docs/角色控制器-刚体原型与引擎约束.md` §11.6。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaControlClientTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/presentation/`（`MechaPresentationGraphsTest` 四张姿态图的转移与映射一致性、`MechaPresentationPresetTest` 枚举往返 / 下行写入 / 映射表对内容包的核对）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`client/ClientMechaAnchorTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的三条：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率、越障高度契约），以输出数值为主、不做基线断言（例外是两条判据契约：越障高度契约判「一次越障的抬升量不超过步高」这条不变量本身，楼梯与坡那条判「判据认不认得出立面」——楼梯一级一级上去、坡一次都不触发），结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10 与 `docs/角色控制器-刚体原型与引擎约束.md` §11.6。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。
 - **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
@@ -99,8 +99,8 @@
 |------|------|
 | `ARMS.java` | 模组入口，注册配置、服务端事件监听。 |
 | `Config.java` | 示例配置（当前为占位），实际逻辑待扩展。 |
-| `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。服务端构造控制器刚体，客户端经 `newClientInstance` 构造且不持有它。 |
-| `MechaControl.java` | 角色运动控制器编排器：输入消费 → 朝向写入 → 状态机 → 动画 → 控制器物理步；嵌套 `record LogicStateSnapshot` 作为物理线程 → 主线程的出口。 |
+| `ArmsCore.java` | 机娘逻辑机甲单元，实现 `IPartAssembly` + `MechaControlHolder` + `SyncedDataHolder`；持有 `Level` / `UUID` / `MechaControl` / `SynchedEntityData`。两端都构造 `MechaControl`：服务端有控制器刚体与逻辑状态树，客户端没有这两样、只有表现层，判据是 `MechaControl.hasBody()`；控制器刚体本身仍只在服务端构造。 |
+| `MechaControl.java` | 角色运动控制器编排器，两端都由 `ArmsCore` 构造：输入消费 → 朝向写入 → 状态机 → 表现层推进 → 控制器物理步；嵌套 `record LogicStateSnapshot` 同时是「物理线程 → 主线程的产出出口」与「主线程 → 物理线程的下行输入」。客户端形态没有身体、也没有逻辑状态树，物理步只跑下行状态写入与表现层推进；三条双端不变量写在类注释里。 |
 | `MechaCharacter.java` | 机娘动力学角色控制器：**继承 `com.jme3.bullet.objects.PhysicsRigidBody`**（动态刚体圆柱，不再是 KCC）。四件事：每物理步的位姿写入（朝向绝对对齐 + 倾倒按 `(1 − λ)` 收敛）、着地判据（向下形状扫掠 + 法线筛 + 最小保持）、地面行走力律（`F_drive = min(k·computeDriveForce, μ_eff·N)` 加 1% 释放余量的摩擦前馈，走 `applyCentralForce`）、越障两段（探落脚面 → 落位，同一物理步完成、水平速度原样保留）。另有 `setViewYaw`、`setMoveIntent`（体系意图 → 世界方向的唯一变换）、跳跃冲量与助推窗口、闪避速度赋值。设计与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。 |
 | `MechaLogicStateMachine.java` | 状态机顶层封装，组合 `PostureLogicGraphs` / `GaitSubGraphs` / `VerticalSubGraphs`。 |
 | `common/IArmsHost.java` | 宿主接口：绑定关系的读写（`getControlledArmsCore` / `setControlledArmsCore`）、`getHostEntity`、位置与速度的落地入口（`applyPose` / `applyVelocity`）。玩家经 Mixin 实现它，Doll / AI 敌人可直接实现。 |
@@ -110,15 +110,16 @@
 | `common/HostPositionIntake.java` | 外部位移的摄入：作用域栈（区分「实体自身运动 / 客户端上报采纳 / 本模组运行时回写」与真正的第三方写入）+ 锚点（`advanceAnchor` / `isAtAnchor`，吞掉「重断言当前位置」那一族写入）+ pin（warp 落地前 `DATA_POS` 暂取的目标）。判定点是 `mixin/EntityPositionWriteMixin.java` 对 `Entity#setPos` 的注入（栈空才判摄入、栈非空只按类别推进锚点；作用域退出只弹栈），采纳后把落点交给 `MechaCharacter#warp`。 | 
 | `common/MechaCoreRegistry.java` | 装配体注册表（服务端按 `ServerLevel`、客户端单表）；服务端注册 / 注销时广播创建 / 移除包，并承载登录 / 换维度补发。注销时一并解绑宿主。 |
 | `common/MechaInputHandler.java` | 上行输入的服务端处理链：控制权校验 → 合并环境状态 → 写快照 → 按事件序号幂等投递事件。 |
-| `common/ArmsCoreServerEvents.java` | 两个相位的接线：`PhysicsLevelTickEvent.Pre` 扇出 `prePhysicsTick`，`LevelTickEvent.Post` 写 `syncedData` 并发包；以及补发、断线重置、维度卸载。 |
+| `common/ArmsCoreServerEvents.java` | 两个相位的接线，两端都注册：`PhysicsLevelTickEvent.Pre` 按 Level 扇出 `prePhysicsTick`（服务端与客户端各有自己的物理级别），`LevelTickEvent.Post` 在服务端写 `syncedData` 并发包、在客户端把同步来的四项投影进变量容器（下行通道）；以及补发、断线重置、维度卸载。类名保留了它最初只接服务端时的形态，类注释说明双端职责。 |
 | `common/command/ArmsCoreDebugCommand.java` | `/arms` 调试命令（spawn / list / remove / move / jump / stop / event / control）。 |
 | `common/control/attr/MechaBodyPreset.java` | 碰撞体几何的唯一来源（圆柱半径 / 全高 / `HALF_TOTAL` / 由脚底算控制器碰撞体中心 / 各姿态高度），服务端出生点与客户端锚点共用。 |
 | `common/control/attr/MechaModelPreset.java` | 机体占位模型的唯一来源（模型 `ModelIndex` / 贴图 / 缩放 / 底面偏移），与 `MechaBodyPreset` 同为阶段 4.6 前素体取值的临时权威；外观 1:1 渲染，只与碰撞体底面对齐。 |
 | `network/ARMSNetwork.java` | 载荷注册与协议版本串；四个载荷为下行 `ArmsCoreCreatePayload` / `ArmsCoreRemovePayload` / `MechaCoreSyncPayload` 与上行 `MechaInputPayload`。 |
 | `client/ARMSClient.java` | 客户端输入采集与上行发送（`ClientTickEvent.Pre`）。客户端不构造 KCC、不跑状态机。 |
 | `client/ClientMechaAnchor.java` | 客户端可视锚点的采样与插值（含传送 / 断流跳变判据）。 |
-| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成模型矩阵（`getModelSpaceMatrix` 供挂在宿主实体上的绘制，`getWorldPositionMatrix` 满足接口契约）。装配体之外的对象，`ArmsCore` 不持有它；阶段 4.6 改为逐 Part 渲染后整体删除。 |
-| `client/MechaPlayerRenderer.java` | 客户机体的持有、驱动与绘制：按装配体 UUID 缓存 `MechaAnimatable`、每客户端 tick 推进动画、在 `RenderPlayerEvent.Pre` 取消玩家模型并就地画出机体。有机体时玩家模型连同其 RenderLayer（护甲 / 手持物 / 披风 / 鞘翅）与阴影全部让位，名称牌不受影响。 |
+| `client/MechaAnimatable.java` | 客户端动画体（`IAnimatable<ArmsCore>`）：持有模型 / 贴图 / MoLang 变量，把锚点插值组装成模型矩阵（`getModelSpaceMatrix` 供挂在宿主实体上的绘制，`getWorldPositionMatrix` 满足接口契约）。主线程每 tick 走 `clientTick`（采样锚点 + `AnimController.tick()`），物理线程由表现层编排器走 `AnimController.physTick()`（动画时间与骨骼混合）。装配体之外的对象，`ArmsCore` 不持有它；阶段 4.6 改为逐 Part 渲染后整体删除。 |
+| `client/MechaPlayerRenderer.java` | 客户机体的持有、驱动与绘制：按装配体 UUID 缓存 `MechaAnimatable`、每客户端 tick 推进动画、把该动画体注入装配体的表现层编排器（`common/control/presentation/MechaAnimPresenter.java#attach`，幂等）、在 `RenderPlayerEvent.Pre` 取消玩家模型并就地画出机体。有机体时玩家模型连同其 RenderLayer（护甲 / 手持物 / 披风 / 鞘翅）与阴影全部让位，名称牌不受影响。 |
+| `common/control/presentation/` | 表现层编排（方案与落地差异见 `docs/表现层动画接入实现计划.md`）：`MechaAnimPresenter` 持有注入的 `List<IAnimatable<?>>`、四台 `MultiAnimStateMachine` 与常驻并行层，按物理子步推进；`MechaPresentationGraphs` 是四张姿态图；`MechaAnimPreset` 是动画名映射与过渡时长；`MechaPlayAnimAction` 是 Java 可达的播放动作（引擎的 `PlayAnimAction` 因 Kotlin value class 参数在 Java 侧构造不出来）；`MechaAnimGroups` 是层号别名。`MechaAnimatable` 与 `ClientMechaAnchor` 仍留在 `client` 包，presenter 只认 `IAnimatable`。 |
 
 - 线程模型：主线程写 `volatile` 输入（`setMoveIntent` / `setViewYaw` 等），物理线程（`PhysicsLevelTickEvent.Pre`）在 `prePhysicsTick` 中读取；不要跨线程直接读写物理状态。逻辑层五项经 `MechaControl.LogicStateSnapshot` 不可变发布到主线程，`SynchedEntityData` 只在主线程写。
 - 朝向与移动映射：`MechaControl.applyFacing` 每物理步把快照的 `viewYaw` 绝对写进控制器（`MechaCharacter.setViewYaw`，度制归约到 [−180, 180)，死亡 / ragdoll 时跳过），控制器在 `prePhysicsTick` 里把权威值落到刚体姿态上（`writeFacing`，绕世界 Y 轴、每步现算）；`applyMoveIntent` 只透传体系移动意图，`MechaCharacter.setMoveIntent` 按本步朝向解出世界方向——朝向只被计入一次，闪避轴（`resolveDodgeDirection`）用同一个角独立解出。动画根 Y 增量（`animRootYawDelta`）是阶段 4 接入点，当前不参与合成。
@@ -126,9 +127,9 @@
 - 行走力学模型（`MechaCharacter.updateWalk`，刚体形态）：输入施加的是**力**，速度由求解器按真实接触积分。地面：`F_drive = min(k·computeDriveForce(v), μ_eff·N)` 沿目标移动方向施加，再加 `μ_eff·N·(1 + 1% 余量)` 的摩擦前馈把引擎的静摩擦抵消掉，`N = m·g·cosθ` 取静态估算；**引擎对受力接触体给的是静摩擦锁定而不是「从受力里减掉 μN」**，因此前馈与那 1% 余量都是必需的，机制与实测见 `docs/角色控制器-刚体动力学方案.md` §7.4。空中控制力为 `F_max × AIR_CONTROL`（0.30）、不加前馈，因此空中难变向而跳跃继承水平速度。着地判据（向下扫掠 + 法线筛 + 最小保持）见同文 §7.7，位姿写入规则与越障两段见同文 §6.1、§6.2。**顶速三项尚未与旧标定对齐**（实测站立 25.0 m/s、蹲伏 10.7 m/s，且倍率不等比），原因与可动的旋钮见同文 §12.10。
 - **撞墙时速度会归零**（KCC 时代的那条缺陷已随承载物消失）：刚体的速度就是求解器给出的真实速度，被挡住即归零，实测见 `docs/角色控制器-刚体原型与引擎约束.md` §3。KCC 那条「水平通道是位移命令、原生侧从不写回」的成因与上游报告（[Libbulletjme#58](https://github.com/stephengold/Libbulletjme/issues/58)）记在 `docs/角色控制器-KCC制约调研与替换评估.md` §3.2。
 - **已知缺陷：外部位移会被两处回写抹掉。** 宿主实体的位置由 KCC 每 tick 产出并在服务端 level 相位回写（`common/ArmsCoreServerEvents.java#applyPoseToHost`），而 `/tp` 一类的本模组之外的写入只改了宿主实体。客户端那一侧：`PlayerTickEvent.Post` 上的 `client/ClientHostPoseEvents.java#applySyncedPose` 用旧 `DATA_POS` 把自己放回旧位置，而它只调 `Entity#setPos`、不写 `xo/yo/zo`（原版处理 `ClientboundPlayerPositionPacket` 时把这一族字段写成了目标），于是同一 tick 渲染出的相机按 `xo` 与当前位置插值——外观上是「闪到目标一帧」，位置其实当 tick 就被抹掉。服务端那一侧：同一 tick 的 level 相位用旧 KCC 位置覆盖实体，tick 尾相位（收到的包在 `net.minecraft.server.MinecraftServer#waitUntilNextTick` 里排空）再由客户端上报的旧位置覆盖一次。**摄入已落地**：`common/HostPositionIntake.java` 把外部位移转成 KCC 的 warp 并在落地前钉住 `DATA_POS`；判定点是 `mixin/EntityPositionWriteMixin.java` 对 `Entity#setPos` 的注入，按「作用域栈 + 锚点」分类（三类已知镜像由该 Mixin 与 `mixin/ServerGamePacketListenerMixin.java`、两端运行时回写各压一个作用域；只有栈空且目标不等于锚点才采纳）。**仍未落地的是服务端那次每 tick 位置回写**（`docs/宿主位置权威与位移摄入设计.md` §九 第 4 步要删掉它、宿主位置改由客户端上报维护），以及乘客态与客户端那两半；已完成与未完成的逐条清单见该文 §十一。
-- 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。
+- 客户端与服务端的权威分工：服务端是唯一权威端，客户端不运行 `MechaCharacter` 与 `MechaLogicStateMachine`，只按同步来的位姿摆放非实体可视锚点（`docs/ArmsCore双端权威与网络同步实现计划.md` D1、D18）。客户端的 `MechaControl` 是空壳形态（无身体、无逻辑树），它多出来的那项职责是推进表现层动画——动画编排住在它里面，所以它必须有实例（`docs/表现层动画接入实现计划.md` D1、§4.1）。
 - 字段表纪律：`ArmsCore` 的 `EntityDataAccessor` 只允许在末尾追加（`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.2）；改动字段表或载荷字段后必须同时提升 `ARMSNetwork.PROTOCOL_VERSION`。
-- 当前状态机与动画模块为部分实现（大量 `TODO`），新增状态机节点/子图需同时更新 `MechaLogicStateMachine` 的 `children` 映射。
+- 逻辑层状态图与表现层的四台姿态机都已接线，逻辑层仍有 `TODO`（MoLang 注入、武器本地状态机、动画根位移提取）。新增逻辑层状态机节点/子图需同时更新 `MechaLogicStateMachine` 的 `children` 映射；新增表现层姿态节点要同时更新 `MechaAnimPreset` 的映射表，否则该节点没有动画（`MechaPresentationGraphsTest` 的映射一致性用例会挡住）。动画播放默认走 `MechaPlayAnimAction`，不要直接构造引擎的 `PlayAnimAction`。
 
 ## 代码风格与依赖
 
@@ -236,6 +237,8 @@ Select-String -Path <文件> -Pattern '不再|不再需要|不再依赖|仍然|�
 | `docs/控制分配-作动器wrench分配设计.md` | 「要一份 wrench → 每个作动器出多少」的**纯函数设计**，与载具类型无关：五类驱动的分类与两个去向、作动器交出的四样数据与各界（推进器 `[0,1]` / 舵面与姿控器件 `[−1,+1]`、形状配装期定死、模长随动压缩放）、分配目标的语义、雅可比割线列的取法（两端严格精确、区间内误差实测峰值 7.5% 且两个曲率来源部分相消）、阻尼伪逆 + 级联饱和 + 权重矩阵两层职责（含为什么不需要线性代数库、被取代的按轴独立钳制）、问题的维度由调用方给定的行掩码导出、混合作动器与代回复核、`u` 兼作程序性动画与跨端同步的原始输入；虚拟作动器（六根解耦有界列，RCS 与动量轮，§2.4）与平衡辅助（分配之后的残差补齐，抹平比例 `k` 默认 0.5，§5.3）。含实施与验证（十条纯函数断言）、三项待定项。 |
 | `docs/跳跃-瞬时冲量持续助推设计.md` | 跳跃模型改造设计：瞬时冲量 + 持续助推窗口、三条窗口终止条件、参数 `F_BOOST` / `T_BOOST_MAX`、代码与文档改动清单、验收判据。 |
 | `docs/分层控制器与状态机设计.md` | 状态机、MoLang 集成、动画驱动。 |
+| `docs/表现层动画接入实现计划.md` | 表现层动画的**接入方案与落地形态**：`MechaControl` 双端化与三条不变量、客户端下行状态通道（枚举 ↔ MoLang 名）、presenter 的三个就绪判据与资源重载后的重建、四台姿态机的边表与逐条设计意图（兜底边、DRIFT 期无出边、受击不设节点）、常驻并行层的层号取值、实施阶段 1~5 的验收与落地坐标，以及一节「落地差异」逐条记下实现与方案的出入。 |
+| `docs/MoLang查询面接入实现计划.md` | MoLang 查询面的**接入方案与批次**：引擎现有 `q.*` 绑定与「查不到取 0」的降级行为、内容包实际用到的命名空间清单与全包实测（2323 条表达式里的 NaN 与异常）、`MechaMolangContext` 的设计（运动量取自同步 `DATA_VEL`、客户端主线程发布、物理线程读 volatile 字段）、八个其余查询的来源表与两个非目标（`ysm.*` / `ctrl.*`）、以及一条「全包表达式必须有限且不抛」的回归用例。上游的引擎侧修正见 `../Spark-Core/docs/molang_compiled_path_defects_plan.md`。 |
 | `docs/MechaControl设计文档.md` | 早期 `MechaControl` 接口设计。 |
 | `docs/下一步开发TODO.md` | 当前里程碑、逐项待办、跨线程快照决策。 |
 | `docs/ArmsCore双端权威与网络同步实现计划.md` | `ArmsCore` 的服务端权威归属、创建 / 移除协议、上下行同步通道、实施阶段与验收判据。 |
