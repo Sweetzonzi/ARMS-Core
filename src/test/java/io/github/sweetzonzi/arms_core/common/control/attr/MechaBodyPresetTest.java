@@ -36,6 +36,9 @@ class MechaBodyPresetTest {
         assertEquals(MechaBodyPreset.RADIUS, halfExtents.x, 1.0e-6f);
         assertEquals(MechaBodyPreset.RADIUS, halfExtents.z, 1.0e-6f);
         assertEquals(MechaBodyPreset.BODY_HEIGHT, shape.getHeight(), 1.0e-6f);
+        // 底缘圆角半径 = 碰撞边距（实机回归期的临时取值，见 MechaBodyPreset#RIM_MARGIN）
+        // 它只改底缘圆角、不改外表面，因此上面的半径与全高读数不受影响
+        assertEquals(MechaBodyPreset.RIM_MARGIN, shape.getMargin(), 1.0e-6f);
     }
 
     @Test
