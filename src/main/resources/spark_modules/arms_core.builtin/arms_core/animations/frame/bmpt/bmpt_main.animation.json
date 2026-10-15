@@ -2,6 +2,7 @@
 	"format_version": "1.8.0",
 	"animations": {
 		"idle": {
+			"loop": true,
 			"animation_length": 0.375,
 			"bones": {
 				"Root": {
