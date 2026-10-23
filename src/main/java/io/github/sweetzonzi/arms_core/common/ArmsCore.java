@@ -11,7 +11,8 @@ import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
-import io.github.sweetzonzi.machine_max.common.mech.vehicle.Part;
+import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
+import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPartType;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.connector.AbstractConnector;
 import lombok.Getter;
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 机娘核心类 —— 装配体级逻辑机甲单元。
  * <p>
- * 与 Machine-Max 的 {@code VehicleCore} 同级：由 {@link Part} 通过 {@link AbstractConnector}
+ * 与 Machine-Max 的 {@code VehicleCore} 同级：由 {@link AbstractPart} 通过 {@link AbstractConnector}
  * 组装而成，实现 {@link IPartAssembly}，并额外持有角色运动控制器 {@link MechaControl}
  * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
  * （见 `docs/总体设计文档.md:82`）。
@@ -340,8 +341,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <p>
      * 执行顺序（硬约束）：
      * <ol>
-     *   <li>Part 层动画混合 —— 必须早于 {@code extractAnimRootDelta()}，后者读取
-     *       {@code body_root} 骨骼位姿，而该位姿由 Part 的物理步产出（装配体图接入后生效）</li>
+     *   <li>AbstractPart<?> 层动画混合 —— 必须早于 {@code extractAnimRootDelta()}，后者读取
+     *       {@code body_root} 骨骼位姿，而该位姿由 AbstractPart<?> 的物理步产出（装配体图接入后生效）</li>
      *   <li>下行状态写入 → 状态机推进 → 表现层推进（状态机与动画时间）→ 动画根位移提取 →
      *       控制器物理步（顺序由 {@link MechaControl#onPhysicsStep(float)} 内部保证）</li>
      *   <li>发布逻辑状态快照供主线程读取（仅权威侧，见下）</li>
@@ -523,17 +524,22 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     @Override
-    public void addPart(Part part) {
+    public boolean acceptsPartType(AbstractPartType type) {
+        return true;
+    }
+
+    @Override
+    public void addPart(AbstractPart<?> part) {
 
     }
 
     @Override
-    public void removePart(Part part) {
+    public void removePart(AbstractPart<?> part) {
 
     }
 
     @Override
-    public void connect(AbstractConnector connector1, AbstractConnector connector2, @Nullable Part newPart) {
+    public void connect(AbstractConnector connector1, AbstractConnector connector2, @Nullable AbstractPart<?> newPart) {
 
     }
 
@@ -548,7 +554,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     @Override
-    public void onPartDamage(Part part, float damage) {
+    public void onPartDamage(AbstractPart<?> part, float damage) {
 
     }
 
