@@ -4,11 +4,15 @@ import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
 import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
+import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
+import net.minecraft.nbt.NbtOps;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
@@ -37,14 +41,18 @@ import java.util.UUID;
  * @param coreId       装配体 UUID
  * @param hostEntityId 宿主实体 id，无实体宿主为 {@code -1}
  * @param initial      {@code getNonDefaultValues()} 的全量非默认字段，可为 {@code null}
+ * @param body         身体部件组成快照；定义就绪后由客户端主线程恢复
  * @author Sweetzonzi
  */
 public record ArmsCoreCreatePayload(
         ResourceKey<Level> dimension,
         UUID coreId,
         int hostEntityId,
-        @Nullable List<SynchedEntityData.DataValue<?>> initial
+        @Nullable List<SynchedEntityData.DataValue<?>> initial,
+        CompoundTag body
 ) implements CustomPacketPayload {
+
+    public ArmsCoreCreatePayload { body = body.copy(); }
 
     /** 载荷 id */
     public static final Type<ArmsCoreCreatePayload> TYPE = new Type<>(
@@ -69,7 +77,8 @@ public record ArmsCoreCreatePayload(
                         if (initial == null) initial = new ArrayList<>();
                         initial.add(SynchedEntityData.DataValue.read(buffer, id));
                     }
-                    return new ArmsCoreCreatePayload(dimension, coreId, hostEntityId, initial);
+                    CompoundTag body = java.util.Objects.requireNonNull(buffer.readNbt(), "Missing body snapshot");
+                    return new ArmsCoreCreatePayload(dimension, coreId, hostEntityId, initial, body);
                 }
 
                 @Override
@@ -83,6 +92,7 @@ public record ArmsCoreCreatePayload(
                         }
                     }
                     buffer.writeByte(TERMINATOR);
+                    buffer.writeNbt(value.body());
                 }
             };
 
@@ -110,20 +120,29 @@ public record ArmsCoreCreatePayload(
                     payload.dimension().location(), level.dimension().location());
             return;
         }
-        ArmsCore core = MechaCoreRegistry.get(level, payload.coreId());
+        // 先保留完整初值；若定义尚未发布，后续增量也会合并到这个待创建请求。
+        MechaCoreRegistry.queueClientSnapshot(payload, context.player());
+        MechaCoreRegistry.flushClientSnapshots(level);
+    }
+
+    /** 定义就绪后构造客户端机体，或更新同一核心的状态与普通成员。 */
+    public void applyClientSnapshot(Player player, List<SynchedEntityData.DataValue<?>> values) {
+        Level level = player.level();
+        ArmsBodyData data = ArmsBodyData.CODEC.parse(NbtOps.INSTANCE, body).getOrThrow();
+        ArmsCore core = MechaCoreRegistry.get(level, coreId);
         boolean created = false;
         if (core == null) {
-            core = ArmsCore.newClientInstance(level, payload.coreId());
+            core = ArmsCore.newClientInstance(level, coreId, data);
             MechaCoreRegistry.addClient(core);
             created = true;
+        } else {
+            // 已有装配体保持身份与锚点；核心 UUID 不匹配的快照由更新入口拒绝。
+            core.applyBodySnapshot(data);
         }
-        List<SynchedEntityData.DataValue<?>> initial = payload.initial();
-        if (initial != null) {
-            core.getSyncedData().assignValues(initial);
-        }
-        bindLocalHost(payload, context, core);
+        if (!values.isEmpty()) core.getSyncedData().assignValues(values);
+        bindLocalHost(this, player, core);
         ARMS.LOGGER.debug("[ARMS-Core] 客户端{}装配体 {}：{} 项初值", created ? "创建" : "复用",
-                payload.coreId(), initial == null ? 0 : initial.size());
+                coreId, values.size());
     }
 
     /**
@@ -133,8 +152,8 @@ public record ArmsCoreCreatePayload(
      * 把它交给了别人（{@code hostEntityId} 变了），本地必须解绑，否则客户端会继续按一个已经不属于
      * 自己的装配体的位姿摆放玩家。
      */
-    private static void bindLocalHost(ArmsCoreCreatePayload payload, IPayloadContext context, ArmsCore core) {
-        if (!(context.player() instanceof IArmsHost host)) return;
+    private static void bindLocalHost(ArmsCoreCreatePayload payload, Player player, ArmsCore core) {
+        if (!(player instanceof IArmsHost host)) return;
         if (payload.hostEntityId() == host.getHostEntity().getId()) {
             host.setControlledArmsCore(core);
         } else if (host.getControlledArmsCore() == core) {

@@ -38,6 +38,7 @@ public class ARMS {
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
+        event.enqueueWork(io.github.sweetzonzi.arms_core.common.part.BodyParts::register);
         LOGGER.info("[ARMS-Core] 通用初始化完成");
     }
 

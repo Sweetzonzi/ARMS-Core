@@ -27,7 +27,7 @@ public final class ARMSNetwork {
     }
 
     /** 线上协议版本；字段表或载荷集合发生变化时必须提升 */
-    public static final String PROTOCOL_VERSION = "arms_core:2";
+    public static final String PROTOCOL_VERSION = "arms_core:3";
 
     @SubscribeEvent
     public static void register(final RegisterPayloadHandlersEvent event) {

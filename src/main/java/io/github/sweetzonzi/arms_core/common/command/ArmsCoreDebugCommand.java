@@ -109,7 +109,8 @@ public final class ArmsCoreDebugCommand {
         ServerLevel level = source.getLevel();
 
         UUID coreId = UUID.randomUUID();
-        ArmsCore core = new ArmsCore(level, coreId);
+        ArmsCore core = new ArmsCore(level, coreId,
+                io.github.sweetzonzi.arms_core.common.part.BodyParts.createDefault(level));
 
         // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心（计划 §3.14）
         float[] center = MechaBodyPreset.controllerCenterFromFeet(

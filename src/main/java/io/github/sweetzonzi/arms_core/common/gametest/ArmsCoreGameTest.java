@@ -78,7 +78,8 @@ public class ArmsCoreGameTest {
      */
     @GameTest(timeoutTicks = 100, template = "empty_platform", batch = BATCH)
     public static void physicsSpaceIsReadyAndCoreConstructs(GameTestHelper helper) {
-        ArmsCore core = new ArmsCore(helper.getLevel(), UUID.randomUUID());
+        ArmsCore core = new ArmsCore(helper.getLevel(), UUID.randomUUID(),
+                io.github.sweetzonzi.arms_core.common.part.BodyParts.createDefault(helper.getLevel()));
 
         helper.assertTrue(core.isAuthoritative(), "服务端构造必须给出权威实例");
         helper.assertTrue(core.getBody() != null, "权威实例必须持有控制器刚体");
@@ -89,6 +90,7 @@ public class ArmsCoreGameTest {
         helper.assertTrue(step > 0f && Float.isFinite(step),
                 "物理步长应当是有限正数，实际为 " + step);
 
+        core.disposeBody();
         helper.succeed();
     }
 
@@ -108,7 +110,8 @@ public class ArmsCoreGameTest {
      */
     @GameTest(timeoutTicks = 100, template = "empty_platform", batch = BATCH)
     public static void intakeClassifiesMirrorsAndAdoptsOnlyRealDisplacement(GameTestHelper helper) {
-        ArmsCore core = new ArmsCore(helper.getLevel(), UUID.randomUUID());
+        ArmsCore core = new ArmsCore(helper.getLevel(), UUID.randomUUID(),
+                io.github.sweetzonzi.arms_core.common.part.BodyParts.createDefault(helper.getLevel()));
         HostPositionIntake intake = core.getPositionIntake();
         Player host = helper.makeMockPlayer(GameType.CREATIVE);
         ((IArmsHost) host).setControlledArmsCore(core);
@@ -168,6 +171,7 @@ public class ArmsCoreGameTest {
                 "同一目标的重复写入不应再次采纳，实际采纳 " + intake.getIntakeCount() + " 次");
 
         ((IArmsHost) host).setControlledArmsCore(null);
+        core.disposeBody();
         helper.succeed();
     }
 }

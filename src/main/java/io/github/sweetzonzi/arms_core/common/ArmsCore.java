@@ -8,6 +8,12 @@ import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
+import io.github.sweetzonzi.arms_core.common.part.BodyPart;
+import io.github.sweetzonzi.arms_core.common.part.BodyPartData;
+import io.github.sweetzonzi.arms_core.common.part.BodyPartType;
+import io.github.sweetzonzi.machine_max.common.mech.part.PartFactory;
+import io.github.sweetzonzi.machine_max.common.mech.part.PartRestoreMode;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
@@ -16,7 +22,10 @@ import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPartType;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.connector.AbstractConnector;
 import lombok.Getter;
+import lombok.Setter;
 import net.minecraft.core.Rotations;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SyncedDataHolder;
@@ -30,6 +39,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -38,22 +51,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 与 Machine-Max 的 {@code VehicleCore} 同级：由 {@link AbstractPart} 通过 {@link AbstractConnector}
  * 组装而成，实现 {@link IPartAssembly}，并额外持有角色运动控制器 {@link MechaControl}
  * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
- * （见 `docs/总体设计文档.md:82`）。
+ * （见 `docs/总体设计文档.md` §2.1）。
  * <p>
  * <b>权威归属</b>：服务端是唯一权威端，客户端不运行角色控制器、不推进逻辑状态树
  * （`docs/ArmsCore双端权威与网络同步实现计划.md` D1、§1.3）。两条构造路径都持有
  * {@link MechaControl}——表现层编排住在它里面，客户端也要有——差别只在身体与逻辑树：
  * <ul>
- *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID)}）：构造控制器刚体与逻辑状态树，由 Level 级
+ *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID, BodyPart)}）：构造控制器刚体与逻辑状态树，由 Level 级
  *       注册表在物理线程驱动；</li>
- *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID)}）：构造一个没有身体、没有逻辑树的
+ *   <li><b>客户端</b>（{@link #newClientInstance(Level, UUID, ArmsBodyData)}）：构造一个没有控制器刚体、没有逻辑树的
  *       {@link MechaControl}，并作为 {@link SynchedEntityData} 的客户端副本载体与可视锚点的宿主。
  *       逻辑四项不在这里推导，由下行通道写入。</li>
  * </ul>
  * <p>
  * <b>构造前置（仅服务端路径）</b>：构造器会直接从所在 Level 取物理空间
  * （{@code SparkLevel.getPhysicsLevel(level).getWorld()}）并把控制器刚体建在该空间上。该前置在正常流程下由
- * Spark-Core 的初始化顺序保证——`PhysicsLevelApplier.kt:24-36` 在 {@code LevelEvent.Load}
+ * Spark-Core 的初始化顺序保证——
+ * `../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/PhysicsLevelApplier.kt#load`
+ * 在 {@code LevelEvent.Load}
  * 中设置 `PhysicsLevel` 并 `start()`，而 {@code ArmsCore} 总是由更晚的创建路径（宿主登录、
  * 装配体创建包、调试命令）构造。
  * <p>
@@ -167,7 +182,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 承载本装配体的宿主实体；{@code null} 表示尚未绑定宿主。
      * <p>
      * <b>可空是常态，{@code null} 不是错误状态。</b> 装配体在「已注册、尚未绑定宿主」这段区间里
-     * 合法存在，客户端实例则永远没有宿主。三条使用路径的空值行为：位姿回写只跳过
+     * 合法存在；客户端在创建包指定本地玩家时绑定宿主。三条使用路径的空值行为：位姿回写只跳过
      * {@code applyPose} / {@code applyVelocity} 两步而写包照常、伤害解析返回 {@code null}
      * （等价于「线段与宿主包围盒无交点」这一出口）、环境字段与控制权校验的调用方本身持有判据
      * 因此拿不到 {@code null}。逐条见 `docs/宿主接入与伤害管线设计.md` §3.1.2。
@@ -178,10 +193,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 只在主线程读写。宿主实体的全部已知用途（位姿回写、伤害解析的包围盒、环境字段来源）都在
      * 主线程相位，物理线程不读它。
      * <p>
-     * 读取入口是 {@link #getHost()}；写入入口是 {@link #setHost}，它由
+     * Lombok 生成的宿主访问器对应本字段；写入只由
      * {@link IArmsHost#setControlledArmsCore} 调用。
      */
     @Getter
+    @Setter
     private volatile @Nullable IArmsHost host;
 
     /** 是否已加入物理空间（避免重复 addCollisionObject） */
@@ -199,6 +215,21 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Getter
     private final HostPositionIntake positionIntake;
 
+    /** 可变成员容器；结构修改统一由主线程的装配方法执行。 */
+    private final Map<UUID, AbstractPart<?>> mutableParts = new ConcurrentHashMap<>();
+    /** 生命周期内身份固定的只读视图，内容随成员增减而变化。 */
+    @Getter
+    private final Map<UUID, AbstractPart<?>> partMap = Collections.unmodifiableMap(mutableParts);
+    /** 核心在构造时确定，换核心需要创建另一具装配体。 */
+    @Getter
+    private final @NotNull BodyPart corePart;
+    @Getter
+    private final SubsystemController subsystemController;
+    @Getter
+    private String assemblyName = "ArmsCore";
+    private boolean bodyDirty;
+    private boolean disposed;
+
     // ==========================================
     // 构造
     // ==========================================
@@ -206,7 +237,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /**
      * 服务端构造：创建控制器刚体与状态机。
      * <p>
-     * 胶囊几何取自 {@link MechaBodyPreset}，物理空间直接取自所在 Level（见类注释的构造前置），
+     * 控制器几何取自 {@link MechaBodyPreset}，物理空间直接取自所在 Level（见类注释的构造前置），
      * 着地扫掠与越障探针都从这个空间发起。
      * <p>
      * 刚体只被构造、<b>尚未加入物理空间</b>：入世需要调用方另经
@@ -216,15 +247,25 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      *
      * @param level      所在世界；其物理空间必须已初始化（见类注释的构造前置）
      * @param assemblyId 装配体 UUID
+     * @param corePart   尚未归属装配体、尚未入世的核心部件
      */
-    public ArmsCore(Level level, UUID assemblyId) {
-        this(level, assemblyId, true);
+    public ArmsCore(Level level, UUID assemblyId, BodyPart corePart) {
+        this(level, assemblyId, new RestoredBody(corePart, List.of(corePart), "ArmsCore"), true);
     }
 
-    private ArmsCore(Level level, UUID assemblyId, boolean authoritative) {
+    /** 从完整组成数据构造服务端装配体，核心由保存数据解析。 */
+    public ArmsCore(Level level, UUID assemblyId, ArmsBodyData data) {
+        this(level, assemblyId, restoreMembers(level, data), true);
+    }
+
+    private ArmsCore(Level level, UUID assemblyId, RestoredBody bodyData, boolean authoritative) {
         this.level = level;
         this.assemblyId = assemblyId;
         this.authoritative = authoritative;
+        this.corePart = java.util.Objects.requireNonNull(bodyData.corePart());
+        this.subsystemController = new SubsystemController(level);
+        // 先校验核心和成员的归属，再建立控制器，防止无效输入产生半成品装配体。
+        bodyData.parts().forEach(this::validateMember);
         if (authoritative) {
             MechaCharacter body = new MechaCharacter(
                     MechaBodyPreset.newBodyShape(),
@@ -240,21 +281,24 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         // 放在最后：HostPositionIntake 的判据会读 level 与 authoritative，两者此时都已就位。
         // 不以字段初始化器写在声明处，那样会在 level 赋值之前构造它
         this.positionIntake = new HostPositionIntake(this);
+        bodyData.parts().forEach(this::addPart);
+        this.assemblyName = bodyData.name();
     }
 
     /**
      * 客户端构造：不创建控制器刚体与逻辑状态树，只承载同步数据。
      * <p>
      * 客户端不运行物理模拟（D1），因此这里不读物理空间，也就不受服务端那条
-     * 「物理空间必须已初始化」的构造前置约束。表现层编排器仍然建立（见 {@link #mechaControl}），
+     * 「物理空间必须已初始化」的构造前置约束。表现层编排器同时建立（见 {@link #mechaControl}），
      * 但没有身体、没有逻辑树。
      *
      * @param level      客户端所在世界
      * @param assemblyId 装配体 UUID（与服务端一致）
+     * @param data       完整身体组成，构造前会校验并恢复成员
      * @return 客户端侧实例
      */
-    public static ArmsCore newClientInstance(Level level, UUID assemblyId) {
-        return new ArmsCore(level, assemblyId, false);
+    public static ArmsCore newClientInstance(Level level, UUID assemblyId, ArmsBodyData data) {
+        return new ArmsCore(level, assemblyId, restoreMembers(level, data), false);
     }
 
     /**
@@ -324,9 +368,9 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * {@code tps = baseStep × 20 = 100}，即 {@code 0.01 s}；客户端 {@code ClientPhysicsLevel(level, 3, ...)}
      * 给出 {@code tps = 60}，即约 {@code 0.0167 s}。
      * <p>
-     * <b>它不再是速度换算的输入。</b> 刚体的 {@code getLinearVelocity} 三轴统一为 m/s，而宿主实体上
+     * 刚体的 {@code getLinearVelocity} 三轴统一为 m/s，而宿主实体上
      * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code ÷ 20}，与物理步长无关
-     * （`docs/角色控制器-刚体动力学方案.md` §6）。本值现在的用途是按时长累加的量——物理步长本身、
+     * （`docs/角色控制器-刚体动力学方案.md` §6）。本值用于按时长累加的量——物理步长本身、
      * 按秒计时的参数（跳跃助推窗口、闪避无敌）以及诊断。
      *
      * @return 物理步长 (s)
@@ -398,21 +442,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     // ==========================================
     // 宿主绑定
     // ==========================================
-
-    /**
-     * 写入「装配体 → 宿主」这一方向的引用。
-     * <p>
-     * 由 {@link IArmsHost#setControlledArmsCore} 的实现调用，因此<b>不要直接调用本方法</b>：
-     * 单独改写这里会让宿主字段仍指着旧装配体，形成单边绑定。建立与解除绑定请走
-     * {@link IArmsHost#setControlledArmsCore}，那一个入口同时维护两个方向、并在绑定确实变化时
-     * 重置输入状态（{@link MechaInputHandler#resetInput}）。
-     * <p>
-     * 没有做成私有：Mixin 与实体类不在同一个包、也不是子类，唯一替代是把这部分流程做成接口上的
-     * 静态方法。当前保留为公开 setter，靠这条注释约束调用方。
-     */
-    public void setHost(@Nullable IArmsHost host) {
-        this.host = host;
-    }
 
     /**
      * 采纳一次外部位移：改写 {@code DATA_POS} 的来源并提交任务改写控制器刚体的物理位置。
@@ -505,73 +534,185 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     @Override
     public boolean isInLevel() {
-        return false;
+        return inPhysicsSpace.get();
     }
 
-    @Override
-    public String getAssemblyName() {
-        return "";
-    }
-
+    /** 修改名称同时标记组成快照待发送，因此保留带业务逻辑的 setter。 */
     @Override
     public void setAssemblyName(String name) {
-
+        assemblyName = java.util.Objects.requireNonNull(name);
+        bodyDirty = true;
     }
 
     @Override
     public float getTotalMass() {
-        return 0;
+        return (float) partMap.values().stream().mapToDouble(AbstractPart::getTotalMass).sum();
     }
 
     @Override
     public boolean acceptsPartType(AbstractPartType type) {
-        return true;
+        return type instanceof BodyPartType;
     }
 
+    /** 添加普通身体成员；核心身份由构造器确定。 */
     @Override
     public void addPart(AbstractPart<?> part) {
-
+        validateMember(part);
+        // UUID 相同但实例不同属于冲突，禁止覆盖现有成员或核心。
+        var current = mutableParts.putIfAbsent(part.uuid, part);
+        if (current == part) return;
+        if (current != null) throw new IllegalArgumentException("部件 UUID 重复：" + part.uuid);
+        part.assembly = this;
+        bodyDirty = true;
     }
 
+    /** 检查主线程装配入口的共同前置条件。 */
+    private void validateMember(AbstractPart<?> part) {
+        if (disposed) throw new IllegalStateException("装配体已释放");
+        if (!(part instanceof BodyPart) || part.level != level || part.destroyed
+                || part.assembly != null && part.assembly != this) {
+            throw new IllegalArgumentException("部件必须是同世界中尚未归属其他装配体的有效 BodyPart");
+        }
+        if (part.subParts.isEmpty() || part.subParts.values().stream().anyMatch(child -> child.body.isInWorld())) {
+            throw new IllegalArgumentException("身体部件必须具有尚未入世的子结构");
+        }
+    }
+
+    /** 移除非核心成员并释放其结构；核心随整个装配体一起释放。 */
     @Override
     public void removePart(AbstractPart<?> part) {
-
+        if (part == corePart) throw new IllegalArgumentException("核心不能单独移除，请释放整个装配体");
+        if (!mutableParts.remove(part.uuid, part)) return;
+        part.assembly = null;
+        part.destroy();
+        bodyDirty = true;
     }
 
     @Override
     public void connect(AbstractConnector connector1, AbstractConnector connector2, @Nullable AbstractPart<?> newPart) {
-
+        throw new UnsupportedOperationException("身体连接尚未实现");
     }
 
     @Override
     public void disconnect(AbstractConnector connector) {
-
-    }
-
-    @Override
-    public SubsystemController getSubsystemController() {
-        return null;
+        throw new UnsupportedOperationException("身体连接尚未实现");
     }
 
     @Override
     public void onPartDamage(AbstractPart<?> part, float damage) {
-
+        // 占位身体不参与世界命中，宿主伤害转发由身体伤害接入阶段定义。
     }
 
     @Override
     public void activatePhysics() {
-
+        if (authoritative) getBody().activate();
     }
 
     @Override
     public SubPart getRootSubPart() {
-        return null;
+        return corePart.rootSubPart;
     }
 
     @Override
     public MechAttr getAttr() {
         return null;
     }
+
+    @Override
+    public AbstractPart<?> findPart(UUID id) {
+        return partMap.get(id);
+    }
+
+    /** 保存身体组成；核心通过 UUID 引用集合中的唯一实例。 */
+    public ArmsBodyData saveBody() {
+        if (disposed) throw new IllegalStateException("已释放的装配体不能保存");
+        return new ArmsBodyData(assemblyName, corePart.uuid,
+                partMap.values().stream().map(part -> ((BodyPart) part).save()).toList());
+    }
+
+    /** 生成用于持久化或创建包的组成 NBT。 */
+    public CompoundTag saveBodyTag() {
+        return (CompoundTag) ArmsBodyData.CODEC.encodeStart(NbtOps.INSTANCE, saveBody()).getOrThrow();
+    }
+
+    /** 构造前恢复所需的完整成员集合，失败时清理全部已分配部件。 */
+    private static RestoredBody restoreMembers(Level level, ArmsBodyData data) {
+        data.validate().getOrThrow();
+        // 在创建任何刚体之前验证整批定义和结构，防止无效输入破坏现有装配体。
+        for (BodyPartData saved : data.parts()) {
+            if (!(PartFactory.validateRestore(saved, level.isClientSide()) instanceof BodyPartType type)
+                    || !type.getVariant(saved.variant).subParts.keySet().equals(saved.subParts.keySet())) {
+                throw new IllegalArgumentException("身体定义无效或保存结构不完整");
+            }
+        }
+        var allocated = new ArrayList<BodyPart>();
+        try {
+            for (BodyPartData saved : data.parts()) {
+                allocated.add((BodyPart) PartFactory.restore(saved, level, PartRestoreMode.FULL_STATE, BodyPart.CONTEXT));
+            }
+            BodyPart core = allocated.stream().filter(part -> part.uuid.equals(data.corePartId())).findFirst().orElseThrow();
+            return new RestoredBody(core, List.copyOf(allocated), data.name());
+        } catch (RuntimeException | Error failure) {
+            allocated.forEach(BodyPart::destroy);
+            throw failure;
+        }
+    }
+
+    /** 应用同一具机体的组成快照，保持核心实例及成员容器的身份稳定。 */
+    public void applyBodySnapshot(ArmsBodyData data) {
+        if (disposed) throw new IllegalStateException("装配体已释放");
+        if (!corePart.uuid.equals(data.corePartId())) {
+            throw new IllegalArgumentException("组成快照不能更换核心");
+        }
+        RestoredBody prepared = restoreMembers(level, data);
+        Map<UUID, AbstractPart<?>> next = new LinkedHashMap<>();
+        try {
+            // 先用临时实例验证全部恢复状态；核心只更新状态，不替换对象引用。
+            corePart.applySavedState(prepared.corePart().save());
+            prepared.parts().forEach(part -> next.put(part.uuid, part == prepared.corePart() ? corePart : part));
+        } catch (RuntimeException | Error failure) {
+            prepared.parts().forEach(BodyPart::destroy);
+            throw failure;
+        }
+        prepared.corePart().destroy();
+        var previous = new ArrayList<>(partMap.values());
+        next.values().forEach(part -> part.assembly = this);
+        // 修改固定容器的内容；外部持有的只读视图始终对应这一份容器。
+        mutableParts.clear();
+        mutableParts.putAll(next);
+        assemblyName = data.name();
+        previous.stream().filter(part -> part != corePart).forEach(part -> {
+            part.assembly = null;
+            part.destroy();
+        });
+        bodyDirty = true;
+    }
+
+    /** 主线程推进身体成员，并发送成员变化产生的完整组成快照。 */
+    public void tickBody() {
+        if (disposed) return;
+        partMap.values().forEach(AbstractPart::onTick);
+        if (authoritative && bodyDirty && MechaCoreRegistry.get(level, assemblyId) == this) {
+            MechaCoreRegistry.syncBody(this);
+            bodyDirty = false;
+        }
+    }
+
+    /** 释放全部成员；final 字段保持其引用，已释放对象禁止继续装配。 */
+    public void disposeBody() {
+        if (disposed) return;
+        disposed = true;
+        var previous = new ArrayList<>(partMap.values());
+        mutableParts.clear();
+        previous.forEach(part -> {
+            part.assembly = null;
+            part.destroy();
+        });
+        bodyDirty = false;
+    }
+
+    /** 私有构造参数，保证进入构造器时核心与完整成员集合均已就绪。 */
+    private record RestoredBody(BodyPart corePart, List<BodyPart> parts, String name) {}
 
     @Override
     public String toString() {

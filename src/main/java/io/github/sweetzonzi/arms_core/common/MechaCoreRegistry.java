@@ -4,11 +4,14 @@ import cn.solarmoon.spark_core.event.PhysicsLevelInitEvent;
 import cn.solarmoon.spark_core.util.PPhase;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.machine_max.common.mech.part.PartDefinitions;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreRemovePayload;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 
@@ -58,6 +61,12 @@ public final class MechaCoreRegistry {
 
     /** 客户端：当前维度的装配体 UUID → 实例 */
     private static final Map<UUID, ArmsCore> CLIENT_CORES = new ConcurrentHashMap<>();
+
+    /** 客户端定义就绪前的创建请求；期间到达的状态增量合并进初值。 */
+    private static final Map<UUID, PendingClientCore> PENDING_CLIENT_CORES = new ConcurrentHashMap<>();
+
+    private record PendingClientCore(Level level, Player player, ArmsCoreCreatePayload payload,
+                                     Map<Integer, SynchedEntityData.DataValue<?>> values) {}
 
     /** 收到未知 {@code coreId} 增量包的累计次数，用于告警节流 */
     private static final AtomicLong UNKNOWN_SYNC_COUNT = new AtomicLong();
@@ -161,6 +170,7 @@ public final class MechaCoreRegistry {
             return false;
         }
         unbindHosts(serverLevel, core);
+        core.disposeBody();
         MechaInputHandler.forget(core.getAssemblyId());
         PacketDistributor.sendToPlayersInDimension(serverLevel,
                 new ArmsCoreRemovePayload(level.dimension(), core.getAssemblyId()));
@@ -190,6 +200,7 @@ public final class MechaCoreRegistry {
     public static void clearLevel(Level level) {
         if (!(level instanceof ServerLevel serverLevel)) return;
         Map<UUID, ArmsCore> removed = SERVER_CORES.remove(serverLevel);
+        if (removed != null) removed.values().forEach(ArmsCore::disposeBody);
         if (removed != null && !removed.isEmpty()) {
             ARMS.LOGGER.info("[ARMS-Core] 清理维度 {} 的 {} 个装配体",
                     level.dimension().location(), removed.size());
@@ -228,17 +239,21 @@ public final class MechaCoreRegistry {
 
     /** 客户端注册由创建包构造的实例（不广播）。 */
     public static void addClient(ArmsCore core) {
-        CLIENT_CORES.put(core.getAssemblyId(), core);
+        ArmsCore previous = CLIENT_CORES.put(core.getAssemblyId(), core);
+        if (previous != null && previous != core) previous.disposeBody();
     }
 
     /**
      * 客户端注销实例。
      *
-     * @return 该 UUID 此前是否已注册
+     * @return 该 UUID 此前是否已注册或有待创建请求
      */
     public static boolean removeClient(Level level, UUID coreId) {
         if (!level.isClientSide()) return false;
-        return CLIENT_CORES.remove(coreId) != null;
+        boolean pending = PENDING_CLIENT_CORES.remove(coreId) != null;
+        ArmsCore removed = CLIENT_CORES.remove(coreId);
+        if (removed != null) removed.disposeBody();
+        return removed != null || pending;
     }
 
     /**
@@ -248,7 +263,41 @@ public final class MechaCoreRegistry {
      * 遍历该维度注册表逐个发创建包，因此客户端不需要额外的反向请求包。
      */
     public static void clearClient() {
+        PENDING_CLIENT_CORES.clear();
+        CLIENT_CORES.values().forEach(ArmsCore::disposeBody);
         CLIENT_CORES.clear();
+    }
+
+    /** 暂存最新完整快照，核心与成员均就绪后才允许创建客户端装配体。 */
+    public static void queueClientSnapshot(ArmsCoreCreatePayload payload, Player player) {
+        // 同一字段只保留最后到达的值；后续增量会覆盖这份完整快照中的初值。
+        Map<Integer, SynchedEntityData.DataValue<?>> values = new java.util.LinkedHashMap<>();
+        if (payload.initial() != null) payload.initial().forEach(value -> values.put(value.id(), value));
+        PENDING_CLIENT_CORES.put(payload.coreId(), new PendingClientCore(player.level(), player, payload, values));
+    }
+
+    /** 将延迟创建期间的增量合并到待应用初值，返回是否已接收该增量。 */
+    public static boolean queuePendingSync(Level level, UUID id, List<SynchedEntityData.DataValue<?>> dirty) {
+        PendingClientCore pending = PENDING_CLIENT_CORES.get(id);
+        if (pending == null || pending.level() != level) return false;
+        dirty.forEach(value -> pending.values().put(value.id(), value));
+        return true;
+    }
+
+    /** 客户端主线程在定义发布后消费创建请求，避免暴露没有核心的实例。 */
+    public static void flushClientSnapshots(Level level) {
+        if (!level.isClientSide() || !PartDefinitions.isReady(true)) return;
+        for (var entry : PENDING_CLIENT_CORES.entrySet()) {
+            PendingClientCore pending = entry.getValue();
+            // 先从队列取走，确保无效快照只报告一次；跨维度的请求由维度清理负责取消。
+            if (pending.level() != level || !PENDING_CLIENT_CORES.remove(entry.getKey(), pending)) continue;
+            if (pending.player().level() != level) continue;
+            try {
+                pending.payload().applyClientSnapshot(pending.player(), List.copyOf(pending.values().values()));
+            } catch (RuntimeException error) {
+                ARMS.LOGGER.error("[ARMS-Core] 装配体 {} 的组成快照无效", entry.getKey(), error);
+            }
+        }
     }
 
     // ==========================================
@@ -325,6 +374,13 @@ public final class MechaCoreRegistry {
                 core.getLevel().dimension(),
                 core.getAssemblyId(),
                 hostEntityId,
-                core.getSyncedData().getNonDefaultValues());
+                core.getSyncedData().getNonDefaultValues(), core.saveBodyTag());
+    }
+
+    /** 广播身体组成，登录补发与成员变动使用相同的创建包格式。 */
+    public static void syncBody(ArmsCore core) {
+        if (core.getLevel() instanceof ServerLevel level) {
+            PacketDistributor.sendToPlayersInDimension(level, createPayload(core, core.getBoundHostEntityId()));
+        }
     }
 }

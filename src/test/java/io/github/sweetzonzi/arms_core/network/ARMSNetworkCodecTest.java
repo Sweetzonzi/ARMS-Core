@@ -146,7 +146,7 @@ class ARMSNetworkCodecTest {
                 SynchedEntityData.DataValue.create(ArmsCore.DATA_ENERGY, 42f));
         ArmsCoreCreatePayload original = new ArmsCoreCreatePayload(
                 ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse("minecraft:overworld")),
-                UUID.randomUUID(), 42, initial);
+                UUID.randomUUID(), 42, initial, new net.minecraft.nbt.CompoundTag());
 
         RegistryFriendlyByteBuf buffer = newBuffer();
         ArmsCoreCreatePayload.STREAM_CODEC.encode(buffer, original);
@@ -166,7 +166,7 @@ class ARMSNetworkCodecTest {
         // 客户端应保持默认值而不是抛异常
         ArmsCoreCreatePayload original = new ArmsCoreCreatePayload(
                 ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse("minecraft:overworld")),
-                UUID.randomUUID(), ArmsCoreCreatePayload.NO_HOST_ENTITY, null);
+                UUID.randomUUID(), ArmsCoreCreatePayload.NO_HOST_ENTITY, null, new net.minecraft.nbt.CompoundTag());
 
         RegistryFriendlyByteBuf buffer = newBuffer();
         ArmsCoreCreatePayload.STREAM_CODEC.encode(buffer, original);
@@ -174,6 +174,19 @@ class ARMSNetworkCodecTest {
 
         assertNull(decoded.initial());
         assertEquals(ArmsCoreCreatePayload.NO_HOST_ENTITY, decoded.hostEntityId());
+    }
+
+    @Test
+    void createPayloadCarriesBodyCompositionAfterSyncedFields() {
+        var body = new net.minecraft.nbt.CompoundTag();
+        body.putString("name", "body composition");
+        var original = new ArmsCoreCreatePayload(Level.OVERWORLD, UUID.randomUUID(), 17, null, body);
+        body.putString("name", "caller changed");
+        RegistryFriendlyByteBuf buffer = newBuffer();
+        ArmsCoreCreatePayload.STREAM_CODEC.encode(buffer, original);
+        var decoded = ArmsCoreCreatePayload.STREAM_CODEC.decode(buffer);
+        assertEquals("body composition", decoded.body().getString("name"));
+        assertEquals(0, buffer.readableBytes());
     }
 
     @Test

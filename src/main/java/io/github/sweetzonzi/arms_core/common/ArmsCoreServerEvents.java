@@ -101,12 +101,15 @@ public final class ArmsCoreServerEvents {
     public static void onPostTick(LevelTickEvent.Post event) {
         Level level = event.getLevel();
         if (level.isClientSide()) {
+            MechaCoreRegistry.flushClientSnapshots(level);
             for (ArmsCore core : MechaCoreRegistry.all(level)) {
+                core.tickBody();
                 projectLogicState(core);
             }
             return;
         }
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
+            core.tickBody();
             syncToClients(core);
         }
     }

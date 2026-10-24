@@ -78,6 +78,8 @@ public record MechaCoreSyncPayload(
      * 未知 {@code coreId} 只计入告警，不抛异常（R9）。
      */
     public static void handle(MechaCoreSyncPayload payload, IPayloadContext context) {
+        // 核心定义尚未就绪时保留增量，客户端构造完成后统一应用。
+        if (MechaCoreRegistry.queuePendingSync(context.player().level(), payload.coreId(), payload.dirty())) return;
         ArmsCore core = MechaCoreRegistry.get(context.player().level(), payload.coreId());
         if (core == null) {
             MechaCoreRegistry.reportUnknownSync(payload.coreId());
