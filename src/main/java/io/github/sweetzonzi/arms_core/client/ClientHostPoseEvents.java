@@ -48,11 +48,23 @@ public final class ClientHostPoseEvents {
     }
 
     /**
-     * 按 {@code DATA_POS} 摆放本地玩家实体。
+     * 按呈现位姿摆放本地玩家实体。
      * <p>
      * 位置换算与宿主实现共用同一条约定：{@code DATA_POS} 是<b>胶囊中心</b>，而实体位置字段的语义是
      * 包围盒底面，因此这里要减 {@link MechaBodyPreset#HALF_TOTAL}。把胶囊中心直接写进去会让客户端
      * 玩家比服务端高出一个 {@code HALF_TOTAL}。
+     * <p>
+     * <b>取的是呈现区间的右端，不是 {@code DATA_POS} 本身。</b> 同步按 20 Hz 到、客户端按 20 Hz 走，
+     * 两者相位不同步；直接把 {@code DATA_POS} 写进实体，实体的 {@code xo/x} 这一对就会在某些 tick
+     * 上相等（压扁，画面冻结）、在另一些 tick 上跨两个样本（速度翻倍）。呈现缓冲
+     * （{@code common/ArmsCore.java#presentationPose}）按客户端 tick 推进样对，实体与模型因此
+     * 走同一条时间轴，代价是固定的一至两个 tick 呈现延迟。
+     * <p>
+     * <b>推进必须早于本方法。</b> 推进点在 {@code client/MechaPoseDelayTick.java#onClientTickPre}
+     * （{@code ClientTickEvent.Pre}），位于实体 tick 之前，因此本相位读到的右端就是本 tick 的那一份；
+     * 渲染期按 {@code partialTick} 在 {@code xo}（本方法上一次写入的值）与本次写入之间插值，与子零件
+     * 调试框读的那一对样完全一致。若推进挪到实体 tick 之后，本方法只会读到上一 tick 的右端，
+     * 模型整体比子零件调试框落后一份样本，行走时相差 0.3 m 上下。
      * <p>
      * 写位置后必须把速度清为零矢量：{@code Entity#setPos} 自己不清 {@code deltaMovement}，而下一
      * tick 的 {@code aiStep} / {@code travel} 会按客户端自己的速度再把实体推走。原版处理
@@ -69,16 +81,23 @@ public final class ClientHostPoseEvents {
      * {@code yRot} 上行，服务端 {@code MechaControl#applyFacing} 把它绝对赋值给 KCC 的
      * {@code currentYaw}，{@code DATA_YAW} 只是这个值的回显。若把回显写回 {@code yRot}，就形成
      * 「本机视角 → 上行 → 服务端 → 下行 → 本机视角」的滞后反馈环，表现为视角持续抖动。
-     * {@code DATA_YAW} 的消费者是渲染路径（{@code client/ClientMechaAnchor.java} 的插值，以及
+     * {@code DATA_YAW} 的消费者是渲染路径（{@code common/ArmsCore.java#lerpPresentationYaw}，以及
      * {@code client/MechaPlayerRenderer.java} 的调试参考物），不是玩家实体的朝向字段。
      */
     private static void applySyncedPose(LocalPlayer player, ArmsCore core) {
-        org.joml.Vector3f synced = core.getSyncedData().get(ArmsCore.DATA_POS);
+        // 复用缓冲而不是直接持有 DataItem 里的对象：lerpPresentationPosition 会覆写 dest
+        org.joml.Vector3f target = new org.joml.Vector3f();
+        // 取区间右端（partialTick = 1）：实体自己的 xo 是上一 tick 写入的值，渲染时
+        // lerp(xo, x, partialTick) 因此恰好等于呈现区间的插值结果，实体与模型没有帧内错位
+        if (!core.lerpPresentationPosition(1f, target)) {
+            // 首包之前（还凑不出呈现样本）按同步值摆放，一次性的落地偏差，之后由缓冲接管
+            target.set(core.getSyncedData().get(ArmsCore.DATA_POS));
+        }
 
         HostPositionIntake intake = core.getPositionIntake();
         int outerDepth = intake.enterScope(HostPositionIntake.SCOPE_RUNTIME_WRITEBACK);
         try {
-            player.setPos(synced.x, synced.y - MechaBodyPreset.HALF_TOTAL, synced.z);
+            player.setPos(target.x, target.y - MechaBodyPreset.HALF_TOTAL, target.z);
         } finally {
             intake.exitScope(outerDepth);
         }

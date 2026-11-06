@@ -1,7 +1,6 @@
 package io.github.sweetzonzi.arms_core.client;
 
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
-import net.minecraft.core.Rotations;
 import org.joml.Vector3f;
 
 /**
@@ -10,8 +9,7 @@ import org.joml.Vector3f;
  * 客户端不为 {@link ArmsCore} 重建任何物理体，只按同步来的 {@code DATA_POS} / {@code DATA_YAW}
  * 摆放一个非实体锚点（计划 D18、§3.13）。本类负责两件事：
  * <ol>
- *   <li>把最近两次采样保存在 {@code from} / {@code to}，供渲染时线性插值——这是本期唯一的
- *       位姿平滑手段，不做外推（D12、§6）；</li>
+ *   <li>把最近两次采样保存在 {@code from} / {@code to}，供渲染时线性插值；</li>
  *   <li>识别「跳跃式变化」（首采样、传送、长时间无包），此时直接跳变而不插值，
  *       避免锚点跨越地图拖尾（阶段 3.3）。</li>
  * </ol>
@@ -19,6 +17,12 @@ import org.joml.Vector3f;
  * 插值的自变量是「距最近一次采样过了多少 tick」而不是「距最近一次渲染过了多少 tick」。
  * 同步按 20 Hz 主线程 tick 发出，渲染帧率远高于 20，因此相邻两帧的采样序号通常相同，
  * 插值进度由帧内的 {@code partialTick} 提供连续变化。
+ * <p>
+ * <b>本类采样的是呈现位姿，不是网络真值。</b> 两个值的差额是呈现缓冲的固定延迟
+ * （{@code common/ArmsCore.java#presentationPose}，一至两个 tick），因此锚点与模型走同一条时间轴。
+ * 它当前唯一的消费者是 {@link MechaAnimatable#getWorldPositionMatrix(Number)}；本模组画机体走的是
+ * 宿主实体的渲染原点（{@code client/MechaPlayerRenderer.java#onRenderPlayerPre}），那条路径不经过本类，
+ * 而在用的呈现位姿由 {@code client/ClientHostPoseEvents.java#applySyncedPose} 写到宿主实体上。
  * <p>
  * 线程模型：全部字段只在客户端主线程读写（同步数据在主线程应用，渲染在同一线程）。
  * 渲染期读到的采样即当前采样，不跨线程。
@@ -147,11 +151,26 @@ public final class ClientMechaAnchor {
         interpolatable = false;
     }
 
-    /** 从同步数据构造一次采样并写入本锚点。 */
+    /**
+     * 从同步数据构造一次采样并写入本锚点。
+     * <p>
+     * 取的是<b>呈现区间的右端</b>而不是 {@code DATA_POS} 本身：呈现缓冲
+     * （{@code common/ArmsCore.java#lerpPresentationPosition}）按客户端 tick 前进，右端因此
+     * 每 tick 恰好前进一个样本，本类的 {@code acceptInterval} 恒为 1、{@code alpha} 退化为
+     * {@code partialTick}，与渲染侧的插值同一条时间轴。缓冲还没有样本时（首包之前、刚入世）
+     * 退回同步真值，避免锚点停在原点。
+     */
     public void acceptFromSyncedData(ArmsCore core, long clientTick) {
-        Vector3f position = core.getSyncedData().get(ArmsCore.DATA_POS);
-        Rotations rotations = core.getSyncedData().get(ArmsCore.DATA_YAW);
-        accept(position, rotations.getY(), clientTick);
+        Vector3f position = new Vector3f();
+        float yaw;
+        if (core.lerpPresentationPosition(1f, position)) {
+            yaw = core.lerpPresentationYaw(1f);
+        } else {
+            Vector3f synced = core.getSyncedData().get(ArmsCore.DATA_POS);
+            position.set(synced);
+            yaw = core.getSyncedData().get(ArmsCore.DATA_YAW).getY();
+        }
+        accept(position, yaw, clientTick);
     }
 
     private static float wrapDegrees(float degrees) {

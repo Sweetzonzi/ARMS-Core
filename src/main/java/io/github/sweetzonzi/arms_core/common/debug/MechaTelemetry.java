@@ -58,9 +58,23 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>列定义见 {@link #HEADER}。{@code role} 的取值：{@code controller}（控制器刚体）、
  * {@code anchor}（运动学锚点，仅服务端物理通道）、{@code sub}（核心 subPart 刚体）、
- * {@code sync_ctrl}（同步值）、{@code host}（宿主实体）、{@code sub_old}（渲染插值的起点）。
- * 速度列：控制器与核心刚体读刚体本身；锚点写 {@code ArmsBodyPhysics} 保存的本步目标速度
- * （运动学刚体的速度读不回来）；客户端 subPart 也是运动学刚体，写 {@code NaN}。</p>
+ * {@code sync_ctrl}（同步值）、{@code host}（宿主实体，两端都记：服务端是回写后的实体位置，客户端是
+ * 机体模型被画在的那个渲染原点）、{@code sub_old}（渲染插值的起点）、
+ * {@code sub_raw}（核心 subPart 自己的同步值，即它的网络真值）、
+ * {@code pres_ctrl}（控制器呈现缓冲的右端，客户端模型锚点的取样源）。速度列：控制器与核心刚体读刚体本身；
+ * 锚点写 {@code ArmsBodyPhysics} 保存的本步目标速度（运动学刚体的速度读不回来）；客户端 subPart 也是
+ * 运动学刚体，写 {@code NaN}。</p>
+ *
+ * <p><b>{@code sub} 与 {@code pres_ctrl} 的附加列是缓冲计数。</b>两者的 {@code extra2}{@code extra3}{@code extra4}
+ * 依次是「累计停住 tick 数 / 累计丢弃样本数 / 当前余量」，来源是
+ * {@code ../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/DestroyableObject.java#presentationStarvedTicks}
+ * 与 {@code common/ArmsCore.java#presentationStarvedTicks}。三个数回答的是同一个问题：停帧究竟是供给的样本
+ * 少于播放的 tick（停住数一直涨、余量始终 0），还是积压后的追赶（丢弃数上涨）。服务端没有呈现缓冲，
+ * 这些列在服务端写 {@code 0/0/-1}。</p>
+ *
+ * <p><b>{@code host} 的附加列是 {@code xo/yo/zo}。</b>它们与主位置列一起构成渲染期实际使用的那一对
+ * {@code lerp(xo, x, partialTick)}，用来核对模型渲染原点与子零件调试框是否插值在同样的两份样本上
+ * （见 {@link #appendHost}）。</p>
  *
  * @author Sweetzonzi
  */
@@ -197,6 +211,7 @@ public final class MechaTelemetry {
         long seq = session.mainSeq.incrementAndGet();
 
         appendSyncedController(session, core, wall, nanos, tick, seq);
+        appendSubPartRaw(session, core, wall, nanos, tick, seq);
         appendHost(session, core, wall, nanos, tick, seq);
     }
 
@@ -205,6 +220,9 @@ public final class MechaTelemetry {
      *
      * <p>客户端没有控制器刚体，也没有约束锚点：控制器一侧能拿到的是同步后的 {@code DATA_POS} /
      * {@code DATA_VEL}，插值一侧是 {@code SubPart.transform} / {@code oldTransform}。</p>
+     * <p>{@code host} 行在客户端记的是宿主实体（本机玩家）的位置，也就是机体模型被画在的那个渲染原点；
+     * 它与 {@code sub}（子零件调试框的取样端）指向同一份位姿的两个消费者，两者错位就是
+     * 「调试框跑到机体前面」。</p>
      */
     public static void onClientMainTick(ArmsCore core) {
         Session session = clientSession;
@@ -216,8 +234,11 @@ public final class MechaTelemetry {
         long seq = session.mainSeq.incrementAndGet();
 
         appendSyncedController(session, core, wall, nanos, tick, seq);
+        appendPresentation(session, core, wall, nanos, tick, seq);
+        appendSubPartRaw(session, core, wall, nanos, tick, seq);
         appendPartTransforms(session, core, wall, nanos, tick, seq, "sub", false);
         appendPartTransforms(session, core, wall, nanos, tick, seq, "sub_old", true);
+        appendHost(session, core, wall, nanos, tick, seq);
     }
 
     /** 主线程：把服务端两条通道的队列写盘。 */
@@ -293,6 +314,13 @@ public final class MechaTelemetry {
                 data.get(ArmsCore.DATA_VERTICAL));
     }
 
+    /**
+     * 宿主实体行：位置是实体当前坐标，附加列写 {@code xo/yo/zo}（上一 tick 的坐标）。
+     * <p>
+     * 两个值合起来就是渲染期实际用的那一对：{@code lerp(xo, x, partialTick)}。客户端据此可以核对
+     * 「模型渲染原点的插值区间」与 {@code sub}/{@code sub_old} 给出的「子零件调试框的插值区间」
+     * 是否指向同两份样本。
+     */
     private static void appendHost(Session session, ArmsCore core, long wall, long nanos, long tick, long seq) {
         IArmsHost host = core.getHost();
         if (host == null) return;
@@ -301,7 +329,8 @@ public final class MechaTelemetry {
         append(session.main, wall, nanos, tick, seq, session.side, "main", core.getAssemblyId(),
                 "host", "entity",
                 new Vector3f((float) entity.getX(), (float) entity.getY(), (float) entity.getZ()),
-                null, null, null, "", "", "", "");
+                null, null, null,
+                format(entity.xo), format(entity.yo), format(entity.zo), "");
     }
 
     private static void appendPartTransforms(Session session, ArmsCore core, long wall, long nanos,
@@ -309,12 +338,56 @@ public final class MechaTelemetry {
         var corePart = core.getCorePart();
         if (corePart == null) return;
         for (Map.Entry<String, SubPart> entry : corePart.subParts.entrySet()) {
-            Transform transform = old ? entry.getValue().oldTransform : entry.getValue().transform;
+            SubPart subPart = entry.getValue();
+            Transform transform = old ? subPart.oldTransform : subPart.transform;
             if (transform == null) continue;
             append(session.main, wall, nanos, tick, seq, session.side, "main", core.getAssemblyId(),
                     role, entry.getKey(), transform.getTranslation(), transform.getRotation(),
-                    null, null, old ? "oldTransform" : "transform", "", "", "");
+                    null, null, old ? "oldTransform" : "transform",
+                    old ? "" : Long.toString(subPart.presentationStarvedTicks()),
+                    old ? "" : Long.toString(subPart.presentationSkippedSamples()),
+                    old ? "" : Long.toString(subPart.presentationReserve()));
         }
+    }
+
+    /**
+     * 核心 subPart 自己的同步值，也就是它这条通道的网络真值。
+     * <p>
+     * 与 {@code sub}（呈现位姿）和 {@code sync_ctrl}（控制器的同步值）合起来，可以分别算出
+     * 「子零件通道的样本供给」与「控制器通道的样本供给」，从而判定呈现缓冲的停帧是不是供给不足。
+     * 服务端同一行记的是即将发给客户端的那一份。
+     */
+    private static void appendSubPartRaw(Session session, ArmsCore core, long wall, long nanos,
+                                         long tick, long seq) {
+        var corePart = core.getCorePart();
+        if (corePart == null) return;
+        for (Map.Entry<String, SubPart> entry : corePart.subParts.entrySet()) {
+            SubPart subPart = entry.getValue();
+            append(session.main, wall, nanos, tick, seq, session.side, "main", core.getAssemblyId(),
+                    "sub_raw", entry.getKey(), subPart.getPosition(), subPart.getRotation(),
+                    null, null, "DATA_POS", "", "", "");
+        }
+    }
+
+    /**
+     * 控制器呈现缓冲的右端，也就是客户端模型锚点（{@code client/ClientMechaAnchor.java#acceptFromSyncedData}）
+     * 每 tick 取到的那一点，外加该缓冲的三个计数。
+     * <p>
+     * 与 {@code sub} 行对照即可看出「模型」与「SubPart 调试框」这两条呈现时间轴各自停在哪里：
+     * 两条轴的滞后期望相同，实际偏移随各自的停帧节奏摆动。
+     */
+    private static void appendPresentation(Session session, ArmsCore core, long wall, long nanos,
+                                           long tick, long seq) {
+        org.joml.Vector3f position = new org.joml.Vector3f();
+        if (!core.lerpPresentationPosition(1f, position)) return;
+        double halfYaw = Math.toRadians(core.lerpPresentationYaw(1f)) * 0.5;
+        Quaternion rotation = new Quaternion(0f, (float) Math.sin(halfYaw), 0f, (float) Math.cos(halfYaw));
+        append(session.main, wall, nanos, tick, seq, session.side, "main", core.getAssemblyId(),
+                "pres_ctrl", "DATA",
+                new Vector3f(position.x, position.y, position.z), rotation, null, null,
+                Long.toString(core.presentationStarvedTicks()),
+                Long.toString(core.presentationSkippedSamples()),
+                Long.toString(core.presentationReserve()), "");
     }
 
     /**

@@ -3,6 +3,7 @@ package io.github.sweetzonzi.arms_core.common;
 import cn.solarmoon.spark_core.api.SparkLevel;
 import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
 import cn.solarmoon.spark_core.util.PPhase;
+import com.jme3.math.Quaternion;
 import com.jme3.math.Transform;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
@@ -20,6 +21,7 @@ import io.github.sweetzonzi.arms_core.common.part.BodyPart;
 import io.github.sweetzonzi.arms_core.common.part.BodyPartType;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
 import io.github.sweetzonzi.machine_max.common.mech.ObjectManager;
+import io.github.sweetzonzi.machine_max.common.mech.PoseDelayBuffer;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
@@ -37,6 +39,7 @@ import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SyncedDataHolder;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.NotNull;
@@ -176,6 +179,24 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 同步数据容器（服务端为唯一写入方，客户端只读） */
     @Getter
     private final SynchedEntityData syncedData;
+
+    /**
+     * 客户端呈现位姿的抖动缓冲；服务端为 {@code null}。
+     * <p>
+     * 服务端按 20 Hz 发 {@link #DATA_POS} / {@link #DATA_YAW}，客户端也按 20 Hz 走 tick，
+     * 两者相位不同步：某些 tick 里一个包都没有、另一些 tick 里挤进两个。呈现位姿若直接取
+     * {@code DATA_POS}，就会出现「冻结一帧 + 下一帧补两倍」的拍频，表现是角色与相机一起顿。
+     * 本缓冲让呈现位姿按<b>客户端 tick</b>前进、与到达事件无关；规则与三档余量的取舍见
+     * {@link PoseDelayBuffer}。
+     * <p>
+     * 消费者只有两个：客户端摆放本地玩家实体的
+     * {@code client/ClientHostPoseEvents.java#applySyncedPose}，以及渲染侧的
+     * {@code client/ClientMechaAnchor.java}。
+     */
+    private final @Nullable PoseDelayBuffer presentationPose;
+
+    /** 稳态余量（样本数）；{@code 1} 即呈现落后最新样本 1～2 tick。与 {@code DestroyableObject#PRESENTATION_SPARE} 取同一个值 */
+    public static final int PRESENTATION_SPARE = 1;
 
     /**
      * 逻辑层状态的不可变快照，物理线程每步发布、主线程读取。
@@ -324,6 +345,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             this.mechaControl = new MechaControl(this, null);
         }
         this.syncedData = buildSyncedData(this);
+        // 呈现缓冲只在客户端分配：服务端没有呈现路径，{@code DATA_POS} 在那边就是权威值本身
+        this.presentationPose = level.isClientSide()
+                ? new PoseDelayBuffer(PRESENTATION_SPARE, PoseDelayBuffer.DEFAULT_SNAP_DISTANCE)
+                : null;
         // 放在最后：HostPositionIntake 的判据会读 level 与 authoritative，两者此时都已就位。
         // 不以字段初始化器写在声明处，那样会在 level 赋值之前构造它
         this.positionIntake = new HostPositionIntake(this);
@@ -417,11 +442,134 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /**
      * 客户端处理整批同步数据。
      * <p>
-     * 可视锚点由渲染路径按需读取 {@link #DATA_POS} / {@link #DATA_YAW}，无需在此缓存，
-     * 因此本方法不做处理；保留它是为了显式表达「客户端不把同步数据推回物理体」。
+     * 位姿样本从这里入队：一个包一个样本，样本序号因此就是服务端 tick 序号的镜像，呈现缓冲
+     * （{@link #presentationPose}）才能按「每 tick 一个样本」的节奏播放。整批回调而不是单字段回调，
+     * 是因为一次应用里 {@code DATA_POS} 与 {@code DATA_YAW} 会各自触发一次单字段回调，
+     * 按后者入队会多出一个「新位置 + 旧朝向」的幻影样本；包内两者都没有时则不入队，
+     * 否则只是把一个与上一个完全相同的样本再压一遍，白拉慢一帧。
+     * <p>
+     * 本方法仍不把同步数据推回物理体（客户端没有控制器刚体）。
      */
     @Override
     public void onSyncedDataUpdated(@NotNull List<SynchedEntityData.DataValue<?>> dataValues) {
+        PoseDelayBuffer buffer = this.presentationPose;
+        if (buffer == null) return;
+        int positionId = DATA_POS.id();
+        int yawId = DATA_YAW.id();
+        for (SynchedEntityData.DataValue<?> value : dataValues) {
+            int id = value.id();
+            if (id == positionId || id == yawId) {
+                org.joml.Vector3f position = getSyncedData().get(DATA_POS);
+                float yaw = getSyncedData().get(DATA_YAW).getY();
+                buffer.push(new Vector3f(position.x, position.y, position.z), yawQuaternion(yaw));
+                return;
+            }
+        }
+    }
+
+    // ==========================================
+    // 呈现位姿（客户端）
+    // ==========================================
+
+    /**
+     * 把一个客户端 tick 的时间推进到呈现位姿上。
+     * <p>
+     * <b>调用线程：客户端主线程，每 tick 恰好一次</b>，由
+     * {@code client/MechaPoseDelayTick.java#onClientTickPre} 在 {@code ClientTickEvent.Pre} 扇出。
+     * <p>
+     * <b>相位是硬约束，必须早于实体 tick。</b> 本对样本有两个消费者：{@code PlayerTickEvent.Post}
+     * 把宿主实体摆到右端（机体模型画在宿主实体的渲染原点上），渲染期按 {@code partialTick} 在两端之间
+     * 插值。放到本 tick 更晚的相位（例如 {@code LevelTickEvent.Post}），宿主实体那一步读到的就是上一
+     * tick 推进出来的右端，模型的样对整体比子零件调试框落后一份样本，行走时相差 0.3 m 上下。
+     * <p>
+     * 服务端是 no-op。
+     */
+    public void advancePresentationPose() {
+        PoseDelayBuffer buffer = this.presentationPose;
+        if (buffer == null) return;
+        buffer.advance();
+    }
+
+    /**
+     * 取呈现区间的插值位置（控制器碰撞体中心，世界坐标）。
+     *
+     * @param partialTick 渲染部分 tick，{@code [0, 1)}；取 {@code 1f} 即区间右端
+     * @param dest        输出（{@code org.joml.Vector3f}），避免渲染期分配
+     * @return {@code false} 表示还没有样本，{@code dest} 未被写入
+     */
+    public boolean lerpPresentationPosition(float partialTick, org.joml.@NotNull Vector3f dest) {
+        PoseDelayBuffer buffer = this.presentationPose;
+        if (buffer == null || !buffer.hasSample()) return false;
+        Vector3f from = buffer.left().getTranslation();
+        Vector3f to = buffer.right().getTranslation();
+        dest.set(from.x + (to.x - from.x) * partialTick,
+                from.y + (to.y - from.y) * partialTick,
+                from.z + (to.z - from.z) * partialTick);
+        return true;
+    }
+
+    /**
+     * 取呈现区间的插值朝向（度，归约到 {@code [-180, 180)}）。
+     * <p>
+     * 走最短角路径：样本里的旋转是「只由偏航构造的四元数」，两端各自解出偏航后按
+     * {@link Mth#rotLerp} 插值，因此 {@code 350° → 10°} 走 {@code +20°} 而不是绕一整圈。
+     *
+     * @param partialTick 渲染部分 tick，{@code [0, 1)}
+     * @return 朝向（度）；还没有样本时退化为同步值本身
+     */
+    public float lerpPresentationYaw(float partialTick) {
+        PoseDelayBuffer buffer = this.presentationPose;
+        if (buffer == null || !buffer.hasSample()) {
+            return getSyncedData().get(DATA_YAW).getY();
+        }
+        return Mth.wrapDegrees(Mth.rotLerp(partialTick,
+                yawDegrees(buffer.left().getRotation()),
+                yawDegrees(buffer.right().getRotation())));
+    }
+
+    /**
+     * 呈现缓冲累计停住的 tick 数：余量耗尽、这一 tick 没有前进。
+     * <p>
+     * 诊断用（录制进 CSV 的附加列）。它与 {@link #presentationReserve()} 一起回答「停帧是供给不足
+     * 还是播放太快」：停住数持续增长而余量始终为 0，就是供给的样本比播放的 tick 少。
+     *
+     * @return 累计次数；服务端或缓冲未建立时为 0
+     */
+    public long presentationStarvedTicks() {
+        PoseDelayBuffer buffer = this.presentationPose;
+        return buffer == null ? 0L : buffer.starvedTicks();
+    }
+
+    /**
+     * 呈现缓冲累计丢掉的样本数：积压超过 {@code spare + 2} 时向前跳、把延迟限回稳态值的累计量。
+     *
+     * @return 累计样本数；服务端或缓冲未建立时为 0
+     */
+    public long presentationSkippedSamples() {
+        PoseDelayBuffer buffer = this.presentationPose;
+        return buffer == null ? 0L : buffer.skippedSamples();
+    }
+
+    /**
+     * 当前余量（样本数）：除了呈现区间右端之外还留着的样本数，{@code 0} 表示下一 tick 就会停住。
+     *
+     * @return 余量；服务端或缓冲未建立时为 {@code -1}
+     */
+    public long presentationReserve() {
+        PoseDelayBuffer buffer = this.presentationPose;
+        return buffer == null ? -1L : buffer.reserve();
+    }
+
+    /** 把偏航（度）打包成只绕世界 Y 轴的四元数。 */
+    private static Quaternion yawQuaternion(float degrees) {
+        // 只给 Y 分量：x = z = 0 时 fromAngles 就是一次纯偏航旋转，与 yawDegrees 的取法互为逆
+        return new Quaternion().fromAngles(0f, (float) Math.toRadians(degrees), 0f);
+    }
+
+    /** 从只绕世界 Y 轴的四元数解回偏航（度）。 */
+    private static float yawDegrees(Quaternion rotation) {
+        // 纯偏航四元数：y = sin(θ/2)、w = cos(θ/2)，θ ∈ (-π, π]
+        return (float) Math.toDegrees(2.0 * Math.atan2(rotation.getY(), rotation.getW()));
     }
 
     // ==========================================

@@ -1,6 +1,7 @@
 package io.github.sweetzonzi.arms_core.common;
 
 import cn.solarmoon.spark_core.event.PhysicsLevelTickEvent;
+import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
@@ -27,6 +28,7 @@ import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -97,6 +99,9 @@ public final class ArmsCoreServerEvents {
      * <p>
      * 客户端：把同步数据里的四项投影进本地变量容器（{@link #projectLogicState(ArmsCore)}）。
      * 这一遍是客户端唯一的逻辑状态来源，也是表现层能按姿态选片的前提。
+     * <p>
+     * 呈现位姿的推进<b>不在</b>本相位：它必须早于实体 tick，见
+     * {@code client/MechaPoseDelayTick.java#onClientTickPre}。
      */
     @SubscribeEvent(priority = EventPriority.NORMAL)
     public static void onPostTick(LevelTickEvent.Post event) {
@@ -148,9 +153,21 @@ public final class ArmsCoreServerEvents {
     /**
      * 把一个装配体的当前状态写进同步容器并在有脏数据时广播。
      * <p>
-     * 位姿、速度、朝向三项在主线程直接读 KCC —— KCC 是幽灵体，其世界变换由 {@code playerStep}
-     * 末尾一次性写入，并发读取拿到的是某一次完整步进的结果；这与 Machine-Max
-     * {@code DestroyableRigidObject.postTick()} 已接受的竞态同类（计划 §3.5、R4）。
+     * <b>{@code DATA_POS} 取每 tick 的位姿快照，不读实时刚体。</b> 物理步进是异步的
+     * （{@code PhysicsLevel#requestStep} 在主线程 {@code LevelTickEvent.Pre} 发请求，物理线程随后
+     * 跑完 {@code dynamicRepeat} 个子步），而本方法是同一 tick 的 {@code Post} 相位，此刻那一批
+     * 子步可能刚起步、跑到一半、或已经跑完。直接读实时刚体就会按「本 tick 已经走了几个子步」取样，
+     * 于是相邻 tick 的位移在半个子步到一个半子步之间摆动：稳态行走时实测每 tick 位移的
+     * 变异系数 0.40、相邻 tick 的一阶自相关 0.27，而真实轨迹是 0.26 / 0.99。
+     * 快照由 {@code requestStep} 在发请求之前写入（{@code stateOf(body).update()}），一批子步对应一份，
+     * 因此它永远是「一个完整批次之后」的位姿，与物理线程自己看到的读数逐 tick 一致。
+     * <p>
+     * 与 Machine-Max 同源是这条规则的第二个理由：{@code DestroyableRigidObject#postTick()} 也读
+     * {@code stateOf(body).getTransform()}。两个通道取同一相位，机上各零件的相对位置才是常量；
+     * 只要一边读实时刚体，锚点与子零件就会各带一份相位误差，表现为互相超前一两个 tick。
+     * <p>
+     * 速度与朝向仍读实时刚体：它们不进入插值轨道，相位误差只会让速度值多一层噪声，
+     * 而 {@code DATA_VEL} 的消费者（MoLang 运动量、客户端运动学镜像的速度）不关心这个。
      * <p>
      * 回写宿主实体与写包同相位，使同步出去的 {@code DATA_POS} 与宿主实体位置取自同一次采样。
      * <b>宿主为 {@code null} 时只跳过回写两步，写包照常执行</b>：客户端可视锚点依赖
@@ -169,7 +186,7 @@ public final class ArmsCoreServerEvents {
 
         // 位姿与速度：每次读都取新对象，不能把复用缓冲直接交给 set
         // （DataItem.setValue 直接存引用，复用会让已入队的旧值被改写）
-        Vector3f bodyPosition = body.getPhysicsLocation(null);
+        Vector3f bodyPosition = sampleSnapshotPosition(body);
         Vector3f velocity = body.getLinearVelocity(null);
 
         // pin：外部位移被采纳之后、warp 真正落地之前，DATA_POS 取 pin 的目标而不是刚体位置。
@@ -200,11 +217,30 @@ public final class ArmsCoreServerEvents {
             core.getSyncedData().set(ArmsCore.DATA_ENERGY, state.energy());
         }
 
-        List<SynchedEntityData.DataValue<?>> dirty = core.getSyncedData().packDirty();
-        if (dirty != null && !dirty.isEmpty()) {
-            PacketDistributor.sendToPlayersInDimension((ServerLevel) core.getLevel(),
-                    new MechaCoreSyncPayload(core.getAssemblyId(), dirty));
+        // 位姿心跳：这条包同时喂客户端的呈现缓冲，而缓冲按「每 tick 一个样本」播放，
+        // 样本只认「包里出现过 DATA_POS 或 DATA_YAW」，不认值有没有变（见
+        // `common/ArmsCore.java#onSyncedDataUpdated(List)`）。判断因此必须落在键上：
+        // 按「脏列表是否为空」不够——只有速度或逻辑项在变的 tick 会发出包、却不含位姿，
+        // 客户端不入队样本，缓冲挨饿；挨饿会把它已积累的呈现滞后吃掉一格且不再补回
+        // （见 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/PoseDelayBuffer.java#advance`），
+        // 于是模型锚点与机体的呈现滞后逐渐分叉。
+        SynchedEntityData syncedData = core.getSyncedData();
+        List<SynchedEntityData.DataValue<?>> dirty = syncedData.packDirty();
+        List<SynchedEntityData.DataValue<?>> payload =
+                dirty == null ? new ArrayList<>(2) : new ArrayList<>(dirty);
+        int positionId = ArmsCore.DATA_POS.id();
+        int yawId = ArmsCore.DATA_YAW.id();
+        boolean hasPosition = false;
+        boolean hasYaw = false;
+        for (SynchedEntityData.DataValue<?> value : payload) {
+            int id = value.id();
+            if (id == positionId) hasPosition = true;
+            else if (id == yawId) hasYaw = true;
         }
+        if (!hasPosition) payload.add(SynchedEntityData.DataValue.create(ArmsCore.DATA_POS, syncedData.get(ArmsCore.DATA_POS)));
+        if (!hasYaw) payload.add(SynchedEntityData.DataValue.create(ArmsCore.DATA_YAW, syncedData.get(ArmsCore.DATA_YAW)));
+        PacketDistributor.sendToPlayersInDimension((ServerLevel) core.getLevel(),
+                new MechaCoreSyncPayload(core.getAssemblyId(), payload));
 
         // pin 的生命周期收尾：warp 已落地（或超预算）就解除，下一 tick 起 DATA_POS 回到 KCC 位置
         releaseLandedPin(core, pin);
@@ -251,6 +287,27 @@ public final class ArmsCoreServerEvents {
 
     private static org.joml.Vector3f toJoml(Vector3f source) {
         return new org.joml.Vector3f(source.x, source.y, source.z);
+    }
+
+    /**
+     * 取控制器刚体的「每 tick 一份」位姿快照（世界坐标，刚体原点），取不到时退回实时刚体。
+     * <p>
+     * 快照由 {@code PhysicsLevel#requestStep} 在每个 tick 发物理步进请求之前写入，一份快照对应一个
+     * 完整批次；实时刚体则可能在批次中途被读到。取舍的成因与实测见
+     * {@link #syncToClients(ArmsCore)} 的注释。
+     * <p>
+     * 退回实时刚体的条件是「刚体不在物理世界里」：此时 {@code stateOf} 的那份快照停留在刚体入世之前的
+     * 初值上、不会随 tick 前进，继续取它会让 {@code DATA_POS} 冻在出生位姿。
+     * <p>
+     * 返回新对象：快照里的 {@code Transform} 下一个 tick 会被整体换掉，但调用方会把结果交给
+     * {@code SynchedEntityData}，那里存的是引用，因此不能把内部缓冲交出去。
+     *
+     * @param body 控制器刚体
+     * @return 世界坐标下的刚体原点（胶囊中心），调用方可安全持有
+     */
+    private static Vector3f sampleSnapshotPosition(MechaCharacter body) {
+        if (!body.isInWorld()) return body.getPhysicsLocation(null);
+        return PhysicsBodyExtensionKt.stateOf(body).getTransform().getTranslation();
     }
 
     /**
