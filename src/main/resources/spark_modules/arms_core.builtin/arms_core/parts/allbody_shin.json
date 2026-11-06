@@ -1,0 +1,61 @@
+{
+  "type": "arms_core:body",
+  "variants": {
+    "left": {
+      "model": "arms_core:allbody_left_shin",
+      "textures": "arms_core:textures/part/allbody.png",
+      "tags": [
+        "arms_core:allbody/shin",
+        "arms_core:allbody/left"
+      ],
+      "sub_parts": {
+        "body": {
+          "start_bone": "LeftLowerLeg",
+          "mass": 5.0,
+          "hit_boxes": {
+            "left_shin_hit_shin": {
+              "type": "box"
+            },
+            "left_shin_hit_foot": {
+              "type": "box"
+            }
+          },
+          "connectors": {
+            "left_knee_plug": {
+              "locator": "left_knee_plug",
+              "definition": "arms_core:allbody_body_plug"
+            }
+          }
+        }
+      }
+    },
+    "right": {
+      "model": "arms_core:allbody_right_shin",
+      "textures": "arms_core:textures/part/allbody.png",
+      "tags": [
+        "arms_core:allbody/shin",
+        "arms_core:allbody/right"
+      ],
+      "sub_parts": {
+        "body": {
+          "start_bone": "RightLowerLeg",
+          "mass": 5.0,
+          "hit_boxes": {
+            "right_shin_hit_shin": {
+              "type": "box"
+            },
+            "right_shin_hit_foot": {
+              "type": "box"
+            }
+          },
+          "connectors": {
+            "right_knee_plug": {
+              "locator": "right_knee_plug",
+              "definition": "arms_core:allbody_body_plug"
+            }
+          }
+        }
+      }
+    }
+  }
+}

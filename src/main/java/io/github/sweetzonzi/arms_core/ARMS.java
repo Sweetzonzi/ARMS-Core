@@ -1,6 +1,8 @@
 package io.github.sweetzonzi.arms_core;
 
+import cn.solarmoon.spark_core.event.SparkPackageReaderRegisterEvent;
 import com.mojang.logging.LogUtils;
+import io.github.sweetzonzi.arms_core.common.part.ArmsFrameModule;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModContainer;
@@ -29,6 +31,8 @@ public class ARMS {
 
     public ARMS(IEventBus modEventBus, ModContainer modContainer) {
         modEventBus.addListener(this::commonSetup);
+        modEventBus.addListener((SparkPackageReaderRegisterEvent event) -> event.register(ArmsFrameModule.INSTANCE));
+        NeoForge.EVENT_BUS.addListener(ArmsFrameModule.INSTANCE::publish);
 
         // 注册事件总线（服务端事件如 ServerStarting）
         NeoForge.EVENT_BUS.register(this);

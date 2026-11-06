@@ -1,0 +1,63 @@
+{
+  "type": "arms_core:body",
+  "variants": {
+    "left": {
+      "model": "arms_core:allbody_left_thigh",
+      "textures": "arms_core:textures/part/allbody.png",
+      "tags": [
+        "arms_core:allbody/thigh",
+        "arms_core:allbody/left"
+      ],
+      "sub_parts": {
+        "body": {
+          "start_bone": "LeftLeg",
+          "mass": 7.0,
+          "hit_boxes": {
+            "left_thigh_hit_thigh": {
+              "type": "box"
+            }
+          },
+          "connectors": {
+            "left_knee_socket": {
+              "locator": "left_knee_socket",
+              "definition": "arms_core:allbody_knee_hinge"
+            },
+            "left_hip_plug": {
+              "locator": "left_hip_plug",
+              "definition": "arms_core:allbody_body_plug"
+            }
+          }
+        }
+      }
+    },
+    "right": {
+      "model": "arms_core:allbody_right_thigh",
+      "textures": "arms_core:textures/part/allbody.png",
+      "tags": [
+        "arms_core:allbody/thigh",
+        "arms_core:allbody/right"
+      ],
+      "sub_parts": {
+        "body": {
+          "start_bone": "RightLeg",
+          "mass": 7.0,
+          "hit_boxes": {
+            "right_thigh_hit_thigh": {
+              "type": "box"
+            }
+          },
+          "connectors": {
+            "right_knee_socket": {
+              "locator": "right_knee_socket",
+              "definition": "arms_core:allbody_knee_hinge"
+            },
+            "right_hip_plug": {
+              "locator": "right_hip_plug",
+              "definition": "arms_core:allbody_body_plug"
+            }
+          }
+        }
+      }
+    }
+  }
+}

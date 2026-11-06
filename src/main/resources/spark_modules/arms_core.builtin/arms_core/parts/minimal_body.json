@@ -1,3 +1,16 @@
 {
-  "type": "arms_core:body"
+  "type": "arms_core:body",
+  "variants": {
+    "model": "arms_core:minimal_body",
+    "sub_parts": {
+      "body": {
+        "start_bone": "body",
+        "mass": 1.0,
+        "block_collision": "false",
+        "hit_boxes": {
+          "body": { "type": "box" }
+        }
+      }
+    }
+  }
 }

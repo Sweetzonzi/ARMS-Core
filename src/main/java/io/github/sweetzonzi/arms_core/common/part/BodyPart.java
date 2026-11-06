@@ -4,6 +4,7 @@ import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
 import io.github.sweetzonzi.machine_max.common.mech.part.PartCreationContext;
 import io.github.sweetzonzi.machine_max.common.mech.part.PartRestoreMode;
+import lombok.Getter;
 import net.minecraft.world.level.Level;
 
 import java.util.UUID;
@@ -11,6 +12,8 @@ import java.util.UUID;
 /** 身体部件，持有真实子结构；占位阶段的刚体保持在物理世界之外。 */
 public final class BodyPart extends AbstractPart<BodyPartType> {
     public static final PartCreationContext CONTEXT = new PartCreationContext(false);
+    /** 结构资源是否已经释放；部件受损摧毁由 MM 的耐久判据负责。 */
+    @Getter
     private boolean disposed;
 
     /** 新建部件，身份独立，结构定义由同端实例共享。 */
@@ -36,7 +39,7 @@ public final class BodyPart extends AbstractPart<BodyPartType> {
     }
 
     @Override public BodyPartData save() { return new BodyPartData(this); }
-    @Override public boolean permitsSubsystemWork() { return !destroyed; }
+    @Override public boolean permitsSubsystemWork() { return !disposed && !isDestroyed(); }
     @Override public float durabilityLimitRatio() { return 1f; }
     @Override public float repairLimitRatio() { return 1f; }
     @Override public boolean permitsRepair() { return false; }
@@ -60,7 +63,6 @@ public final class BodyPart extends AbstractPart<BodyPartType> {
         // 公共刚体销毁路径只在入世分支清理 owner，这里补齐占位身体的分支。
         subParts.values().forEach(child -> PhysicsBodyExtensionKt.setOwner(child.body, null));
         disposed = true;
-        destroyed = true;
     }
 
     @Override public void addToLevel() {

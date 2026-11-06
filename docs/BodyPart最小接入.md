@@ -8,11 +8,11 @@
 
 本阶段不提供身体连接、关节驱动、身体伤害向宿主转发、身体属性字段或宿主 NBT 的自动持久化。`ArmsBodyData` 是部件组成快照，不包含宿主身份、角色控制器位姿或逻辑状态。
 
-## 2. 固定结构
+## 2. 默认调试结构
 
-内容包的 `arms_core/parts/minimal_body.json` 只填写 `type: arms_core:body`。`common/part/BodyPartType.java#CODEC` 根据加载上下文取得对应逻辑端的固定预设，不向作者暴露身体专属配置字段。
+内容包的 `arms_core/parts/minimal_body.json` 是默认调试部件。`common/part/BodyPartType.java#CODEC` 使用 MM 的变体格式解码，完整作者契约见 `docs/BodyPart与素体装配实施方案.md` §2。
 
-预设位于 `common/part/BodyPartPreset.java#variant`，客户端与服务端各缓存一份 VariantAttr，包含：
+默认调试变体由两端分别加载，包含：
 
 - 名为 `body` 的一个 SubPart；start_bone 与 HitBox 骨骼都为 `body`。
 - 正质量 1 kg、耐久 20、一个 box 形状；没有连接点、子系统和交互区。
@@ -22,7 +22,7 @@
 
 同端所有 BodyPart 共用 SubPartAttr 和碰撞形状；每个实例独立持有 SubPart、刚体、耐久和归属。这里的共享对象是结构定义，不是运行时子部件。缓存不提供资源重载失效机制。
 
-类型注册在 `ARMS.java#commonSetup` 的串行工作中执行，入口为 `common/part/BodyParts.java#register`。固定定义的构造依赖已加载的模型，不能在模组构造阶段创建预设。
+类型注册在 `ARMS.java#commonSetup` 的串行工作中执行，入口为 `common/part/BodyParts.java#register`。变体解码依赖已加载的模型，由内容包读取阶段构造。
 
 ## 3. 装配体与生命周期
 
@@ -55,6 +55,7 @@
 - `src/test/java/io/github/sweetzonzi/arms_core/common/part/ArmsBodyDataTest.java#compositionCodecPreservesCoreSelectionAndRejectsAmbiguousIdentities`：组成 Codec、核心引用、UUID 冲突和空集合。
 - 同文件 `#collisionModelIsOneBoneOneCubeWithoutUvOrTextureAssets`：单骨骼、单 cube 和 UV 省略。
 - `src/test/java/io/github/sweetzonzi/arms_core/network/ARMSNetworkCodecTest.java#createPayloadCarriesBodyCompositionAfterSyncedFields`：创建包携带 NBT、输入快照复制和缓冲完整消费。
-- `common/gametest/BodyPartGameTest.java#bodyCompositionRoundTripsWithoutEnteringPhysics`：真实内容包加载、同端形状共享、双端预设分离、实例独立、完整与骨架恢复、无效快照拒绝、核心禁止移除，以及同步前后核心／核心刚体／成员视图的身份稳定性。身体刚体全程不入世。
+- `common/gametest/BodyPartGameTest.java#bodyCompositionRoundTripsWithoutEnteringPhysics`：真实内容包加载、同端形状共享、实例独立、完整与骨架恢复、无效快照拒绝、核心禁止移除，以及同步前后核心／核心刚体／成员视图的身份稳定性。身体刚体全程不入世。
+- `common/gametest/BodyPartGameTest.java#allBodyFrameLoadsFromContentPack`：内置 AllBody 素体发布及按指定变体构造真实大腿部件。
 
 JUnit 使用 `gradlew --offline test`，服务端集成使用 `gradlew --offline runGameTestServer`。GameTest 验证本阶段结构与状态契约，不测量角色位移或动画关节跟随。

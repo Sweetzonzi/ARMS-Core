@@ -1,0 +1,13 @@
+{
+  "type": "advanced",
+  "direction": "yn",
+  "required_tags": [
+    "arms_core:allbody/thigh"
+  ],
+  "joint_attrs": {
+    "xr": {
+      "lower_limit": -55,
+      "upper_limit": 55
+    }
+  }
+}

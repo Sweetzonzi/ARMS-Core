@@ -7,6 +7,7 @@ import io.github.sweetzonzi.machine_max.common.mech.part.*;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.NbtOps;
+import net.minecraft.resources.ResourceLocation;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -18,6 +19,35 @@ import java.util.UUID;
 @GameTestHolder(ARMS.MOD_ID)
 @PrefixGameTestTemplate(false)
 public final class BodyPartGameTest {
+    /** 验证内置包发布的是实际 AllBody 定义与经过端点校验的素体。 */
+    @GameTest(template = "empty_platform", batch = "armsBody", timeoutTicks = 100)
+    public static void allBodyFrameLoadsFromContentPack(GameTestHelper helper) {
+        var id = ResourceLocation.fromNamespaceAndPath(ARMS.MOD_ID, "allbody_joint_test");
+        var frame = ArmsFrameModule.INSTANCE.get(false, id);
+        if (frame == null) {
+            helper.fail("AllBody 素体未发布");
+            return;
+        }
+        helper.assertTrue(frame.core().equals("torso") && frame.parts().size() == 5 && frame.connections().size() == 4,
+                "素体应包含核心、两条腿和四个关节");
+
+        // 素体发布时只验证定义；这里独立验证工厂取得真实模型与挂点，且尚未入世。
+        var leg = frame.parts().get("left_thigh");
+        var type = PartFactory.resolve(false, leg.part());
+        helper.assertTrue(type instanceof BodyPartType && type.variants.keySet().equals(java.util.Set.of("left", "right")),
+                "大腿必须具有两种真实变体");
+        var part = (BodyPart) PartFactory.create(type, leg.variant(), helper.getLevel(), BodyPart.CONTEXT);
+        try {
+            helper.assertTrue(part.rootSubPart.attr.mass == 7f
+                            && part.rootSubPart.connectors.containsKey("left_knee_socket")
+                            && !part.rootSubPart.body.isInWorld(),
+                    "工厂应使用指定变体的质量与挂点，保持刚体未入世");
+        } finally {
+            part.destroy();
+        }
+        helper.succeed();
+    }
+
     @GameTest(template = "empty_platform", batch = "armsBody", timeoutTicks = 100)
     public static void bodyCompositionRoundTripsWithoutEnteringPhysics(GameTestHelper helper) {
         BodyPart first = BodyParts.createDefault(helper.getLevel());
@@ -39,13 +69,11 @@ public final class BodyPartGameTest {
             helper.assertTrue(first.rootSubPart.attr == second.rootSubPart.attr
                     && first.rootSubPart.collisionShape == second.rootSubPart.collisionShape,
                     "Same-side instances share the preset and collision shape");
-            helper.assertTrue(first.rootSubPart.attr != new BodyPartType(true).getVariant("default").subParts.get(BodyPartPreset.ROOT),
-                    "Logical sides have separate preset caches");
             helper.assertTrue(first.rootSubPart.getBones().size() == 1 && first.rootSubPart.collisionShape.countChildren() == 1,
                     "Minimal model has one bone and one collision cube");
             first.setSharedDurability(7f);
             for (int tick = 0; tick < 10; tick++) source.tickBody();
-            helper.assertTrue(!first.destroyed && !second.destroyed, "Bodies survive membership ticks");
+            helper.assertTrue(!first.isDestroyed() && !second.isDestroyed(), "Bodies survive membership ticks");
             helper.assertTrue(!first.rootSubPart.body.isInWorld() && !second.rootSubPart.body.isInWorld()
                     && first.rootSubPart.entity == null, "No world bodies or MM proxies");
             helper.assertTrue(!first.crowbarRemovable && !second.crowbarRemovable, "Bodies deny crowbar removal");
@@ -71,7 +99,7 @@ public final class BodyPartGameTest {
             try {
                 restored.applyBodySnapshot(new ArmsBodyData("invalid", first.uuid, List.of(incomplete)));
             } catch (IllegalArgumentException expected) { rejected = true; }
-            helper.assertTrue(rejected && restored.getPartMap() == previous && !restoredFirst.destroyed,
+            helper.assertTrue(rejected && restored.getPartMap() == previous && !restoredFirst.isDisposed(),
                     "Invalid replacement preserves the previous body");
             helper.assertTrue(!source.acceptsPartType(PartDefinitions.regular(false).values().iterator().next()),
                     "Only implemented body definitions are accepted");
@@ -85,19 +113,19 @@ public final class BodyPartGameTest {
             helper.assertTrue(coreReplacementRejected && restored.getCorePart() == restoredFirst,
                     "快照不能更换核心身份");
             source.removePart(second);
-            helper.assertTrue(second.assembly == null && second.destroyed && source.findPart(second.uuid) == null,
+            helper.assertTrue(second.assembly == null && second.isDisposed() && source.findPart(second.uuid) == null,
                     "Removal clears ownership and disposes the member");
             helper.assertTrue(cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt.getOwner(second.rootSubPart.body) == null,
                     "Disposal clears the owner of an unattached rigid body");
             var previousCoreBody = restoredFirst.rootSubPart.body;
-            var previousSecond = restored.findPart(second.uuid);
+            var previousSecond = (BodyPart) restored.findPart(second.uuid);
             // 更新已有机体时保留核心及容器；只替换普通成员并更新核心状态。
             first.setSharedDurability(9f);
             first.name = "核心同步名称";
             restored.applyBodySnapshot(source.saveBody());
             helper.assertTrue(restored.getPartMap() == previous && restored.getPartMap().size() == 1
                     && restored.getCorePart() == restoredFirst && restoredFirst.rootSubPart.body == previousCoreBody
-                    && !restoredFirst.destroyed && previousSecond.destroyed
+                    && !restoredFirst.isDisposed() && previousSecond.isDisposed()
                     && Math.abs(restoredFirst.getSharedDurability() - 9f) < 0.001f
                     && restoredFirst.name.equals("核心同步名称"),
                     "组成更新必须保持核心、核心刚体和成员容器身份稳定");

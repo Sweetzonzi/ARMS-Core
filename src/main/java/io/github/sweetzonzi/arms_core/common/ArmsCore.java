@@ -569,7 +569,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 检查主线程装配入口的共同前置条件。 */
     private void validateMember(AbstractPart<?> part) {
         if (disposed) throw new IllegalStateException("装配体已释放");
-        if (!(part instanceof BodyPart) || part.level != level || part.destroyed
+        if (!(part instanceof BodyPart body) || part.level != level || body.isDisposed() || body.isDestroyed()
                 || part.assembly != null && part.assembly != this) {
             throw new IllegalArgumentException("部件必须是同世界中尚未归属其他装配体的有效 BodyPart");
         }

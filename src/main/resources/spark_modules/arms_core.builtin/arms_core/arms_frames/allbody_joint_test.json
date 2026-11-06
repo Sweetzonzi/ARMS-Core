@@ -1,0 +1,74 @@
+{
+  "core": "torso",
+  "parts": {
+    "torso": {
+      "part": "arms_core:allbody_torso"
+    },
+    "left_thigh": {
+      "part": "arms_core:allbody_thigh",
+      "variant": "left"
+    },
+    "left_shin": {
+      "part": "arms_core:allbody_shin",
+      "variant": "left"
+    },
+    "right_thigh": {
+      "part": "arms_core:allbody_thigh",
+      "variant": "right"
+    },
+    "right_shin": {
+      "part": "arms_core:allbody_shin",
+      "variant": "right"
+    }
+  },
+  "connections": [
+    {
+      "a": {
+        "member": "torso",
+        "sub_part": "body",
+        "connector": "left_hip_socket"
+      },
+      "b": {
+        "member": "left_thigh",
+        "sub_part": "body",
+        "connector": "left_hip_plug"
+      }
+    },
+    {
+      "a": {
+        "member": "left_thigh",
+        "sub_part": "body",
+        "connector": "left_knee_socket"
+      },
+      "b": {
+        "member": "left_shin",
+        "sub_part": "body",
+        "connector": "left_knee_plug"
+      }
+    },
+    {
+      "a": {
+        "member": "torso",
+        "sub_part": "body",
+        "connector": "right_hip_socket"
+      },
+      "b": {
+        "member": "right_thigh",
+        "sub_part": "body",
+        "connector": "right_hip_plug"
+      }
+    },
+    {
+      "a": {
+        "member": "right_thigh",
+        "sub_part": "body",
+        "connector": "right_knee_socket"
+      },
+      "b": {
+        "member": "right_shin",
+        "sub_part": "body",
+        "connector": "right_knee_plug"
+      }
+    }
+  ]
+}

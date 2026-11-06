@@ -1,0 +1,13 @@
+{
+  "type": "advanced",
+  "direction": "yn",
+  "required_tags": [
+    "arms_core:allbody/shin"
+  ],
+  "joint_attrs": {
+    "xr": {
+      "lower_limit": -75,
+      "upper_limit": 75
+    }
+  }
+}
