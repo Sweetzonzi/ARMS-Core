@@ -349,7 +349,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 客户端注册服务端分配的子部件 ID，并仅将运动学刚体加入物理空间。 */
     synchronized void enterClientBody() {
         var children = collectSubParts(partMap.values());
-        validateClientSubPartIds(children);
         children.forEach(ObjectManager::addDestroyableObject);
         SparkLevel.getPhysicsLevel(level).submitImmediateTask(PPhase.PRE, () -> {
             synchronized (this) {
@@ -365,17 +364,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     private static List<SubPart> collectSubParts(java.util.Collection<AbstractPart<?>> parts) {
         return parts.stream().flatMap(part -> part.subParts.values().stream()).toList();
-    }
-
-    private void validateClientSubPartIds(List<SubPart> children) {
-        var ids = new java.util.HashSet<Integer>();
-        for (var child : children) {
-            var existing = ObjectManager.getDestroyableObject(level, child.getId());
-            if (child.getId() <= 0 || !ids.add(child.getId()) || existing != null
-                    && (!(existing instanceof SubPart other) || other.part.assembly != this)) {
-                throw new IllegalArgumentException("子部件同步 ID 冲突：" + child.getId());
-            }
-        }
     }
 
     /**
@@ -750,26 +738,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             throw new IllegalArgumentException("服务端连接由构造和恢复入口建立");
         }
         ArmsBodyAssembly prepared = ArmsBodyAssembly.restore(level, data, false);
+        // 临时核心只用于验证恢复，发布的核心仍使用原实例。
+        corePart.applySavedState(prepared.core().save());
+        var nextLinks = prepared.links().stream().map(link -> link.withCore(corePart)).toList();
         Map<UUID, AbstractPart<?>> next = new LinkedHashMap<>();
-        List<ArmsBodyAssembly.Link> nextLinks;
-        try {
-            if (!authoritative) {
-                validateClientSubPartIds(collectSubParts(prepared.parts()));
-                for (var child : corePart.subParts.values()) {
-                    if (prepared.core().subParts.get(child.name).getId() != child.getId()) {
-                        throw new IllegalArgumentException("快照不能更换核心子部件的同步 ID：" + child.name);
-                    }
-                }
-            }
-            // 先用临时实例验证全部恢复状态；核心只更新状态，不替换对象引用。
-            corePart.applySavedState(prepared.core().save());
-            nextLinks = prepared.links().stream().map(link -> link.withCore(corePart)).toList();
-            prepared.parts().forEach(part -> next.put(part.uuid, part == prepared.core() ? corePart : part));
-        } catch (RuntimeException | Error failure) {
-            prepared.parts().forEach(AbstractPart::discardUnattached);
-            throw failure;
-        }
-        prepared.core().discardUnattached();
+        prepared.parts().forEach(part -> next.put(part.uuid, part == prepared.core() ? corePart : part));
         var previous = new ArrayList<>(partMap.values());
         next.values().forEach(part -> part.assembly = this);
         // 修改固定容器的内容；外部持有的只读视图始终对应这一份容器。
