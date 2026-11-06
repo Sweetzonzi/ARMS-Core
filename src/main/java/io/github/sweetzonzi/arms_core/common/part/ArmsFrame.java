@@ -19,18 +19,23 @@ import java.util.Map;
 import java.util.Set;
 
 /** 素体的静态装配定义；成员名只在当前定义内寻址。 */
-public record ArmsFrame(String core, Map<String, Member> parts, List<Connection> connections) {
+public record ArmsFrame(String core, Map<String, Member> parts, List<Connection> connections, float coreHeightOffset) {
     private static final Codec<String> NAME = Codec.STRING.validate(name -> name.isBlank()
             ? DataResult.error(() -> "名称不能为空") : DataResult.success(name));
     public static final Codec<ArmsFrame> CODEC = RecordCodecBuilder.<ArmsFrame>create(instance -> instance.group(
             NAME.fieldOf("core").forGetter(ArmsFrame::core),
             Codec.unboundedMap(NAME, Member.CODEC).fieldOf("parts").forGetter(ArmsFrame::parts),
-            Connection.CODEC.listOf().fieldOf("connections").forGetter(ArmsFrame::connections)
+            Connection.CODEC.listOf().fieldOf("connections").forGetter(ArmsFrame::connections),
+            Codec.FLOAT.optionalFieldOf("core_height_offset", 0f).forGetter(ArmsFrame::coreHeightOffset)
     ).apply(instance, ArmsFrame::new)).validate(ArmsFrame::validateTopology);
 
     public ArmsFrame {
         parts = Map.copyOf(parts);
         connections = List.copyOf(connections);
+    }
+
+    public ArmsFrame(String core, Map<String, Member> parts, List<Connection> connections) {
+        this(core, parts, connections, 0f);
     }
 
     /** 一个新建成员引用的部件定义与变体。 */
@@ -60,6 +65,9 @@ public record ArmsFrame(String core, Map<String, Member> parts, List<Connection>
 
     /** 检查装配图的成员和占点；可达性允许闭环和使用不同端点的平行边。 */
     private DataResult<ArmsFrame> validateTopology() {
+        if (!Float.isFinite(coreHeightOffset)) {
+            return DataResult.error(() -> "core_height_offset 必须是有限数值");
+        }
         if (!parts.containsKey(core)) return DataResult.error(() -> "core 未引用素体成员：" + core);
         Map<String, Set<String>> neighbors = new HashMap<>();
         parts.keySet().forEach(member -> neighbors.put(member, new HashSet<>()));
@@ -94,6 +102,7 @@ public record ArmsFrame(String core, Map<String, Member> parts, List<Connection>
 
     /** 部件发布后解析型号、变体与两端连接资格；此过程不构造运行时部件。 */
     public void validateDefinitions(Map<ResourceLocation, AbstractPartType> definitions) {
+        validateTopology().getOrThrow();
         var variants = new HashMap<String, VariantAttr>();
         for (var entry : parts.entrySet()) {
             String name = entry.getKey();

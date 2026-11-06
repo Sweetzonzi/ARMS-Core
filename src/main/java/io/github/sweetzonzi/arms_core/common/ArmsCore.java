@@ -1,24 +1,29 @@
 package io.github.sweetzonzi.arms_core.common;
 
 import cn.solarmoon.spark_core.api.SparkLevel;
-import cn.solarmoon.spark_core.physics.level.PhysicsLevel;
-import io.github.sweetzonzi.arms_core.ARMS;
+import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
+import cn.solarmoon.spark_core.util.PPhase;
+import com.jme3.math.Transform;
+import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
+import io.github.sweetzonzi.arms_core.common.part.ArmsBodyAssembly;
+import io.github.sweetzonzi.arms_core.common.part.ArmsBodyPhysics;
+import io.github.sweetzonzi.arms_core.common.part.ArmsFrame;
+import io.github.sweetzonzi.arms_core.common.part.ArmsFrameModule;
 import io.github.sweetzonzi.arms_core.common.part.BodyPart;
-import io.github.sweetzonzi.arms_core.common.part.BodyPartData;
 import io.github.sweetzonzi.arms_core.common.part.BodyPartType;
-import io.github.sweetzonzi.machine_max.common.mech.part.PartFactory;
-import io.github.sweetzonzi.machine_max.common.mech.part.PartRestoreMode;
 import io.github.sweetzonzi.arms_core.network.payload.ArmsCoreCreatePayload;
+import io.github.sweetzonzi.machine_max.common.mech.ObjectManager;
 import io.github.sweetzonzi.machine_max.common.mech.subsystem.SubsystemController;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.IPartAssembly;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPartType;
+import io.github.sweetzonzi.machine_max.common.mech.vehicle.RegularPartType;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.connector.AbstractConnector;
 import lombok.Getter;
@@ -30,6 +35,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SyncedDataHolder;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.NotNull;
@@ -38,11 +44,13 @@ import org.jetbrains.annotations.Nullable;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -223,12 +231,23 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 核心在构造时确定，换核心需要创建另一具装配体。 */
     @Getter
     private final @NotNull BodyPart corePart;
+    /** 身体组成引用的素体 ID；直接构造的身体可以没有素体。 */
+    private final Optional<ResourceLocation> frameId;
+    /** 服务端创建或恢复时解析的定义，用于约束目标。 */
+    private final @Nullable ArmsFrame frame;
+    /** 身体的实际外部连接；客户端只持有端点和参考系。 */
+    @Getter
+    private List<ArmsBodyAssembly.Link> bodyLinks;
     @Getter
     private final SubsystemController subsystemController;
     @Getter
     private String assemblyName = "ArmsCore";
     private boolean bodyDirty;
-    private boolean disposed;
+    private volatile boolean disposed;
+    /** 只在物理线程读写，维度关闭后由主线程清空。 */
+    @Nullable
+    private ArmsBodyPhysics bodyPhysics;
+    private final CompletableFuture<Void> bodyReleased = new CompletableFuture<>();
 
     // ==========================================
     // 构造
@@ -250,19 +269,44 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * @param corePart   尚未归属装配体、尚未入世的核心部件
      */
     public ArmsCore(Level level, UUID assemblyId, BodyPart corePart) {
-        this(level, assemblyId, new RestoredBody(corePart, List.of(corePart), "ArmsCore"), true);
+        this(level, assemblyId, true, Optional.empty(), null,
+                new ArmsBodyAssembly(corePart, List.of(corePart), List.of(), "ArmsCore"));
     }
 
-    /** 从完整组成数据构造服务端装配体，核心由保存数据解析。 */
+    /** 从素体构造服务端机体，核心根使用指定世界位姿；成员和关节均未入世。 */
+    public static ArmsCore fromFrame(Level level, UUID assemblyId, ResourceLocation frameId, Transform rootPose) {
+        if (level.isClientSide()) throw new IllegalArgumentException("素体只能由服务端新建");
+        ArmsFrame frame = requireFrame(frameId);
+        var prepared = ArmsBodyAssembly.create(level, frame, rootPose);
+        try {
+            return new ArmsCore(level, assemblyId, true, Optional.of(frameId), frame, prepared);
+        } catch (RuntimeException | Error failure) {
+            prepared.parts().forEach(AbstractPart::discardUnattached);
+            throw failure;
+        }
+    }
+
+    /** 先解析素体定义，再按存档中的实际成员和连接恢复身体。 */
     public ArmsCore(Level level, UUID assemblyId, ArmsBodyData data) {
-        this(level, assemblyId, restoreMembers(level, data), true);
+        this(level, assemblyId, true, data.frameId(), data.frameId().map(ArmsCore::requireFrame).orElse(null),
+                ArmsBodyAssembly.restore(level, data, true));
     }
 
-    private ArmsCore(Level level, UUID assemblyId, RestoredBody bodyData, boolean authoritative) {
+    private static ArmsFrame requireFrame(ResourceLocation id) {
+        ArmsFrame frame = ArmsFrameModule.INSTANCE.get(false, id);
+        if (frame == null) throw new IllegalArgumentException("找不到已发布的素体 " + id);
+        return frame;
+    }
+
+    private ArmsCore(Level level, UUID assemblyId, boolean authoritative, Optional<ResourceLocation> frameId,
+                     @Nullable ArmsFrame frame, ArmsBodyAssembly bodyData) {
         this.level = level;
         this.assemblyId = assemblyId;
         this.authoritative = authoritative;
-        this.corePart = java.util.Objects.requireNonNull(bodyData.corePart());
+        this.corePart = java.util.Objects.requireNonNull(bodyData.core());
+        this.frameId = frameId;
+        this.frame = frame;
+        this.bodyLinks = bodyData.links();
         this.subsystemController = new SubsystemController(level);
         // 先校验核心和成员的归属，再建立控制器，防止无效输入产生半成品装配体。
         bodyData.parts().forEach(this::validateMember);
@@ -298,7 +342,40 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * @return 客户端侧实例
      */
     public static ArmsCore newClientInstance(Level level, UUID assemblyId, ArmsBodyData data) {
-        return new ArmsCore(level, assemblyId, restoreMembers(level, data), false);
+        return new ArmsCore(level, assemblyId, false, data.frameId(), null,
+                ArmsBodyAssembly.restore(level, data, false));
+    }
+
+    /** 客户端注册服务端分配的子部件 ID，并仅将运动学刚体加入物理空间。 */
+    synchronized void enterClientBody() {
+        var children = collectSubParts(partMap.values());
+        validateClientSubPartIds(children);
+        children.forEach(ObjectManager::addDestroyableObject);
+        SparkLevel.getPhysicsLevel(level).submitImmediateTask(PPhase.PRE, () -> {
+            synchronized (this) {
+                if (disposed) return null;
+                var world = SparkLevel.getPhysicsLevel(level).getWorld();
+                for (var child : children) {
+                    if (!child.isRemoved() && !child.body.isInWorld()) world.addCollisionObject(child.body);
+                }
+            }
+            return null;
+        });
+    }
+
+    private static List<SubPart> collectSubParts(java.util.Collection<AbstractPart<?>> parts) {
+        return parts.stream().flatMap(part -> part.subParts.values().stream()).toList();
+    }
+
+    private void validateClientSubPartIds(List<SubPart> children) {
+        var ids = new java.util.HashSet<Integer>();
+        for (var child : children) {
+            var existing = ObjectManager.getDestroyableObject(level, child.getId());
+            if (child.getId() <= 0 || !ids.add(child.getId()) || existing != null
+                    && (!(existing instanceof SubPart other) || other.part.assembly != this)) {
+                throw new IllegalArgumentException("子部件同步 ID 冲突：" + child.getId());
+            }
+        }
     }
 
     /**
@@ -389,6 +466,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      *       {@code body_root} 骨骼位姿，而该位姿由 AbstractPart<?> 的物理步产出（装配体图接入后生效）</li>
      *   <li>下行状态写入 → 状态机推进 → 表现层推进（状态机与动画时间）→ 动画根位移提取 →
      *       控制器物理步（顺序由 {@link MechaControl#onPhysicsStep(float)} 内部保证）</li>
+     *   <li>消费本步控制器位姿和速度，更新身体约束的目标，再交给 Bullet 求解。</li>
      *   <li>发布逻辑状态快照供主线程读取（仅权威侧，见下）</li>
      * </ol>
      *
@@ -396,10 +474,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      */
     public void prePhysicsTick(float dt) {
         MechaControl control = this.mechaControl;
-        if (control == null) return;
+        if (control == null || disposed || authoritative && !isInLevel()) return;
 
         // ② 下行状态写入 → 帧逻辑（仅权威侧） → 表现层推进 → extractAnimRootDelta → 控制器物理步
         control.onPhysicsStep(dt);
+        if (bodyPhysics != null) bodyPhysics.followControllerStep(getBody());
 
         // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）。
         // 仅权威侧：客户端不从容器反推状态——它的四项是下行通道送来的，发布它们没有消费者，
@@ -415,9 +494,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     }
 
     /**
-     * 物理线程：把控制器刚体放入物理空间并设置出生点。
-     * <p>
-     * 必须在 {@code SparkLevel.submitImmediateTask} 投递的任务内调用。
+     * 物理线程：设置出生点，在同一任务中加入控制器、身体与约束。
      * <p>
      * 刚体的位置就是宿主实体的位置（{@code common/ArmsCoreServerEvents.java#applyPoseToHost} 每 tick
      * 把它写进宿主），因此本方法只负责「入世」这一次设置，<b>不记录任何兜底锚点</b>：以出生点为锚点、
@@ -429,14 +506,33 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      *
      * @param controllerCenter 控制器碰撞体中心的世界坐标（不是脚底坐标，见计划 §3.14）
      */
-    public void enterPhysicsSpace(com.jme3.math.Vector3f controllerCenter) {
-        if (!authoritative) return;
-        PhysicsLevel physicsLevel = SparkLevel.getPhysicsLevel(level);
+    public synchronized void enterPhysicsSpace(Vector3f controllerCenter) {
+        if (!authoritative || disposed || isInLevel()) return;
+        var space = SparkLevel.getPhysicsLevel(level).getWorld();
         MechaCharacter body = getBody();
         body.setPhysicsLocation(controllerCenter);
-        if (inPhysicsSpace.compareAndSet(false, true)) {
-            physicsLevel.getWorld().addCollisionObject(body);
+        var physicalBody = new ArmsBodyPhysics(corePart, partMap.values(), body.getTransform(null),
+                frame == null ? 0f : frame.coreHeightOffset());
+        try {
+            space.addCollisionObject(body);
+            physicalBody.enter(space, body);
+            bodyPhysics = physicalBody;
+            inPhysicsSpace.set(true);
+        } catch (RuntimeException | Error failure) {
+            physicalBody.leave(space);
+            if (body.isInWorld()) space.removeCollisionObject(body);
+            physicalBody.release(body);
+            throw failure;
         }
+    }
+
+    /** 在同一物理阶段传送控制器和身体，保持关节之间的相对姿态。 */
+    void warpController(Vector3f target) {
+        if (disposed) return;
+        var controller = getBody();
+        var delta = target.subtract(controller.getPhysicsLocation(null));
+        controller.warp(target);
+        if (bodyPhysics != null) bodyPhysics.warp(delta, controller.getLinearVelocity(null));
     }
 
     // ==========================================
@@ -466,7 +562,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      *   <li><b>待投递落点</b> —— 落点先写进 {@code HostPositionIntake} 的字段，同一 tick 内多次摄入按最后
      *       写入者生效。</li>
      * </ol>
-     * 客户端实例同样走这条路径：它没有控制器刚体，投递的任务是空操作，但 pin 照常武装，客户端手里的
+     * 客户端实例同样走这条路径：它没有控制器刚体，只武装 pin，客户端手里的
      * {@code DATA_POS} 因此与实体位置一致。
      *
      * @param x 这次写入的目标 X（包围盒底面基准）
@@ -551,12 +647,12 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     @Override
     public boolean acceptsPartType(AbstractPartType type) {
-        return type instanceof BodyPartType;
+        return type instanceof BodyPartType || type instanceof RegularPartType;
     }
 
     /** 添加普通身体成员；核心身份由构造器确定。 */
     @Override
-    public void addPart(AbstractPart<?> part) {
+    public synchronized void addPart(AbstractPart<?> part) {
         validateMember(part);
         // UUID 相同但实例不同属于冲突，禁止覆盖现有成员或核心。
         var current = mutableParts.putIfAbsent(part.uuid, part);
@@ -569,9 +665,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 检查主线程装配入口的共同前置条件。 */
     private void validateMember(AbstractPart<?> part) {
         if (disposed) throw new IllegalStateException("装配体已释放");
-        if (!(part instanceof BodyPart body) || part.level != level || body.isDisposed() || body.isDestroyed()
+        if (isInLevel()) throw new IllegalStateException("身体入世后暂不支持更换成员");
+        if (!acceptsPartType(part.type) || part.level != level || part.isDestroyed()
+                || part instanceof BodyPart body && body.isDisposed()
                 || part.assembly != null && part.assembly != this) {
-            throw new IllegalArgumentException("部件必须是同世界中尚未归属其他装配体的有效 BodyPart");
+            throw new IllegalArgumentException("部件必须是同世界中尚未归属其他装配体的有效身体部件或普通部件");
         }
         if (part.subParts.isEmpty() || part.subParts.values().stream().anyMatch(child -> child.body.isInWorld())) {
             throw new IllegalArgumentException("身体部件必须具有尚未入世的子结构");
@@ -580,9 +678,12 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 移除非核心成员并释放其结构；核心随整个装配体一起释放。 */
     @Override
-    public void removePart(AbstractPart<?> part) {
+    public synchronized void removePart(AbstractPart<?> part) {
+        if (isInLevel()) throw new IllegalStateException("身体入世后暂不支持更换成员");
         if (part == corePart) throw new IllegalArgumentException("核心不能单独移除，请释放整个装配体");
         if (!mutableParts.remove(part.uuid, part)) return;
+        bodyLinks = bodyLinks.stream().filter(link -> link.advanced().subPart.part != part
+                && link.simple().subPart.part != part).toList();
         part.assembly = null;
         part.destroy();
         bodyDirty = true;
@@ -595,7 +696,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     @Override
     public void disconnect(AbstractConnector connector) {
-        throw new UnsupportedOperationException("身体连接尚未实现");
+        // MM 也会从冲击路径请求断开；身体分裂接入前保留约束。
     }
 
     @Override
@@ -627,64 +728,60 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     public ArmsBodyData saveBody() {
         if (disposed) throw new IllegalStateException("已释放的装配体不能保存");
         return new ArmsBodyData(assemblyName, corePart.uuid,
-                partMap.values().stream().map(part -> ((BodyPart) part).save()).toList());
+                partMap.values().stream().map(AbstractPart::save).toList(),
+                bodyLinks.stream().map(ArmsBodyAssembly.Link::save).toList(), frameId);
     }
 
     /** 生成用于持久化或创建包的组成 NBT。 */
     public CompoundTag saveBodyTag() {
-        return (CompoundTag) ArmsBodyData.CODEC.encodeStart(NbtOps.INSTANCE, saveBody()).getOrThrow();
-    }
-
-    /** 构造前恢复所需的完整成员集合，失败时清理全部已分配部件。 */
-    private static RestoredBody restoreMembers(Level level, ArmsBodyData data) {
-        data.validate().getOrThrow();
-        // 在创建任何刚体之前验证整批定义和结构，防止无效输入破坏现有装配体。
-        for (BodyPartData saved : data.parts()) {
-            if (!(PartFactory.validateRestore(saved, level.isClientSide()) instanceof BodyPartType type)
-                    || !type.getVariant(saved.variant).subParts.keySet().equals(saved.subParts.keySet())) {
-                throw new IllegalArgumentException("身体定义无效或保存结构不完整");
-            }
-        }
-        var allocated = new ArrayList<BodyPart>();
-        try {
-            for (BodyPartData saved : data.parts()) {
-                allocated.add((BodyPart) PartFactory.restore(saved, level, PartRestoreMode.FULL_STATE, BodyPart.CONTEXT));
-            }
-            BodyPart core = allocated.stream().filter(part -> part.uuid.equals(data.corePartId())).findFirst().orElseThrow();
-            return new RestoredBody(core, List.copyOf(allocated), data.name());
-        } catch (RuntimeException | Error failure) {
-            allocated.forEach(BodyPart::destroy);
-            throw failure;
-        }
+        return (CompoundTag) ArmsBodyData.codec(level.isClientSide()).encodeStart(NbtOps.INSTANCE, saveBody()).getOrThrow();
     }
 
     /** 应用同一具机体的组成快照，保持核心实例及成员容器的身份稳定。 */
-    public void applyBodySnapshot(ArmsBodyData data) {
+    public synchronized void applyBodySnapshot(ArmsBodyData data) {
         if (disposed) throw new IllegalStateException("装配体已释放");
         if (!corePart.uuid.equals(data.corePartId())) {
             throw new IllegalArgumentException("组成快照不能更换核心");
         }
-        RestoredBody prepared = restoreMembers(level, data);
+        if (!frameId.equals(data.frameId())) {
+            throw new IllegalArgumentException("组成快照不能更换素体 ID");
+        }
+        if (authoritative && (isInLevel() || !bodyLinks.isEmpty() || !data.connections().isEmpty())) {
+            throw new IllegalArgumentException("服务端连接由构造和恢复入口建立");
+        }
+        ArmsBodyAssembly prepared = ArmsBodyAssembly.restore(level, data, false);
         Map<UUID, AbstractPart<?>> next = new LinkedHashMap<>();
+        List<ArmsBodyAssembly.Link> nextLinks;
         try {
+            if (!authoritative) {
+                validateClientSubPartIds(collectSubParts(prepared.parts()));
+                for (var child : corePart.subParts.values()) {
+                    if (prepared.core().subParts.get(child.name).getId() != child.getId()) {
+                        throw new IllegalArgumentException("快照不能更换核心子部件的同步 ID：" + child.name);
+                    }
+                }
+            }
             // 先用临时实例验证全部恢复状态；核心只更新状态，不替换对象引用。
-            corePart.applySavedState(prepared.corePart().save());
-            prepared.parts().forEach(part -> next.put(part.uuid, part == prepared.corePart() ? corePart : part));
+            corePart.applySavedState(prepared.core().save());
+            nextLinks = prepared.links().stream().map(link -> link.withCore(corePart)).toList();
+            prepared.parts().forEach(part -> next.put(part.uuid, part == prepared.core() ? corePart : part));
         } catch (RuntimeException | Error failure) {
-            prepared.parts().forEach(BodyPart::destroy);
+            prepared.parts().forEach(AbstractPart::discardUnattached);
             throw failure;
         }
-        prepared.corePart().destroy();
+        prepared.core().discardUnattached();
         var previous = new ArrayList<>(partMap.values());
         next.values().forEach(part -> part.assembly = this);
         // 修改固定容器的内容；外部持有的只读视图始终对应这一份容器。
         mutableParts.clear();
         mutableParts.putAll(next);
+        bodyLinks = nextLinks;
         assemblyName = data.name();
         previous.stream().filter(part -> part != corePart).forEach(part -> {
             part.assembly = null;
             part.destroy();
         });
+        if (!authoritative) enterClientBody();
         bodyDirty = true;
     }
 
@@ -694,25 +791,62 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         partMap.values().forEach(AbstractPart::onTick);
         if (authoritative && bodyDirty && MechaCoreRegistry.get(level, assemblyId) == this) {
             MechaCoreRegistry.syncBody(this);
+            // 先发送组成及初始位姿，再允许 MM 按整数 ID 广播增量。
+            collectSubParts(partMap.values()).forEach(ObjectManager::addDestroyableObject);
             bodyDirty = false;
         }
     }
 
-    /** 释放全部成员；final 字段保持其引用，已释放对象禁止继续装配。 */
-    public void disposeBody() {
-        if (disposed) return;
+    /** 停止步进，先在物理线程移除约束与刚体，再回主线程释放成员。 */
+    public synchronized CompletableFuture<Void> disposeBody() {
+        if (disposed) return bodyReleased;
         disposed = true;
+        collectSubParts(partMap.values()).forEach(ObjectManager::removeDestroyableObject);
+        if (authoritative && isInLevel()) {
+            var physicsLevel = SparkLevel.getPhysicsLevel(level);
+            physicsLevel.submitImmediateTask(PPhase.PRE, () -> {
+                var space = physicsLevel.getWorld();
+                if (bodyPhysics != null) {
+                    bodyPhysics.leave(space);
+                    bodyPhysics.release(getBody());
+                }
+                if (getBody().isInWorld()) space.removeCollisionObject(getBody());
+                bodyPhysics = null;
+                inPhysicsSpace.set(false);
+                java.util.Objects.requireNonNull(level.getServer()).execute(this::releaseMembers);
+                return null;
+            });
+        } else {
+            releaseMembers();
+        }
+        return bodyReleased;
+    }
+
+    /** Spark 先关闭维度物理空间，此处只完成尚未执行的主线程清理。 */
+    synchronized void disposeBodyAfterWorldClosed() {
+        disposed = true;
+        collectSubParts(partMap.values()).forEach(ObjectManager::removeDestroyableObject);
+        inPhysicsSpace.set(false);
+        if (bodyPhysics != null) {
+            bodyPhysics.release(getBody());
+            bodyPhysics = null;
+        }
+        releaseMembers();
+    }
+
+    private void releaseMembers() {
+        if (bodyReleased.isDone()) return;
         var previous = new ArrayList<>(partMap.values());
         mutableParts.clear();
+        bodyLinks = List.of();
         previous.forEach(part -> {
             part.assembly = null;
             part.destroy();
+            part.subParts.values().forEach(child -> PhysicsBodyExtensionKt.setOwner(child.body, null));
         });
         bodyDirty = false;
+        bodyReleased.complete(null);
     }
-
-    /** 私有构造参数，保证进入构造器时核心与完整成员集合均已就绪。 */
-    private record RestoredBody(BodyPart corePart, List<BodyPart> parts, String name) {}
 
     @Override
     public String toString() {

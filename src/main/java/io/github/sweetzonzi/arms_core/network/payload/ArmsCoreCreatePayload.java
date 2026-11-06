@@ -128,7 +128,7 @@ public record ArmsCoreCreatePayload(
     /** 定义就绪后构造客户端机体，或更新同一核心的状态与普通成员。 */
     public void applyClientSnapshot(Player player, List<SynchedEntityData.DataValue<?>> values) {
         Level level = player.level();
-        ArmsBodyData data = ArmsBodyData.CODEC.parse(NbtOps.INSTANCE, body).getOrThrow();
+        ArmsBodyData data = ArmsBodyData.codec(true).parse(NbtOps.INSTANCE, body).getOrThrow();
         ArmsCore core = MechaCoreRegistry.get(level, coreId);
         boolean created = false;
         if (core == null) {

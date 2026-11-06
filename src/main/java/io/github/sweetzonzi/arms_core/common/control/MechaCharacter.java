@@ -909,7 +909,6 @@ public class MechaCharacter extends PhysicsRigidBody {
         float[] rotation = rotationColumns();
         // 局部 +Z 的世界方向
         float forwardX = rotation[6];
-        float forwardY = rotation[7];
         float forwardZ = rotation[8];
         // 局部 +Y（上轴）的世界方向
         float upY = rotation[4];
@@ -919,7 +918,8 @@ public class MechaCharacter extends PhysicsRigidBody {
             return;
         }
 
-        float targetX = (float) Math.sin(viewYaw);
+        // Minecraft 的正偏航从南转向西，和移动方向使用同一份约定。
+        float targetX = -(float) Math.sin(viewYaw);
         float targetZ = (float) Math.cos(viewYaw);
 
         // 把水平投影转到目标方向：绕世界 Y 轴的有符号夹角，
@@ -1787,7 +1787,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ═══════════════════════════════════════════════
 
     /**
-     * 当前朝向（弧度，Minecraft 约定：0 = 南 +Z，取值增大 = 向左转）。
+     * 当前朝向（弧度，Minecraft 约定：0 = 南 +Z，+90° = 西 −X）。
      * <p>
      * 返回的是**朝向权威值**，也就是最后一次 {@link #setViewYaw} 写下的那个角。它与刚体姿态上的
      * 朝向是同一个量：{@link #writeFacing} 每物理步把姿态精确对到本值上（§5.3 的朝向写入每步

@@ -1,6 +1,6 @@
 # BodyPart 与素体装配实施方案
 
-> 状态：阶段 A 的定义解码和发布已接线。首个物理交付是从内容包生成一具可保存、可恢复、能在物理空间内被动活动的关节身体。
+> 状态：定义加载、素体新建、存档恢复与玩家身体入世已接线。身体核心跟随控制器位姿，肢体在服务端作被动求解。断开分裂、逐部件显示与关节驱动待接入。
 
 ## 1. 范围与职责
 
@@ -8,11 +8,11 @@
 |---|---|---|
 | BodyPart 定义 | 型号、命名变体、模型、各 SubPart 的刚体与挂点 | 定义一件可整体换装的部件。 |
 | 素体定义 | 核心成员、默认部件及变体、成员间的连接列表 | 用同一组部件生成不同的初始身体。成员可为 BodyPart 或 RegularPart。 |
-| ArmsCore 实例与存档 | 部件 UUID、实际核心、无向装配图、运行状态 | 表达某一具身体，包括实际换装、缺肢、闭环连接及当前位姿。 |
+| ArmsCore 实例与存档 | 可选素体 ID、部件 UUID、实际核心、无向装配图、运行状态 | 表达某一具身体，包括实际换装、缺肢、闭环连接及当前位姿。 |
 
 例如「肉腿素体」和「义肢素体」可以共用躯干部件定义，各自选择不同的腿部型号与变体。躯干只声明髋部挂点；载入存档时按当时实际装上的腿恢复。
 
-本文 ARMS 源码坐标相对于 `src/main/java/io/github/sweetzonzi/arms_core/`，以 `../` 开头的坐标相对于仓库根。`common/part/BodyPartType.java#CODEC` 解码部件变体，`common/part/ArmsFrame.java#CODEC` 解码素体结构，`common/part/ArmsFrameModule.java#publish` 发布通过引用校验的素体。`common/ArmsCore.java#connect` 尚无身体连接实现，`common/part/BodyPart.java#addToLevel` 拒绝入世。现有实例契约见 `docs/BodyPart最小接入.md` §1、§3、§4。
+本文 ARMS 源码坐标相对于 `src/main/java/io/github/sweetzonzi/arms_core/`，以 `../` 开头的坐标相对于仓库根。`common/part/BodyPartType.java#CODEC` 解码部件变体，`common/part/ArmsFrame.java#CODEC` 解码素体结构，`common/part/ArmsFrameModule.java#publish` 发布通过引用校验的素体。`common/ArmsCore.java#fromFrame` 根据素体新建机体，`common/ArmsCore.java#enterPhysicsSpace` 统一管理物理入世。现有实例契约见 `docs/BodyPart最小接入.md` §1、§3、§4。
 
 首版验证被动关节、混装与连通性判定。暂不接管正常行走和宿主位置，也不引入换装 UI、游戏内实时换装、残件玩法、伤害转发、能量网络、IK、马达参数 JSON 或资源热重载。BodyPart 禁止撬棍拆卸；ArmsCore 的身体与附件由自己的同步、绘制路径管理，首版均不创建 MMPartEntity。
 
@@ -150,7 +150,7 @@
 
 配对实现参考 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/part/AbstractPart.java#autoAttachInternalConnectors`；外部连接契约参考 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#attachJoint`。挂点名称在同一变体内唯一，遵守 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/attr/VariantAttr.java#validateUniqueNames` 的保留名和去重规则。连接仍使用「SubPart 名 + 挂点名」定位并核对端点，避免变体修改子结构时静默接错刚体。
 
-示例使用 `arms_core:body_mount` 和 `arms_core:body_hinge` 表示简单端与高级端；它们是说明用的 ID。实际内置夹具使用 `arms_core:allbody_body_plug`、`arms_core:allbody_hip_hinge`、`arms_core:allbody_knee_hinge`，字段沿用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/attr/connector/ConnectorStaticAttr.java#CODEC`。夹具的髋与膝都开放 `xr`，限位仅用于验证约束，不作为人体关节标定。实际素材见 `docs/AllBody关节测试素材.md` 的型号表。
+示例使用 `arms_core:body_mount` 和 `arms_core:body_hinge` 表示简单端与高级端；它们是说明用的 ID。实际内置夹具使用 `arms_core:allbody_body_plug`、`arms_core:allbody_hip_hinge`、`arms_core:allbody_knee_hinge`，字段沿用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/attr/connector/ConnectorStaticAttr.java#CODEC`。夹具的髋与膝都开放 `xr`，限位仅用于验证约束。实际成员和端点见 `src/main/resources/spark_modules/arms_core.builtin/arms_core/arms_frames/allbody_joint_test.json`。
 
 ## 3. 素体格式与发布
 
@@ -161,6 +161,7 @@
 ```json
 {
   "core": "torso",
+  "core_height_offset": 0.44,
   "parts": {
     "torso": { "part": "arms_core:demo_torso" },
     "left_leg": { "part": "arms_core:demo_leg", "variant": "left" },
@@ -180,17 +181,20 @@
 ```
 
 - `core` 引用本文件中一个 BodyPart 成员，确定装配锚点和分裂时保留身份的部件；部件定义不需要 `core: true`。
+- `core_height_offset` 是从控制器中心到核心质心的竖直高差，单位为米，正值抬高核心，缺省为 `0`。内置 AllBody 按默认装配的碰撞体底面标定为 `0.44`。
 - `parts` 的每项引用一个已发布的 BodyPart 或 RegularPart 定义；`variant` 默认 `default`。普通部件的出厂状态和实例权限继续由它的工厂决定。
 - `connections` 是无向结构边列表，`a`、`b` 两端均写 `member`、`sub_part`、`connector`。顺序不表示驱动方向；创建关节时按 MM 的规则把简单端放到对接侧。单核心素体可以写空列表。
 - 每个成员必须能经结构连接到达核心。允许闭环，也允许同两件部件之间有多条边，只要使用不同端点。拒绝部件间自连、不可达成员、未知型号或变体、引用内部端点、重复占点以及不兼容的连接。模型摆放后的闭合检查见 §4.2。
 - 成员名仅作模板地址，实例化分配新的 UUID。素体可引用同一个部件定义多次，各次产生不同实例。
+
+换腿接入后，腿部零件负责提供站立、蹲伏等姿态的有效支撑高度，即脚底至髋挂点的竖直距离。固定项只记录髋挂点至核心质心的竖直高差，与默认腿长独立。运行时将两项相加，再减去当前控制器中心离脚底的高度。实现接入点见 `common/part/ArmsBodyPhysics.java#bodyTarget` 的 TODO。
 
 ### 3.2 加载与失败隔离
 
 1. BodyPart 沿用 MM 的 `parts` 装载和发布机制。共享 Codec 解码结构，定义校验检查模型、骨骼、命中框和 Locator 等引用。ARMS 的有限正质量等规则须接入发布链路：`../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/part/PartDefinitions.java#validateAndPublish` 调用类型的 `validate`，不能只在工厂调用时检查。
 2. `arms_frames` 模块先解码并暂存同端候选。在部件发布后解析具体型号、变体与端点；可在 Spark 的整批完成事件执行这一步。事件由 `../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/pack/SparkPackLoader.kt#injectPackageContent` 在所有模块 `onFinish` 执行完毕后发送。不要以模块的注册先后作为依赖屏障。
 3. 部件与素体分别按逻辑端发布。只发布通过校验的素体；诊断包含资源 ID 和成员、变体或挂点路径。无效部件和引用它的素体均不可从权威查询入口取到，也不可通过工厂创建。一个候选失败不阻止同批合法定义发布。
-4. 双端走服务器内容包链路；客户端创建身体前等本端需要的部件定义发布，若创建数据将来携带运行期素体 ID，也要等素体定义发布。内容包热重载与已在世实例迁移另行设计。
+4. 双端走服务器内容包链路。客户端按快照中的实际部件和位姿建身体，保留素体 ID，等待本端需要的部件定义发布。服务端新建或恢复时解析素体 ID，内容包热重载与已在世实例迁移另行设计。
 
 ## 4. 实例、存档与同步
 
@@ -209,30 +213,30 @@
 | 路径 | 数据来源 | 放置与连接 |
 |---|---|---|
 | 从素体新建 | 已发布的素体及选定变体 | 先分配全部部件，确定核心。以核心根 SubPart 为世界锚点，沿生成树放置每个部件一次；校验所有剩余边的挂点闭合，再建立完整的外部关节集合。 |
-| 从存档恢复 | 实际成员、SubPart 状态、实际连接 | 按 UUID 恢复全部部件与状态，解析实际连接的两端，使用保存的关节参考系建立关节。不得以模板或安装时的对齐动作覆盖保存的世界位姿。 |
+| 从存档恢复 | 可选素体 ID、实际成员、SubPart 状态、实际连接 | 从素体定义读取控制器配置，按 UUID 恢复实际部件与状态，使用保存的关节参考系建立关节。不得以模板或安装时的对齐动作覆盖保存的世界位姿。 |
 
-新建复用 MM 的安装坐标约定，关节位置与朝向来自两端以质心为基准的局部参考系；移动部件时保持该 Part 内各 SubPart 的相对布局。参考 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#adjustTransform`。生成树按成员名与端点名稳定排序；检查闭合边时只核对已放置的参考系是否对齐、关节初态是否兼容，不再次移动部件，也不为掩盖错位而改写枢轴。恢复读取原安装确定的局部参考系；一个已经弯曲的肘，不能以恢复瞬间的弯曲角重定义关节零位。
+新建复用 MM 的安装坐标约定，关节位置与朝向来自两端以质心为基准的局部参考系；移动部件时保持该 Part 内各 SubPart 的相对布局。参考 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#calculateExtraTransform`。生成树按成员名与端点名稳定排序。`common/part/ArmsBodyAssembly.java#layout` 在原点附近校验所有边的两端参考系能否以零转角闭合，随后整套平移到目标位置。树外边不会再次移动部件或改写枢轴。恢复读取原安装确定的局部参考系，当前弯曲角仍由保存的刚体位姿决定。
 
 两条路径都先验证全部定义和拓扑，构造中途失败要清理整批未发布实例。清理要走无正常拆离掉落的路径，参考 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/part/AbstractPart.java#discardUnattached`。禁止将半具身体登记、绑定宿主或广播。
 
 ### 4.3 保存数据
 
-在 `common/part/ArmsBodyData.java#CODEC` 所描述的核心 UUID 与成员数据之外增加 `connections`。可复用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/data/ConnectionData.java#CODEC`：两端分别记录部件 UUID、SubPart 名、Connector 名和相对刚体质心的关节参考系；MM 的简单侧字段表示对接侧，不表示父子。每条实际外部边只存一次，包括闭环边。内部关节由部件变体的内部挂点构造。
+`common/part/ArmsBodyData.java#codec` 在核心 UUID 与成员数据之外保存 `connections`，旧数据缺省为空。沿用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/data/ConnectionData.java#CODEC`：两端分别记录部件 UUID、SubPart 名、Connector 名和相对刚体质心的关节参考系；MM 的简单侧字段表示对接侧。每条实际外部边只存一次，包括闭环边。内部关节由部件变体的内部挂点构造。
 
 成员数据按定义种类编码，允许混合 BodyPart 与 RegularPart 的存档。用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/part/PartFactory.java#encodeData`、`../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/part/PartFactory.java#decodeData` 按同一逻辑端已发布的定义选择专用 Codec。网络收包阶段可以先读取 NBT，等待本端定义就绪后才解码成员。恢复校验核心必须是 BodyPart；成员列表不可被窄化为 `BodyPartData`。
 
-缺省 `connections` 可按空集合解码；发布前须验证所有成员能到达核心，只有单核心快照允许没有边。对缺失拓扑的多部件快照报错，不推测原连接。首版素体是新建配方，保存实际装配已足够；以后素体提供持续生效的整机配置时才保存其 ID，并约定找不到定义时的行为。
+缺省 `connections` 可按空集合解码；发布前须验证所有成员能到达核心，只有单核心快照允许没有边。对缺失拓扑的多部件快照报错，不推测原连接。`arms_frame` 是可选的素体资源 ID；`core_height_offset` 归素体定义。服务端恢复若找不到显式引用的素体，会在分配部件前报错。没有素体引用的身体按零偏移处理。
 
 ### 4.4 客户端组成与位姿
 
 创建包携带核心、成员及实际连接；同一装配体的组成更新保留核心对象和成员表视图。应用时先验证整批数据，确定最终 UUID 到实例的映射，再在这些实例的 Connector 间恢复连接。任何边都不能引用用于预检的临时核心。该步骤需要调整 `common/ArmsCore.java#applyBodySnapshot`，当前入口会用临时核心校验状态，再保留原核心对象。
 
-客户端展示以服务端的 SubPart 位姿为准，不向客户端空间加入动力学关节。组成快照处理「有哪些成员、怎么连接」；后续的位姿更新按成员 UUID、SubPart 名和组成版本标识，记录足够插值的服务端采样数据。忽略早于当前组成版本的更新；尚未建立对应组成的位姿不应写入旧实例。首个被动关节 GameTest 不依赖客户端展示，客户端联调阶段再增加位姿载荷。创建载荷内 NBT 的拓扑契约或载荷集合变化时，按 `network/ARMSNetwork.java#PROTOCOL_VERSION` 提升协议版本。
+组成快照提供成员、连接及各 SubPart 的同步 ID 和初始位姿。`common/ArmsCore.java#enterClientBody` 把客户端运动学刚体加入物理空间，服务端继续负责控制器和关节求解。后续位姿沿用 MM 的 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/network/payload/SubPartSyncPayload.java#handler`，按整数 ID 寻址；目标尚未注册时直接跳过该次增量。F3+B 可检查客户端物理形状，逐部件模型绘制另行接入。创建载荷内 NBT 的拓扑契约或载荷集合变化时，按 `network/ARMSNetwork.java#PROTOCOL_VERSION` 提升协议版本。
 
 ## 5. 被动关节物理闭环
 
-1. **测试场景**：用单独的调试入口生成一具素体，躯干由测试支架固定，肢体用正质量动态刚体。在这个场景中没有角色控制器参与承载，也不绑定玩家。正常行走使用独立的控制器场景，直至身体与控制器的耦合策略明确。
-2. **物理线程入世**：配置两端初始位姿 → 添加全部 SubPart 刚体 → 添加内部、外部关节（同一个关节只加入一次）→ 确认成功后允许主线程登记和广播。使用一个物理线程提交边界；如果复用的 `addToLevel` 自行排队，必须确认实际执行顺序，不能以方法返回等同入世完成。若中间失败，按反向顺序移除已入世对象。
+1. **玩家场景**：`/arms spawn arms_core:allbody_joint_test` 走现有玩家绑定流程。控制器负责行走，身体核心锁到无接触响应的运动学锚点上。`common/ArmsCore.java#prePhysicsTick` 每个子步先让控制器处理输入，再调用 `common/part/ArmsBodyPhysics.java#followControllerStep` 更新锚点，随后由 Bullet 求解。`common/part/ArmsBodyPhysics.java#bodyTarget` 将身体局部 -Z 对齐到控制器局部 +Z，并沿世界 Y 轴加上 `core_height_offset`；跟随过程按位置和最短偏航误差补上限速线速度与角速度。约束反力由锚点承受，自身碰撞过滤仅针对该控制器与其身体。
+2. **物理线程入世**：`common/MechaCoreRegistry.java#enterPhysicsSpace` 向 Spark 物理空间的 PRE 队列投递一个任务。任务对齐出生位姿、添加控制器、锚点与全部 SubPart，最后添加去重后的内部、外部及核心约束。入世成功后才执行宿主位姿回写，失败时回滚已经入世的对象并注销。宿主外部位移经 `common/HostPositionIntake.java#runWarpTask` 投递到同一物理队列，整套身体和控制器随之平移。
 3. **碰撞规则**：首版允许身体与地形碰撞，同装配体自碰撞默认关闭。现有 MM 判据见 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/SubPart.java#onPreCollision`；装配归属需在步进前就绪。将来接角色控制器时，须为同机体控制器与 SubPart 单独定义碰撞排除和质量分工，不能假设此过滤自动覆盖控制器。
 4. **退出与失败**：退出先阻止新的步进／入世任务，再解除关节并移除刚体，清理 owner、装配归属和注册表。释放幂等，涵盖构造失败、命令注销和维度卸载。若测试入口使用 `ArmsCore`，必须明确控制器是否入世，并由同一生命周期负责对称移除。现有注销入口见 `common/MechaCoreRegistry.java#removeServer`。
 
@@ -279,7 +283,7 @@ Lt   = inverse(B(t)) × M(t)       # 本物理步的混合动画姿态
 |---|---|---|
 | A：定义与发布 | MM 结构格式的 BodyPart、命名变体、多 SubPart、内置 MM Connector 定义、素体模块 | 单变体与单 SubPart 简写按 MM 名称解析；左右变体解析正确；共用连接标签规则生效；未知骨骼或 Locator、非法质量、无效引用都报错；失败定义和其依赖素体不能查询或创建。 |
 | B：构造与恢复 | 从素体构造无向图，保存并恢复混合成员和实际连接 | 闭环和使用独立端点的平行边可往返；拒绝不闭合的挂点、重复占点、错变体和不可达成员；两次新建的 UUID 不同；缺肢与非默认变体按原样恢复；弯曲关节保留参考系与当前角度；客户端保留核心和成员表身份，所有边指向正式实例。 |
-| C：被动入世 | 调试场景的躯干、肢体和真实约束，含多 SubPart 与普通支架 | 静止、重力、限位、外力扰动；断闭环一边仍连通，断最后一条路径才分裂，含核心的分量保留身份；关节与刚体释放数量正确；失败或维度卸载无残留；控制器场景无身体碰撞回归。 |
+| C：被动入世 | 玩家控制器、运动学锚点和被动身体共同入世 | 已用 AllBody 覆盖移动跟随、外力扰动、膝限位与主动注销。多 SubPart 与普通支架的在世验证，以及断边后的连通分量与残件释放，仍待验收。 |
 | D：可视验收 | 两端组成一致，能看到被动物理姿态 | 加入维度、延迟加载、移除与重进；姿态插值、旧包淘汰；客户端不进行重复的关节求解。 |
 
 Codec、引用、拓扑和恢复契约走 `gradlew --offline test`。关节转角、挂点距离、能量增长等数值在靠近原点的裸 `PhysicsSpace` 内测量；GameTest 走 `gradlew --offline runGameTestServer`，验证真实装载、线程入世和生命周期，不用随机远原点的坐标量小幅抖动。该车道的坐标限制见 `docs/GameTest车道指南.md` §4、§5.2。D 阶段另用 `gradlew --offline runClient` 验证展示与重进。

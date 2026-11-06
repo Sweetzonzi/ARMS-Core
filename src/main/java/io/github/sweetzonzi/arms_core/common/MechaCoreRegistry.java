@@ -1,5 +1,6 @@
 package io.github.sweetzonzi.arms_core.common;
 
+import cn.solarmoon.spark_core.api.SparkLevel;
 import cn.solarmoon.spark_core.event.PhysicsLevelInitEvent;
 import cn.solarmoon.spark_core.util.PPhase;
 import com.jme3.math.Vector3f;
@@ -16,8 +17,11 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -58,6 +62,8 @@ public final class MechaCoreRegistry {
      * 的做法一致：按 {@code Level} 索引，两端天然分表。
      */
     private static final Map<ServerLevel, Map<UUID, ArmsCore>> SERVER_CORES = new ConcurrentHashMap<>();
+    /** 主线程独占。维度关闭时还需释放已注销、物理移除任务尚未执行的实例。 */
+    private static final Map<ServerLevel, Set<ArmsCore>> RETIRING_CORES = new HashMap<>();
 
     /** 客户端：当前维度的装配体 UUID → 实例 */
     private static final Map<UUID, ArmsCore> CLIENT_CORES = new ConcurrentHashMap<>();
@@ -145,7 +151,8 @@ public final class MechaCoreRegistry {
             ARMS.LOGGER.warn("[ARMS-Core] 服务端重复注册装配体 {}，忽略", core.getAssemblyId());
             return false;
         }
-        PacketDistributor.sendToPlayersInDimension(serverLevel, createPayload(core, hostEntityId));
+        // 尚未入世的身体由首个有效 tick 广播，避免把构造坐标作为客户端初始位姿。
+        if (core.isInLevel()) PacketDistributor.sendToPlayersInDimension(serverLevel, createPayload(core, hostEntityId));
         ARMS.LOGGER.info("[ARMS-Core] 注册装配体 {} 于 {}", core.getAssemblyId(), level.dimension().location());
         return true;
     }
@@ -166,11 +173,15 @@ public final class MechaCoreRegistry {
             throw new IllegalArgumentException("removeServer 只能在服务端调用");
         }
         Map<UUID, ArmsCore> inLevel = SERVER_CORES.get(serverLevel);
-        if (inLevel == null || inLevel.remove(core.getAssemblyId()) == null) {
+        if (inLevel == null || !inLevel.remove(core.getAssemblyId(), core)) {
             return false;
         }
         unbindHosts(serverLevel, core);
-        core.disposeBody();
+        RETIRING_CORES.computeIfAbsent(serverLevel, ignored -> new HashSet<>()).add(core);
+        core.disposeBody().thenRun(() -> {
+            var retiring = RETIRING_CORES.get(serverLevel);
+            if (retiring != null && retiring.remove(core) && retiring.isEmpty()) RETIRING_CORES.remove(serverLevel);
+        });
         MechaInputHandler.forget(core.getAssemblyId());
         PacketDistributor.sendToPlayersInDimension(serverLevel,
                 new ArmsCoreRemovePayload(level.dimension(), core.getAssemblyId()));
@@ -200,7 +211,9 @@ public final class MechaCoreRegistry {
     public static void clearLevel(Level level) {
         if (!(level instanceof ServerLevel serverLevel)) return;
         Map<UUID, ArmsCore> removed = SERVER_CORES.remove(serverLevel);
-        if (removed != null) removed.values().forEach(ArmsCore::disposeBody);
+        var retiring = RETIRING_CORES.remove(serverLevel);
+        if (removed != null) removed.values().forEach(ArmsCore::disposeBodyAfterWorldClosed);
+        if (retiring != null) retiring.forEach(ArmsCore::disposeBodyAfterWorldClosed);
         if (removed != null && !removed.isEmpty()) {
             ARMS.LOGGER.info("[ARMS-Core] 清理维度 {} 的 {} 个装配体",
                     level.dimension().location(), removed.size());
@@ -239,6 +252,12 @@ public final class MechaCoreRegistry {
 
     /** 客户端注册由创建包构造的实例（不广播）。 */
     public static void addClient(ArmsCore core) {
+        try {
+            core.enterClientBody();
+        } catch (RuntimeException failure) {
+            core.disposeBody();
+            throw failure;
+        }
         ArmsCore previous = CLIENT_CORES.put(core.getAssemblyId(), core);
         if (previous != null && previous != core) previous.disposeBody();
     }
@@ -317,6 +336,7 @@ public final class MechaCoreRegistry {
         List<ArmsCore> cores = snapshot(serverLevel);
         if (cores.isEmpty()) return;
         for (ArmsCore core : cores) {
+            if (!core.isInLevel()) continue;
             PacketDistributor.sendToPlayer(player, createPayload(core, core.getBoundHostEntityId()));
         }
         ARMS.LOGGER.info("[ARMS-Core] 向玩家 {} 补发维度 {} 的 {} 个装配体",
@@ -328,19 +348,28 @@ public final class MechaCoreRegistry {
     // ==========================================
 
     /**
-     * 提交「把 KCC 放入物理空间」的任务。
+     * 向物理线程提交控制器和身体的入世任务。
      * <p>
      * 出生点参数是**控制器碰撞体中心**坐标，不是脚底坐标（计划 §3.14）。任务体本身只允许在
-     * 物理线程执行，因此这里统一经 {@code SparkLevel.submitImmediateTask} 投递。
+     * 物理线程执行，因此直接提交到物理空间的 PRE 队列。
      *
      * @param core          目标实例（服务端实例）
      * @param controllerCenter 控制器碰撞体中心的世界坐标
      */
     public static void enterPhysicsSpace(ArmsCore core, Vector3f controllerCenter) {
-        Level level = core.getLevel();
+        ServerLevel level = (ServerLevel) core.getLevel();
         Vector3f target = controllerCenter.clone();
-        cn.solarmoon.spark_core.api.SparkLevel.submitImmediateTask(level, PPhase.ALL,
-                () -> core.enterPhysicsSpace(target));
+        SparkLevel.getPhysicsLevel(level).submitImmediateTask(PPhase.PRE, () -> {
+            try {
+                core.enterPhysicsSpace(target);
+            } catch (RuntimeException failure) {
+                ARMS.LOGGER.error("机体 {} 入世失败", core.getAssemblyId(), failure);
+                level.getServer().execute(() -> {
+                    if (!removeServer(core)) core.disposeBody();
+                });
+            }
+            return null;
+        });
     }
 
     /** 记录物理空间就绪，便于排查「构造早于物理空间初始化」。 */

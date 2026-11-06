@@ -110,10 +110,10 @@ class RigidBodyControllerMeasurementTest {
         return body.getPhysicsLocation(null).y - MechaBodyPreset.HALF_TOTAL;
     }
 
-    /** 刚体局部 +Z 的水平投影方向（度）。 */
+    /** 刚体局部 +Z 的水平投影方向（Minecraft 偏航，度）。 */
     private static float yawDegrees(MechaCharacter body) {
         com.jme3.math.Matrix3f rotation = body.getPhysicsRotationMatrix(new com.jme3.math.Matrix3f());
-        return (float) Math.toDegrees(Math.atan2(rotation.get(0, 2), rotation.get(2, 2)));
+        return (float) Math.toDegrees(Math.atan2(-rotation.get(0, 2), rotation.get(2, 2)));
     }
 
     /** 两个角度之间的最短差值（度），落在 (−180, 180]。 */

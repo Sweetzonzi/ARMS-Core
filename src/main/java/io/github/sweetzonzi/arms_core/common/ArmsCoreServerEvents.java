@@ -109,6 +109,7 @@ public final class ArmsCoreServerEvents {
             return;
         }
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
+            if (!core.isInLevel()) continue;
             core.tickBody();
             syncToClients(core);
         }
@@ -389,7 +390,7 @@ public final class ArmsCoreServerEvents {
      * 服务端卸载与客户端退出共用同一入口：客户端换维度时同样会卸载旧的 {@code ClientLevel}，
      * 此时清空本地表，随后由服务端补发的创建包重新填充。
      */
-    @SubscribeEvent
+    @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void onLevelUnload(LevelEvent.Unload event) {
         if (!(event.getLevel() instanceof Level level)) return;
         MechaCoreRegistry.onLevelUnload(level);

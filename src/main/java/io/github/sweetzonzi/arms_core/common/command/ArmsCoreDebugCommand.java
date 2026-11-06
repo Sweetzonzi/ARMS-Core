@@ -1,5 +1,6 @@
 package io.github.sweetzonzi.arms_core.common.command;
 
+import com.jme3.math.Transform;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.FloatArgumentType;
@@ -13,9 +14,13 @@ import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.part.ArmsFrameModule;
+import io.github.sweetzonzi.arms_core.common.part.BodyParts;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.ResourceLocationArgument;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -34,7 +39,7 @@ import java.util.UUID;
  * <p>
  * 子命令：
  * <ul>
- *   <li>{@code /arms spawn} —— 在命令执行者脚底创建并注册一个装配体</li>
+ *   <li>{@code /arms spawn [frame]} —— 在命令执行者脚底创建并绑定机体，可指定内容包素体</li>
  *   <li>{@code /arms list} —— 列出当前维度的装配体</li>
  *   <li>{@code /arms remove [uuid]} —— 注销装配体（省略 uuid 时注销全部）</li>
  *   <li>{@code /arms move <forward> <strafe> [yaw]} —— 写移动输入快照</li>
@@ -67,7 +72,9 @@ public final class ArmsCoreDebugCommand {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(Commands.literal("arms")
                 .requires(source -> source.hasPermission(2))
-                .then(Commands.literal("spawn").executes(ArmsCoreDebugCommand::spawn))
+                .then(Commands.literal("spawn").executes(ctx -> spawn(ctx, null))
+                        .then(Commands.argument("frame", ResourceLocationArgument.id())
+                                .executes(ctx -> spawn(ctx, ResourceLocationArgument.getId(ctx, "frame")))))
                 .then(Commands.literal("list").executes(ArmsCoreDebugCommand::list))
                 .then(Commands.literal("remove")
                         .executes(ctx -> remove(ctx, null))
@@ -102,26 +109,33 @@ public final class ArmsCoreDebugCommand {
     // 生命周期子命令
     // ==========================================
 
-    private static int spawn(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+    private static int spawn(CommandContext<CommandSourceStack> ctx, ResourceLocation frameId) throws CommandSyntaxException {
         CommandSourceStack source = ctx.getSource();
         ServerPlayer player = source.getPlayer();
         if (player == null) throw NOT_SERVER.create();
         ServerLevel level = source.getLevel();
 
         UUID coreId = UUID.randomUUID();
-        ArmsCore core = new ArmsCore(level, coreId,
-                io.github.sweetzonzi.arms_core.common.part.BodyParts.createDefault(level));
+        ArmsCore core;
+        if (frameId == null) {
+            core = new ArmsCore(level, coreId, BodyParts.createDefault(level));
+        } else {
+            if (ArmsFrameModule.INSTANCE.get(false, frameId) == null) {
+                throw new SimpleCommandExceptionType(Component.literal("找不到素体 " + frameId)).create();
+            }
+            core = ArmsCore.fromFrame(level, coreId, frameId, new Transform());
+        }
 
         // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心（计划 §3.14）
         float[] center = MechaBodyPreset.controllerCenterFromFeet(
                 (float) player.getX(), (float) player.getY(), (float) player.getZ());
-        MechaCoreRegistry.enterPhysicsSpace(core,
-                new com.jme3.math.Vector3f(center[0], center[1], center[2]));
 
         // 先绑定再注册：创建包携带真实 hostEntityId，客户端据此认出自己的机体。
         // 绑定同时使执行者成为控制者，这样 /arms move 与上行包都能驱动它。
         ArmsCore.bindHostOf(player, core);
         MechaCoreRegistry.addServer(core, core.getBoundHostEntityId());
+        MechaCoreRegistry.enterPhysicsSpace(core,
+                new com.jme3.math.Vector3f(center[0], center[1], center[2]));
 
         source.sendSuccess(() -> Component.literal("已创建装配体 " + coreId), true);
         return 1;

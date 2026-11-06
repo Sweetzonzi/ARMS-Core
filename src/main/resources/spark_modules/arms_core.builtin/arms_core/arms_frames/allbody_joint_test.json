@@ -1,5 +1,6 @@
 {
   "core": "torso",
+  "core_height_offset": 0.44,
   "parts": {
     "torso": {
       "part": "arms_core:allbody_torso"

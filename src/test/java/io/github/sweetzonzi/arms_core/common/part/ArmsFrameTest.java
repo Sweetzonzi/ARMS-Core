@@ -32,10 +32,20 @@ class ArmsFrameTest {
                 """).getAsJsonObject();
         var decoded = ArmsFrame.CODEC.parse(JsonOps.INSTANCE, json).getOrThrow();
         assertEquals(4, decoded.connections().size());
+        assertEquals(0f, decoded.coreHeightOffset());
         assertEquals("default", decoded.parts().get("torso").variant());
         assertEquals("left", decoded.parts().get("leg").variant());
         assertEquals(decoded, ArmsFrame.CODEC.parse(JsonOps.INSTANCE,
                 ArmsFrame.CODEC.encodeStart(JsonOps.INSTANCE, decoded).getOrThrow()).getOrThrow());
+
+        json.addProperty("core_height_offset", -0.25f);
+        var offsetFrame = ArmsFrame.CODEC.parse(JsonOps.INSTANCE, json).getOrThrow();
+        assertEquals(-0.25f, offsetFrame.coreHeightOffset());
+        assertEquals(offsetFrame, ArmsFrame.CODEC.parse(JsonOps.INSTANCE,
+                ArmsFrame.CODEC.encodeStart(JsonOps.INSTANCE, offsetFrame).getOrThrow()).getOrThrow());
+        json.addProperty("core_height_offset", 1e100);
+        assertTrue(ArmsFrame.CODEC.parse(JsonOps.INSTANCE, json).error().isPresent());
+        json.remove("core_height_offset");
 
         // 同一部件可有多条边，但端点不能被再次占用。
         var edges = json.getAsJsonArray("connections");

@@ -371,8 +371,8 @@ public final class HostPositionIntake {
      *       {@code connection.teleport(当前位置)}，目标都取自锚点本身，在这里被吞掉；</li>
      *   <li><b>幂等</b> —— 目标与当前 pin 的落点相同则不重复采纳（实体正在追平一个已在途的目标）。</li>
      * </ol>
-     * 通过则按 §6.2 钉住 {@code DATA_POS}、推进锚点，并把落点交给 {@code SparkLevel#submitImmediateTask}
-     * 投递（{@code PPhase.ALL}）。投递与判据同处一个调用栈：落点先写进 {@link #warpPending} 与三个落点
+     * 通过则按 §6.2 钉住 {@code DATA_POS}、推进锚点，并提交到 Spark 物理空间的 PRE 队列。
+     * 投递与判据同处一个调用栈：落点先写进 {@link #warpPending} 与三个落点
      * 字段，任务只取它们，因此同一 tick 内的多次摄入按最后写入者生效。
      *
      * @param feetX 这次写入的目标 X（包围盒底面基准）
@@ -410,7 +410,12 @@ public final class HostPositionIntake {
         warpY = targetY;
         warpZ = targetZ;
         warpPending = true;
-        SparkLevel.submitImmediateTask(core.getLevel(), PPhase.ALL, this::runWarpTask);
+        if (core.isAuthoritative()) {
+            SparkLevel.getPhysicsLevel(core.getLevel()).submitImmediateTask(PPhase.PRE, () -> {
+                runWarpTask();
+                return null;
+            });
+        }
 
         intakeCount++;
         String report = "栈空、目标 ≠ 锚点（不在自身运动 / 客户端上报 / 本模组运行时回写三类作用域内）";
@@ -495,11 +500,9 @@ public final class HostPositionIntake {
     // ═══════════════════════════════════════════════
 
     /**
-     * 物理线程（或主线程）执行控制器侧的 warp。
+     * 物理线程在 PRE 阶段传送控制器与身体。
      * <p>
-     * {@code PPhase.ALL} 的任务在执行点有两处（物理线程的 {@code prePhysicsTick} / {@code physicsTick} 与
-     * 主线程的 {@code LevelTickEvent.Pre/Post}），落在主线程时与物理步并发，写的是刚体变换，属既定的
-     * 良性竞态（`docs/宿主位置权威与位移摄入设计.md` §6.1 第 1 行）。
+     * 控制器、身体刚体与锚点在同一任务中移动，见 {@link ArmsCore#warpController(Vector3f)}。
      * <p>
      * 落点是<b>这次摄入的目标</b>，而移动一个已入世的刚体收成两项：位置写入与速度处理（清垂直分量、
      * 保留水平动量），见 {@code common/control/MechaCharacter.java#warp}。
@@ -511,9 +514,7 @@ public final class HostPositionIntake {
         if (!warpPending) return;
         warpPending = false;
         if (!core.isAuthoritative()) return;
-        // 落点用新向量而不是复用缓冲：本方法可能落在物理线程或主线程，而摄入是罕见事件，
-        // 一次小额分配换掉「两个线程同时用同一个缓冲」这个不需要承担的风险
-        core.getBody().warp(new Vector3f(warpX, warpY, warpZ));
+        core.warpController(new Vector3f(warpX, warpY, warpZ));
         markPinLanded();
     }
 

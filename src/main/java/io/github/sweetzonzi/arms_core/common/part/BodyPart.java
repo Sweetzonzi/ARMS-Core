@@ -9,7 +9,7 @@ import net.minecraft.world.level.Level;
 
 import java.util.UUID;
 
-/** 身体部件，持有真实子结构；占位阶段的刚体保持在物理世界之外。 */
+/** 身体部件，持有由 ArmsCore 统一入世的子结构。 */
 public final class BodyPart extends AbstractPart<BodyPartType> {
     public static final PartCreationContext CONTEXT = new PartCreationContext(false);
     /** 结构资源是否已经释放；部件受损摧毁由 MM 的耐久判据负责。 */
@@ -66,6 +66,6 @@ public final class BodyPart extends AbstractPart<BodyPartType> {
     }
 
     @Override public void addToLevel() {
-        throw new UnsupportedOperationException("身体占位结构尚未接入物理装配");
+        throw new UnsupportedOperationException("身体部件必须由 ArmsCore 批量加入物理空间");
     }
 }
