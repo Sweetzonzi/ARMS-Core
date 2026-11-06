@@ -50,7 +50,7 @@
 
 创建包 `network/payload/ArmsCoreCreatePayload.java#body` 携带身体组成 NBT，协议版本为 `network/ARMSNetwork.java#PROTOCOL_VERSION` 的 `arms_core:4`。登录补发使用同一个创建包；成员变化在下一主线程 tick 发送完整组成快照。客户端由 `common/MechaCoreRegistry.java#queueClientSnapshot` 暂存请求，定义发布后通过 `#flushClientSnapshots` 一次性构造核心与成员。等待期间的同步增量由 `#queuePendingSync` 合并，移除包或维度清理会取消待创建请求。此同步不将占位身体接入整机渲染。
 
-创建包还提供每个 SubPart 的 MM 同步 ID 和初始位姿。`common/ArmsCore.java#tickBody` 先发送组成，再将服务端子部件加入 MM 注册表。客户端的 `common/ArmsCore.java#enterClientBody` 按相同 ID 注册，并在物理线程加入运动学刚体。后续位姿复用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/network/payload/SubPartSyncPayload.java#handler`，接收后在物理线程应用。尚未注册的子部件增量直接跳过。F3+B 通过 Spark 的客户端物理调试绘制显示已入世的碰撞形状。
+创建包还提供每个 SubPart 的 MM 同步 ID 和初始位姿。`common/ArmsCore.java#tickBody` 先发送组成，再将服务端子部件加入 MM 注册表。客户端候选先以未注册 ID 恢复，组成确认后由 `common/ArmsCore.java#assignClientSubPartIds` 赋予同步 ID。`common/ArmsCore.java#enterClientBody` 注册成员，并在物理线程加入运动学刚体。后续位姿沿用 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/network/payload/SubPartSyncPayload.java#handler` 的收包与应用时序。F3+B 通过 Spark 的客户端物理调试绘制显示已入世的碰撞形状。
 
 ## 5. 验证
 

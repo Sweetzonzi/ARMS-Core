@@ -6,10 +6,11 @@ import cn.solarmoon.spark_core.animation.model.ModelController;
 import cn.solarmoon.spark_core.animation.model.ModelIndex;
 import cn.solarmoon.spark_core.animation.model.ModelInstance;
 import cn.solarmoon.spark_core.animation.model.origin.OModel;
-import cn.solarmoon.spark_core.molang.SparkMolangContext;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaModelPreset;
+import io.github.sweetzonzi.arms_core.common.control.presentation.MechaMolangContext;
 import lombok.Getter;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.NotNull;
@@ -95,13 +96,40 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     @NotNull
     private final Map<String, Object> variables = new HashMap<>();
 
-    /** 一次性缓存的 MoLang 上下文（接口默认实现每次调用都新建，类注释见 {@code IAnimatable.kt:85}） */
+    /**
+     * 一次性缓存的 MoLang 上下文（接口默认实现每次调用都新建，类注释见 {@code IAnimatable.kt:85}）。
+     * <p>
+     * 类型是本仓库自己的 {@link MechaMolangContext}：内容包用到的 {@code query.*} 由它提供，
+     * 表现层编排器把它当 {@code contextProvider} 传给四台姿态机，因此姿态图条件与骨骼 molang
+     * 读到的是同一份值。它的取值与发布点见该类注释。
+     */
     @Getter
     @NotNull
-    private final SparkMolangContext<MechaAnimatable> molangContext;
+    private final MechaMolangContext molangContext;
 
     /** 同步位姿的采样与插值状态 */
     private final ClientMechaAnchor anchor = new ClientMechaAnchor();
+
+    /** 服务器 tick 率：同步速度 (m/s) 与每 tick 位移 (m/tick) 之间换算，也是角速度差分的时间基 */
+    private static final float TICKS_PER_SECOND = 20f;
+
+    /**
+     * {@code yaw_speed} 的一阶滤波系数。
+     * <p>
+     * 时间常数取 0.1 s：每 tick 采样一次，α = 1 − e^(−dt/τ) = 1 − e^(−0.5) ≈ 0.39。
+     * 滤波的理由是差分放大量化误差——同步偏航按 1/256 度量化，20 Hz 差分后噪声是真实角速度的
+     * 可观分量，未滤波的值会让内容包里的 {@code math.abs(yaw_speed)>120} 一类判据误触发。
+     */
+    private static final float YAW_SPEED_SMOOTHING = 0.4f;
+
+    /** 上一 tick 的同步偏航（度）；首次采样时为 NaN，表示还没有前值可差分 */
+    private float lastYaw = Float.NaN;
+
+    /** 偏航角速度（度/秒）的滤波状态，由上式逐步收敛 */
+    private float yawSpeed;
+
+    /** 动画体存在时长（秒），每客户端 tick 累加一个 tick */
+    private float lifeTimeSeconds;
 
     /**
      * 同步插值位姿的复用缓冲。
@@ -124,7 +152,7 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
         this.defaultModelIndex = MechaModelPreset.FRAME_MODEL;
         this.modelController = new ModelController(this);
         this.animController = new AnimController(this);
-        this.molangContext = new SparkMolangContext<>(this);
+        this.molangContext = new MechaMolangContext(this);
         // 贴图另放一层同名目录（frame/bmpt/bmpt.png），ModelInstance 默认推导的
         // textures/frame/bmpt.png 不存在，必须显式指定
         this.modelController.setTextureLocation(MechaModelPreset.FRAME_TEXTURE);
@@ -144,8 +172,43 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
      */
     public void clientTick(long clientTick) {
         anchor.acceptFromSyncedData(animatable, clientTick);
+        publishMolangInputs();
         refreshModelIfNeeded();
         animController.tick();
+    }
+
+    /**
+     * 把本 tick 的同步数据发布给 MoLang 上下文。
+     * <p>
+     * 发布点选在这里而不是 {@code @QueryBinding} 方法里：同步数据容器（{@code SynchedEntityData}）
+     * 只在主线程读，而 molang 求值在物理线程；本方法把需要的那几个数读出来存进上下文的 volatile 字段，
+     * 物理线程因此只读普通字段。发布值都是「最近一次采样」，与渲染插值无关（插值在别处做）。
+     * <p>
+     * 一次采样发布四组量：速度、每 tick 位移、朝向与角速度、存在时长。
+     * 头部朝向不在这里——它唯一的来源（宿主实体）只在渲染路径上拿得到，
+     * 由 {@code client/MechaPlayerRenderer.java#onRenderPlayerPre} 发布。
+     */
+    private void publishMolangInputs() {
+        Vector3f velocity = animatable.getSyncedData().get(ArmsCore.DATA_VEL);
+        float groundSpeed = (float) Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+        molangContext.setMotion(groundSpeed, velocity.y);
+        // 每 tick 位移 = 同步线速度 / tick 率：与 DATA_POS 的相邻采样之差同义，
+        // 但取速度这一路不会有传送帧的孤立大值
+        molangContext.setPositionDelta(
+                velocity.x / TICKS_PER_SECOND,
+                velocity.y / TICKS_PER_SECOND,
+                velocity.z / TICKS_PER_SECOND);
+
+        float yaw = animatable.getSyncedData().get(ArmsCore.DATA_YAW).getY();
+        if (!Float.isNaN(lastYaw)) {
+            float delta = Mth.wrapDegrees(yaw - lastYaw) * TICKS_PER_SECOND;
+            yawSpeed += (delta - yawSpeed) * YAW_SPEED_SMOOTHING;
+        }
+        lastYaw = yaw;
+        molangContext.setFacing(yaw, yawSpeed);
+
+        lifeTimeSeconds += 1f / TICKS_PER_SECOND;
+        molangContext.setLifeTime(lifeTimeSeconds);
     }
 
     /**

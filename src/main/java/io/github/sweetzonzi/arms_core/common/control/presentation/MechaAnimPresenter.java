@@ -200,6 +200,13 @@ public final class MechaAnimPresenter {
         List<IAnimatable<?>> readyTargets = List.copyOf(ready);
         molangContext = readyTargets.get(0).getMolangContext();
 
+        // 把逻辑层与表现层共用的变量容器交给 MoLang 上下文：内容包里的 q.is_in_water / q.is_sneaking
+        // 问的是逻辑层的姿态，只有拿到同一个容器才读得到。注入必须早于四台机器——它们在被构造时
+        // 就带着 contextProvider 与变量容器，之后再注入不会重建已经建好的机器。
+        if (molangContext instanceof MechaMolangContext mechaMolang) {
+            mechaMolang.attachVariables(variables);
+        }
+
         startPersistentLayers(readyTargets);
         startPostureMachines(readyTargets);
         captureResourceStamps(readyTargets);

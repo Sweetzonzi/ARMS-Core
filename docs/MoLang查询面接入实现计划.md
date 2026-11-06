@@ -1,6 +1,6 @@
 # MoLang 查询面接入实现计划
 
-> 状态：**计划（未实施）**。前置：`../Spark-Core/docs/molang_compiled_path_defects_plan.md` 的 A1（编译路径除零口径）。
+> 状态：**阶段 1~4 已实现**（单元车道全绿，待实机验收）。前置：`../Spark-Core/docs/molang_compiled_path_defects_plan.md` 的 A1、A2、A4 都已落地；实施期间追加发现的 D4 见该文 §4。落地形态与本文方案有出入的地方逐条记在 §4 的「落地差异」里，读方案与读实现时要对照那一段。
 > 本文只做一件事：把内容包真正用到的 `query.*` 查询接到 ARMS-Core 的数据上，并让「内容包里的每条 molang 都能求出一个有限值」变成可回归的判据。
 > 表现层动画本身的接入见 `docs/表现层动画接入实现计划.md`；本文是它的补丁，不改变那张图或那份映射表。
 
@@ -54,7 +54,7 @@
 | 求值得到 `NaN` | 26（全部来自除零：`jump` 6、`fly` 4、`run_jump_left` 4、`run_jump_right` 4、`gun_jump` 6、`parallel1_2` 2） |
 | 抛异常 | 33（多级左值赋值 31、布尔上下文里的未绑定查询 2） |
 
-这三类在 A1 / A2 / 本文落地后应全部归零——这就是本文阶段 3 那条用例的来处。
+这三类在上游 A1 / A2 与本文落地后全部归零：`common/control/presentation/MechaPackMolangTest.java#everyPackExpressionIsFiniteAndDoesNotThrow` 在同一批 2323 条表达式上跑出 0 条 `NaN`、0 条异常（本机 0.5 秒）。这就是本文阶段 3 那条用例的来处。
 
 ## 1. 目标与非目标
 
@@ -186,7 +186,7 @@ molangContext.setMotion(ground, velocity.y);
 | 产出 | 内容包用到的命名空间与名字清单；全包 2323 条表达式的 NaN / 异常清单；未绑定查询在布尔上下文抛 `VerifyError` 的证据（见上游文档 §3） |
 | 验收 | 清单能解释用户报告的现象：`jump` / `fly` 的四肢骨骼命中 26 条 `NaN` 中的 10 条，其余骨骼不含该除法 |
 
-### 阶段 1：上下文与两个运动量
+### 阶段 1：上下文与两个运动量（已落地）
 
 | 项 | 内容 |
 |----|------|
@@ -194,7 +194,7 @@ molangContext.setMotion(ground, velocity.y);
 | 验收 | 单元：`q.ground_speed` / `q.vertical_speed` 在给定上下文后读回设定值；未设定时读 0；`jump` / `fly` 的原式在 `v = 0` 与 `v = 3` 下均有限（依赖上游 A1）。实机：进入空中姿态四肢正常显示，且摆臂幅度随上升/下落速度变化 |
 | 落地位置 | `common/control/presentation/MechaMolangContext.java`（新增）、`client/MechaAnimatable.java#molangContext`、`client/MechaAnimatable.java#clientTick` |
 
-### 阶段 2：其余八个 `q.*`
+### 阶段 2：其余八个 `q.*`（已落地）
 
 按「来源是否现成、是否需要新接线」分两批，逐名给出来源与判据：
 
@@ -206,14 +206,14 @@ molangContext.setMotion(ground, velocity.y);
 | `yaw_speed` | 6 | `DATA_YAW` 的 y 对时间的差分（度/秒），一阶滤波 | 同 `body_y_rotation`（并保存上一次的 yaw 与 tick） |
 | `head_x_rotation` | 5 | 宿主实体的头部俯仰（度） | 只在渲染期拿得到宿主实体（`client/MechaPlayerRenderer.java#onRenderPlayerPre`）；由渲染路径发布 |
 | `head_y_rotation` | 1 | 宿主实体的头部偏航（度） | 同 `head_x_rotation`（渲染路径发布） |
-| `position_delta` | 4 | **待定**：先按 `DATA_POS` 的每 tick 位移（m/s 矢量）实现，再从具体用法反推是否需要局部坐标系 | 阶段 0 的清单里没有它的语义证据，落地前先在实机上确认这两个动画的意图 |
+| `position_delta` | 4 | 世界系每 tick 位移：`DATA_VEL` 三分量各除以 20（tick/s） | 与 `setMotion` 同批在 `clientTick` 发布；单位依据见 §4 落地差异第 1 条 |
 | `life_time` | 2 | 动画体创建以来的秒数 | `MechaAnimatable` 自持一个计数器，`clientTick` 里更新后发布 |
 
 验收：同一批表达式在绑定上下文上全部求值成功（不抛异常）；`is_in_water` / `is_sneaking` 在对应状态下取 1、其余取 0（用调试打印比对 `variables` 的 one-hot）。
 
 落地位置：`common/control/presentation/MechaMolangContext.java`、`common/control/presentation/MechaAnimPresenter.java`（注入变量容器）、`client/MechaAnimatable.java`、`client/MechaPlayerRenderer.java`。
 
-### 阶段 3：全包有限性用例（回归闸门）
+### 阶段 3：全包有限性用例（回归闸门）（已落地）
 
 | 项 | 内容 |
 |----|------|
@@ -223,12 +223,24 @@ molangContext.setMotion(ground, velocity.y);
 | 依赖 | 上游 A1 与 A2：不修 A1 时 26 条是 `NaN`；不修 A2 时 31 条抛 `VerifyError`。因此本条用例通过等于上游两项修正在本内容包上的验收 |
 | 落地位置 | 用例文件本身；证据数字见 §0.4 |
 
-### 阶段 4：文档与注释同步
+### 阶段 4：文档与注释同步（已落地）
 
 | 项 | 内容 |
 |----|------|
 | 改动 | `common/control/presentation/MechaMolangContext.java` 的类注释（值的来源、线程约定、为何不读同步容器）；`client/MechaAnimatable.java` 的 `molangContext` 字段注释；`AGENTS.md` 的 `common/control/presentation/` 行与文档参考表；`docs/分层控制器与状态机设计.md` 的 MoLang 一节（记录 `q.*` 查询面已落地的那部分，与 `ctrl.*` 仍未落地分开写） |
 | 验收 | `pwsh -NoProfile -File tools/check_doc_refs.ps1` 退出码 0；按 `AGENTS.md` 的文档编辑规范做一次触发词扫描 |
+
+### 落地差异
+
+以下是落地形态与本文方案不同的地方。每条都给出代码坐标；读方案时以这里为准。
+
+1. **`position_delta` 的单位取 m/tick，不是 m/s。** 阶段 2 表把它写成「`DATA_POS` 的每 tick 位移（m/s 矢量）」，两种说法互相矛盾；落地取「每 tick 位移」，因为用法的量纲站在这一边：内容包把它与 `ysm.bone_pivot_abs('Root')/16` 这类「格」量相加减（`bmpt_main.animation.json:8913` 的 `head_forward_delta` 一行），乘上内容侧系数 2.2 之后必须仍落在格的量级上——冲刺 5.6 m/s 若按 m/s 传入，`2.2*5.6` 会比同式的枢轴项大一个数量级，按 m/tick 传入则是 0.62 格。三个轴都由 `DATA_VEL` 的各分量除以 20（tick/s）发布，越界轴返回 0。语义（世界系还是局部系）仍待实机确认，仍未闭合的部分记在 §6。坐标 `common/control/presentation/MechaMolangContext.java#queryPositionDelta`、`client/MechaAnimatable.java#publishMolangInputs`。
+2. **`head_y_rotation` 取「头 − 身体」的相对角。** 阶段 2 表写的是「宿主实体的头部偏航（度）」。落地取相对角：机体本身已经按头朝向摆放（`client/MechaPlayerRenderer.java#onRenderPlayerPre` 的 `facingYaw`），绝对偏航会随朝向整体翻转，而内容包要的是「头相对身体的转角」这件事本身。两个角都在渲染路径按部分 tick 插值，与画模型用的是同一个部分 tick。
+3. **`life_time` 取秒。** 阶段 2 表写的是「动画体创建以来的秒数」，落地就是按客户端 tick 累加 `1/20`（`client/MechaAnimatable.java#lifeTimeSeconds`）。`../Spark-Core/src/main/java/cn/solarmoon/spark_core/molang/SparkEntityContext.java#lifeTime` 提供的同名查询是 tick 数，与本类量级不同，取秒是为内容包的用法：`math.sin(100*query.life_time)`（`bmpt_main.animation.json:2961`、`:2975`）按秒约 16 Hz，按 tick 则是每 tick 100 rad。
+4. **`yaw_speed` 是一阶滤波后的度/秒。** 差分走最短角路径（`Mth.wrapDegrees`），首次采样时不差分（还没有前值）；滤波时间常数 0.1 s、每 tick 一次采样下系数 0.4（`client/MechaAnimatable.java#YAW_SPEED_SMOOTHING`）。滤波的理由是同步偏航按 1/256 度量化，未滤波的 20 Hz 差分噪声会让 `math.abs(q.yaw_speed)>120`（`bmpt_main.animation.json:9202`）一类判据误触发。
+5. **阶段 2 的两项非运动量查询取自逻辑层的姿态 one-hot。** `is_sneaking` → `IS_CROUCHING`、`is_in_water` → `IN_WATER_POSTURE`（`common/control/state/MechaStateVariableKeys.java`）。容器由表现层编排器在建立四台姿态机之前注入（`common/control/presentation/MechaAnimPresenter.java#start`），与阶段 2 表第一行的接线方式一致。
+6. **新增一项上游依赖：一元负号后紧跟函数调用的解析错位。** 实施期间发现内容包里 6 处 `-math.clamp(query.ground_speed*4,0,40)` 与 `-30-math.clamp(...)`（jump / fly 的手臂旋转，`bmpt_main.animation.json:2861`、`:2932`、`:2935` 与 `bmpt_tac.animation.json:1503`、`:1574`、`:1577`）在修正前求值恒为 0：表达式被解析成「对函数表达式取负再调用」，两条求值路径都取不到该函数。修正在 `../Spark-Core/docs/molang_compiled_path_defects_plan.md` §4（D4），本仓库由 `common/control/presentation/MechaMolangContextTest.java#negatedClampCurveKeepsItsValue` 守住。
+7. **阶段 3 的用例比方案多一条断言。** 方案列了三条（不抛、有限、总数下限 2323）；落地把「不抛」与「有限」合并成同一次遍历的失败清单，一次报出全部失败项而不是第一条就中断——内容包出问题时需要看到全集。
 
 ## 5. 验证方式
 
@@ -237,6 +249,8 @@ molangContext.setMotion(ground, velocity.y);
 | 单元（`./gradlew --offline test`） | 绑定取值、未设定时的默认值、全包 2323 条表达式的有限性与不抛 | 值是否与真实运动一致 |
 | 实机（`runClient`） | 空中姿态四肢是否显示、摆臂/裙摆是否随速度变化、入水与蹲伏的查询是否取到 1 | 数值标定（`*3` 这类系数是内容侧的手感，需要人眼） |
 | 服务端（`runServer` / `GameTestServer`） | 服务端不因新增上下文而改变行为（服务端不注入动画目标，`progress` 空转） | 客户端表现 |
+
+单元车道的实测（本机，`./gradlew --offline test`）：`MechaMolangContextTest` 7 例、`MechaPackMolangTest` 1 例全绿；全量用例在同一批 2323 条表达式上 0 条 `NaN`、0 条异常。
 
 实机判据（阶段 1 完成即可看）：
 
@@ -251,7 +265,7 @@ molangContext.setMotion(ground, velocity.y);
 | `ysm.*`（1240 处） | `head_pitch` / `head_yaw` / `bone_rot` / `bone_pivot_abs` 需要按骨骼名读当前姿态的枢轴与旋转；`first_order` / `second_order` 是二阶滤波函数；`input_vertical` / `input_horizontal` 可以直接取 `../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/state_machine/presets/StateVariableKeys.kt#INPUT_FORWARD` / 侧移输入；`has_offhand` / `has_mainhand` / `has_chest_plate` 是装配体装备状态 | 这是**引擎侧的新查询面**（要在求值上下文里访问 `ModelController` 的骨骼姿态与滤波状态），需要单独的设计与线程约定；它影响的是 `pre_parallel*` 与物理模拟层（`docs/表现层动画接入实现计划.md` §8.2 已列为缺口），不影响本期姿态选片 |
 | `ctrl.*`（231 处） | 武器/炮塔本地状态机 | 属逻辑层设计（`docs/分层控制器与状态机设计.md` §9），要等 Part 与武器接入 |
 | `parallel1_1` / `parallel1_2` 的物理模拟链路 | 这两层是内容包自带的二阶物理模拟层，写 `v.*` 状态并在 timeline 里做积分；它们的除数（`v.h2F_jx` 等）默认 0，A1 之后得到 0 而不是 `NaN` | 层本身尚未接入（`docs/表现层动画接入实现计划.md` §8.2） |
-| `position_delta` 的语义 | 见阶段 2 表 | 缺语义证据，落地前需实机确认 |
+| `position_delta` 的语义 | 已按「世界系每 tick 位移」落地（见 §4 落地差异第 1 条）；是否应为局部系、以及它服务的头部滞后层（`parallel1_1` / `parallel1_2`）何时接入 | 缺语义证据，需实机确认；本条只记录仍未闭合的部分 |
 
 ## 7. 风险
 

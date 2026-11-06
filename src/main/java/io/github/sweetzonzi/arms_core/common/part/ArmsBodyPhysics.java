@@ -38,6 +38,15 @@ public final class ArmsBodyPhysics {
     private final Vector3f targetVelocity = new Vector3f();
     private final Vector3f positionCorrection = new Vector3f();
     private final Matrix3f facing = new Matrix3f();
+    /**
+     * 本步写进锚点的线速度 / 角速度副本。
+     * <p>
+     * 运动学刚体的 {@code getLinearVelocity} 在 Minie 里带 {@code assert isDynamic()}，读不回来；
+     * 这两个字段保存的是「求解器这一步看到的目标速度」，调试录制用它代替读取。
+     */
+    private final Vector3f anchorLinearVelocity = new Vector3f();
+    private final Vector3f anchorAngularVelocity = new Vector3f();
+
     public ArmsBodyPhysics(BodyPart core, Collection<AbstractPart<?>> parts, Transform controllerPose, float coreHeightOffset) {
         this.coreHeightOffset = coreHeightOffset;
         var children = parts.stream().flatMap(part -> part.subParts.values().stream()).toList();
@@ -81,6 +90,21 @@ public final class ArmsBodyPhysics {
         space.addJoint(rootJoint);
     }
 
+    /** 运动学锚点刚体；调试录制需要读它的真实位姿。 */
+    public PhysicsRigidBody anchor() {
+        return anchor;
+    }
+
+    /** 本步写进锚点的线速度副本（运动学刚体的速度读不回来，见字段注释）。 */
+    public Vector3f anchorLinearVelocity(Vector3f store) {
+        return (store == null ? new Vector3f() : store).set(anchorLinearVelocity);
+    }
+
+    /** 本步写进锚点的角速度副本。 */
+    public Vector3f anchorAngularVelocity(Vector3f store) {
+        return (store == null ? new Vector3f() : store).set(anchorAngularVelocity);
+    }
+
     /** 在控制器消费本步输入之后、Bullet 求解之前更新约束目标。 */
     public void followControllerStep(PhysicsRigidBody controller) {
         anchor.setPhysicsTransform(bodyTarget(controller.getTransform(targetPose)));
@@ -94,6 +118,7 @@ public final class ArmsBodyPhysics {
             positionCorrection.multLocal(ROOT_MAX_POSITION_SPEED / correctionSpeed);
         }
         anchor.setLinearVelocity(controller.getLinearVelocity(targetVelocity).addLocal(positionCorrection));
+        anchorLinearVelocity.set(targetVelocity);
 
         targetPose.getRotation().toRotationMatrix(facing);
         float targetX = facing.get(0, 2);
@@ -106,6 +131,7 @@ public final class ArmsBodyPhysics {
         controller.getAngularVelocity(targetVelocity);
         targetVelocity.y += Math.clamp(yawError * ROOT_YAW_GAIN, -ROOT_MAX_YAW_SPEED, ROOT_MAX_YAW_SPEED);
         anchor.setAngularVelocity(targetVelocity);
+        anchorAngularVelocity.set(targetVelocity);
         root.activate();
     }
 

@@ -160,6 +160,13 @@ public final class MechaPlayerRenderer {
         MechaAnimatable animatable = findAnimatable(core.getAssemblyId());
         if (animatable == null) return;
 
+        // 头部朝向的发布点在这里，而不是每 tick 的 clientTick：宿主实体只在渲染期拿得到。
+        // 三个角都按部分 tick 插值（xRotO / yHeadRotO / yBodyRotO 是上一 tick 的值），
+        // 与画模型用的是同一个部分 tick，因此不会有帧内错位。
+        // head_y_rotation 取「头 − 身体」：机体本身已经按头朝向摆好（下面 facingYaw），
+        // 内容包要的是「头相对身体的转角」这件事本身，绝对偏航会随朝向整体翻转。
+        applyHeadRotation(animatable, player, event.getPartialTick());
+
         // 取消原版玩家渲染：玩家模型、其全部 RenderLayer（护甲 / 手持物 / 披风 / 鞘翅）与阴影一并消失。
         // 名称牌是独立的渲染通道，不受本取消影响。
         event.setCanceled(true);
@@ -178,6 +185,24 @@ public final class MechaPlayerRenderer {
                 : Mth.rotLerp(partialTick, player.yHeadRotO, player.yHeadRot);
         renderModel(event.getPoseStack(), event.getMultiBufferSource(), level, animatable,
                 player, facingYaw, partialTick);
+    }
+
+    /**
+     * 发布宿主实体的头部朝向给 MoLang 上下文。
+     * <p>
+     * {@code head_x_rotation} 取俯仰（{@link Player#getXRot()}），{@code head_y_rotation}
+     * 取「头 − 身体」并归约到 [−180, 180)：身体偏航由原版按移动方向推进，
+     * 本机玩家的 {@code getYRot()} 是视线方向，两者之差才是内容包要的相对转角。
+     *
+     * @param animatable  该装配体的动画体
+     * @param player      宿主实体
+     * @param partialTick 渲染部分 tick
+     */
+    private static void applyHeadRotation(MechaAnimatable animatable, Player player, float partialTick) {
+        float pitch = Mth.lerp(partialTick, player.xRotO, player.getXRot());
+        float headYaw = Mth.rotLerp(partialTick, player.yHeadRotO, player.yHeadRot);
+        float bodyYaw = Mth.rotLerp(partialTick, player.yBodyRotO, player.yBodyRot);
+        animatable.getMolangContext().setHeadRotation(pitch, Mth.wrapDegrees(headYaw - bodyYaw));
     }
 
     /**

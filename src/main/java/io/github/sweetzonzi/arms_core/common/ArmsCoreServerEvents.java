@@ -8,6 +8,7 @@ import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
+import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.network.payload.MechaCoreSyncPayload;
 import net.minecraft.core.Rotations;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -105,14 +106,18 @@ public final class ArmsCoreServerEvents {
             for (ArmsCore core : MechaCoreRegistry.all(level)) {
                 core.tickBody();
                 projectLogicState(core);
+                MechaTelemetry.onClientMainTick(core);
             }
+            MechaTelemetry.flushClient();
             return;
         }
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             if (!core.isInLevel()) continue;
             core.tickBody();
             syncToClients(core);
+            MechaTelemetry.onServerMainTick(core);
         }
+        MechaTelemetry.flushServer();
     }
 
     /**
@@ -393,6 +398,7 @@ public final class ArmsCoreServerEvents {
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void onLevelUnload(LevelEvent.Unload event) {
         if (!(event.getLevel() instanceof Level level)) return;
+        MechaTelemetry.stopAll();
         MechaCoreRegistry.onLevelUnload(level);
     }
 }

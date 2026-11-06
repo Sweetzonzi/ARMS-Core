@@ -10,6 +10,7 @@ import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyAssembly;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyPhysics;
@@ -243,8 +244,9 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Getter
     private String assemblyName = "ArmsCore";
     private boolean bodyDirty;
-    private volatile boolean disposed;
+    private volatile boolean isRemoved;
     /** 只在物理线程读写，维度关闭后由主线程清空。 */
+    @Getter
     @Nullable
     private ArmsBodyPhysics bodyPhysics;
     private final CompletableFuture<Void> bodyReleased = new CompletableFuture<>();
@@ -352,7 +354,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         children.forEach(ObjectManager::addDestroyableObject);
         SparkLevel.getPhysicsLevel(level).submitImmediateTask(PPhase.PRE, () -> {
             synchronized (this) {
-                if (disposed) return null;
+                if (isRemoved) return null;
                 var world = SparkLevel.getPhysicsLevel(level).getWorld();
                 for (var child : children) {
                     if (!child.isRemoved() && !child.body.isInWorld()) world.addCollisionObject(child.body);
@@ -462,11 +464,13 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      */
     public void prePhysicsTick(float dt) {
         MechaControl control = this.mechaControl;
-        if (control == null || disposed || authoritative && !isInLevel()) return;
+        if (control == null || isRemoved || authoritative && !isInLevel()) return;
 
         // ② 下行状态写入 → 帧逻辑（仅权威侧） → 表现层推进 → extractAnimRootDelta → 控制器物理步
         control.onPhysicsStep(dt);
         if (bodyPhysics != null) bodyPhysics.followControllerStep(getBody());
+        // 调试录制：未开启时只是一次 volatile 读，开销可忽略（见 common/debug/MechaTelemetry）
+        MechaTelemetry.onPhysicsStep(this, dt);
 
         // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）。
         // 仅权威侧：客户端不从容器反推状态——它的四项是下行通道送来的，发布它们没有消费者，
@@ -495,7 +499,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * @param controllerCenter 控制器碰撞体中心的世界坐标（不是脚底坐标，见计划 §3.14）
      */
     public synchronized void enterPhysicsSpace(Vector3f controllerCenter) {
-        if (!authoritative || disposed || isInLevel()) return;
+        if (!authoritative || isRemoved || isInLevel()) return;
         var space = SparkLevel.getPhysicsLevel(level).getWorld();
         MechaCharacter body = getBody();
         body.setPhysicsLocation(controllerCenter);
@@ -516,7 +520,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 在同一物理阶段传送控制器和身体，保持关节之间的相对姿态。 */
     void warpController(Vector3f target) {
-        if (disposed) return;
+        if (isRemoved) return;
         var controller = getBody();
         var delta = target.subtract(controller.getPhysicsLocation(null));
         controller.warp(target);
@@ -652,7 +656,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 检查主线程装配入口的共同前置条件。 */
     private void validateMember(AbstractPart<?> part) {
-        if (disposed) throw new IllegalStateException("装配体已释放");
+        if (isRemoved) throw new IllegalStateException("装配体已释放");
         if (isInLevel()) throw new IllegalStateException("身体入世后暂不支持更换成员");
         if (!acceptsPartType(part.type) || part.level != level || part.isDestroyed()
                 || part instanceof BodyPart body && body.isDisposed()
@@ -714,7 +718,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 保存身体组成；核心通过 UUID 引用集合中的唯一实例。 */
     public ArmsBodyData saveBody() {
-        if (disposed) throw new IllegalStateException("已释放的装配体不能保存");
+        if (isRemoved) throw new IllegalStateException("已释放的装配体不能保存");
         return new ArmsBodyData(assemblyName, corePart.uuid,
                 partMap.values().stream().map(AbstractPart::save).toList(),
                 bodyLinks.stream().map(ArmsBodyAssembly.Link::save).toList(), frameId);
@@ -727,7 +731,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 应用同一具机体的组成快照，保持核心实例及成员容器的身份稳定。 */
     public synchronized void applyBodySnapshot(ArmsBodyData data) {
-        if (disposed) throw new IllegalStateException("装配体已释放");
+        if (isRemoved) throw new IllegalStateException("装配体已释放");
         if (!corePart.uuid.equals(data.corePartId())) {
             throw new IllegalArgumentException("组成快照不能更换核心");
         }
@@ -760,7 +764,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 主线程推进身体成员，并发送成员变化产生的完整组成快照。 */
     public void tickBody() {
-        if (disposed) return;
+        if (isRemoved) return;
         partMap.values().forEach(AbstractPart::onTick);
         if (authoritative && bodyDirty && MechaCoreRegistry.get(level, assemblyId) == this) {
             MechaCoreRegistry.syncBody(this);
@@ -772,8 +776,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** 停止步进，先在物理线程移除约束与刚体，再回主线程释放成员。 */
     public synchronized CompletableFuture<Void> disposeBody() {
-        if (disposed) return bodyReleased;
-        disposed = true;
+        if (isRemoved) return bodyReleased;
+        isRemoved = true;
         collectSubParts(partMap.values()).forEach(ObjectManager::removeDestroyableObject);
         if (authoritative && isInLevel()) {
             var physicsLevel = SparkLevel.getPhysicsLevel(level);
@@ -797,7 +801,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
 
     /** Spark 先关闭维度物理空间，此处只完成尚未执行的主线程清理。 */
     synchronized void disposeBodyAfterWorldClosed() {
-        disposed = true;
+        isRemoved = true;
         collectSubParts(partMap.values()).forEach(ObjectManager::removeDestroyableObject);
         inPhysicsSpace.set(false);
         if (bodyPhysics != null) {

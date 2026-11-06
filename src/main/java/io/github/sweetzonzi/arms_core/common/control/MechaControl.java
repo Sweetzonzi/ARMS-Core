@@ -422,8 +422,10 @@ public class MechaControl {
         if (hasBody()) {
             frameLogic(dt);
 
-            // —— 2b. 注入 MoLang ——
-            // TODO: molangContext.setVariables(variables);
+            // —— 2b. MoLang 注入 ——
+            // 这里没有逐步要做的事：变量容器由表现层编排器在建立四台姿态机之前交给 MoLang 上下文
+            // （common/control/presentation/MechaAnimPresenter.java#start → MechaMolangContext#attachVariables），
+            // 内容包的 q.* 因此读得到逻辑层刚写下的值。
 
             // —— 2c. 分发事件到本地动画状态机 ——
             // TODO: dispatchEventsToLocalMachines();

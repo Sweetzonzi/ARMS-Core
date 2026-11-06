@@ -14,6 +14,7 @@ import io.github.sweetzonzi.arms_core.common.MechaCoreRegistry;
 import io.github.sweetzonzi.arms_core.common.control.MechaConditionSnapshot;
 import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.common.part.ArmsFrameModule;
 import io.github.sweetzonzi.arms_core.common.part.BodyParts;
 import net.minecraft.commands.CommandSourceStack;
@@ -48,6 +49,8 @@ import java.util.UUID;
  *   <li>{@code /arms stop} —— 恢复空快照</li>
  *   <li>{@code /arms event <name>} —— 投递一个离散事件</li>
  *   <li>{@code /arms control <uuid>} —— 把控制权交给命令执行者</li>
+ *   <li>{@code /arms record [start|stop]} —— 开/停服务端位姿录制（CSV，见
+ *       {@link io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry}）</li>
  * </ul>
  *
  * @author Sweetzonzi
@@ -102,7 +105,11 @@ public final class ArmsCoreDebugCommand {
                                 .executes(ArmsCoreDebugCommand::postEvent)))
                 .then(Commands.literal("control")
                         .then(Commands.argument("uuid", StringArgumentType.string())
-                                .executes(ArmsCoreDebugCommand::control))));
+                                .executes(ArmsCoreDebugCommand::control)))
+                .then(Commands.literal("record")
+                        .executes(ctx -> record(ctx, null))
+                        .then(Commands.literal("start").executes(ctx -> record(ctx, true)))
+                        .then(Commands.literal("stop").executes(ctx -> record(ctx, false)))));
     }
 
     // ==========================================
@@ -270,6 +277,39 @@ public final class ArmsCoreDebugCommand {
         ArmsCore core = resolve(source, StringArgumentType.getString(ctx, "uuid"));
         ArmsCore.bindHostOf(player, core);
         source.sendSuccess(() -> Component.literal("已把装配体交给 " + player.getGameProfile().getName()), true);
+        return 1;
+    }
+
+    /**
+     * 开/停服务端位姿录制：{@code /arms record [start|stop]}。
+     * <p>
+     * 服务端这次只开 {@code server-physics} 与 {@code server-main} 两个文件（{@code logs/arms_core/}）。
+     * 客户端那一份要客户端自己执行 {@code /armsc record start}——两条命令各自写自己的文件，
+     * 不经过网络，也不需要提升协议版本。
+     *
+     * @param start {@code null} 表示切换
+     */
+    private static int record(CommandContext<CommandSourceStack> ctx, Boolean start) {
+        CommandSourceStack source = ctx.getSource();
+        boolean beginning = start != null ? start : !MechaTelemetry.isServerRecording();
+        if (beginning) {
+            try {
+                String description = MechaTelemetry.startServer();
+                source.sendSuccess(() -> Component.literal("服务端录制已开始：" + description), false);
+                source.sendSuccess(() -> Component.literal(
+                        "客户端那份请在客户端执行 /armsc record start"), false);
+                return 1;
+            } catch (IllegalStateException error) {
+                source.sendFailure(Component.literal(error.getMessage()));
+                return 0;
+            }
+        }
+        String description = MechaTelemetry.stopServer();
+        if (description == null) {
+            source.sendFailure(Component.literal("服务端未在录制"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("服务端录制已停止：" + description), false);
         return 1;
     }
 
