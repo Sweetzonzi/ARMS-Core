@@ -1,7 +1,9 @@
 package io.github.sweetzonzi.arms_core.common.control;
 
+import cn.solarmoon.spark_core.physics.level.PhysicsLevel;
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import com.jme3.bullet.PhysicsSpace;
+import com.jme3.bullet.collision.PhysicsCollisionObject;
 import com.jme3.bullet.collision.shapes.CollisionShape;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
@@ -14,7 +16,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -485,6 +489,18 @@ class MechaControlTest {
         @Override
         public MechAttr getAttr() {
             return new MechAttr();
+        }
+
+        @Override
+        public PhysicsLevel getPhysicsLevel() {
+            // 纯逻辑测试桩：不进入物理路径，也不会成为控制器刚体的 owner。
+            return null;
+        }
+
+        @Override
+        public Map<String, PhysicsCollisionObject> getAllPhysicsBodies() {
+            // 测试桩不拥有刚体。
+            return new HashMap<>();
         }
     }
 }

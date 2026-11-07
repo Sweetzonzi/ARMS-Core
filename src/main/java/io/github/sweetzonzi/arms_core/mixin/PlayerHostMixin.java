@@ -1,5 +1,6 @@
 package io.github.sweetzonzi.arms_core.mixin;
 
+import cn.solarmoon.spark_core.physics.body.CollisionFuncApplier;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.ArmsCore;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
@@ -67,6 +68,10 @@ public class PlayerHostMixin implements IArmsHost {
         return this.armsCore$controlledCore;
     }
 
+    public boolean shouldCreateDefaultPhysicsBody() {
+        return this.armsCore$controlledCore == null;
+    }
+
     /**
      * 建立 / 解除绑定。
      * <p>
@@ -100,6 +105,8 @@ public class PlayerHostMixin implements IArmsHost {
                 previous.getPositionIntake().reset();
             }
         }
+        Player player = getHostEntity();
+        CollisionFuncApplier.refreshDefaultBody(player, player.level());
         armsCore$syncFlightAbility(core != null);
     }
 
