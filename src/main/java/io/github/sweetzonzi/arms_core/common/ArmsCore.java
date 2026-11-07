@@ -191,7 +191,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <p>
      * 消费者只有两个：客户端摆放本地玩家实体的
      * {@code client/ClientHostPoseEvents.java#applySyncedPose}，以及渲染侧的
-     * {@code client/ClientMechaAnchor.java}。
+     * {@code client/MechaAnimatable.java}（模型矩阵取两端插值、LOD 距离取右端）。
      */
     private final @Nullable PoseDelayBuffer presentationPose;
 

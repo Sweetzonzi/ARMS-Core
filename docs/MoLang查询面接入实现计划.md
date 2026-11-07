@@ -28,7 +28,7 @@
 |------|------|------|
 | 动画体的求值上下文是缓存的 | `MechaAnimatable` 有一个 `molangContext` 字段，构造时建一次；因为它是 `IAnimatable` 上同名方法的实现，接口默认实现（每次新建）不会生效 | `client/MechaAnimatable.java#molangContext`、`client/MechaAnimatable.java#MechaAnimatable` |
 | presenter 用的就是这个上下文 | `MechaAnimPresenter` 在建立四台姿态机时取 `readyTargets.get(0).getMolangContext()` 作为 `contextProvider`，所以换掉它的实现类即可同时作用于**图条件**与**骨骼 molang** | `common/control/presentation/MechaAnimPresenter.java#molangContext`、`common/control/presentation/MechaAnimPresenter.java#startPostureMachines` |
-| 客户端主线程已在读同步数据 | `client/MechaAnimatable.java#clientTick` 每 tick 调 `client/ClientMechaAnchor.java#acceptFromSyncedData`，后者就是读 `DATA_POS` / `DATA_YAW` 的地方 | `client/MechaAnimatable.java#clientTick`、`client/ClientMechaAnchor.java#acceptFromSyncedData` |
+| 客户端主线程已在读同步数据 | `client/MechaAnimatable.java#clientTick` 每 tick 采样一次呈现位姿（`client/MechaAnimatable.java#samplePresentationPosition`，无样本时退回 `DATA_POS`），并在 `client/MechaAnimatable.java#publishMolangInputs` 里读 `DATA_VEL` / `DATA_YAW` | `client/MechaAnimatable.java#clientTick`、`client/MechaAnimatable.java#publishMolangInputs`、`common/ArmsCore.java#lerpPresentationPosition` |
 | 速度已经同步好了 | `DATA_VEL` 是 `Vector3f`，服务端每 tick 由刚体的线速度写入，单位 m/s（`DATA_POS` / `DATA_YAW` 同批） | `common/ArmsCoreServerEvents.java#syncToClients`、`common/ArmsCore.java#DATA_VEL` |
 | 客户端没有宿主实体 | `ArmsCore.host` 在客户端恒为 `null`（绑定关系只在服务端），因此 `head_*_rotation` / `is_in_water` 一类查询在客户端没有现成的源头，见 §6 | `common/ArmsCore.java#host` |
 | 四项逻辑状态已有下行 | 客户端主线程把 `DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` 投影进 `MechaControl.variables` 的枚举与 one-hot（`IS_CROUCHING` / `IN_WATER_POSTURE` / `IS_FALLING` 等） | `common/ArmsCoreServerEvents.java#projectLogicState`、`common/control/state/MechaStateVariableKeys.java#IS_CROUCHING` |
@@ -86,7 +86,7 @@
 
 `ground_speed` = 水平模长 `sqrt(vx² + vz²)`，`vertical_speed` = `v.y`（正向上，与内容包 `vertical_speed>0` 的用法一致），单位 m/s。取 m/s 而不是格/tick 的理由：内容包的用法是 `math.clamp(ground_speed*3, 0, 30)` 一类**转角**（度），格/tick 下冲刺 0.216 会让转角永远小于 1°，只有 m/s 量级才落在作者想要的 0~30° 区间。
 
-发布点放 `client/MechaAnimatable.java#clientTick`：它已经是「主线程每 tick 读一次同步数据」的位置（`anchor.acceptFromSyncedData` 就在里面），读 `core.getSyncedData().get(ArmsCore.DATA_VEL)` 不需要新的线程约定，也不需要新字段表项。
+发布点放 `client/MechaAnimatable.java#clientTick`：它已经是「主线程每 tick 读一次同步数据」的位置（采样呈现位姿的 `client/MechaAnimatable.java#samplePresentationPosition` 与发布运动量的 `client/MechaAnimatable.java#publishMolangInputs` 都挂在这条调用链上），读 `core.getSyncedData().get(ArmsCore.DATA_VEL)` 不需要新的线程约定，也不需要新字段表项。
 
 **不**在 `@QueryBinding` 方法里读 `SynchedEntityData`：同步数据容器只在主线程读，物理线程求值直接读它是跨线程读一个非线程安全结构。
 
@@ -155,7 +155,7 @@ public class MechaMolangContext extends SparkMolangContext<IAnimatable<ArmsCore>
 |------|------|
 | 字段 `molangContext` | 类型由 `SparkMolangContext<MechaAnimatable>` 改为 `MechaMolangContext`（`Getter` 生成的方法仍然满足 `IAnimatable` 上的 `getMolangContext()`） |
 | 构造 | `this.molangContext = new MechaMolangContext(this);` |
-| `clientTick` | 在 `anchor.acceptFromSyncedData` 之后读一次 `DATA_VEL`，算水平模长与 y 分量，调 `molangContext.setMotion(groundSpeed, verticalSpeed)` |
+| `clientTick` | 在采样呈现位姿之后读一次 `DATA_VEL`，算水平模长与 y 分量，调 `molangContext.setMotion(groundSpeed, verticalSpeed)` |
 
 速度读数的写法（不变更任何载荷与字段表）：
 

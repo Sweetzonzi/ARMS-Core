@@ -45,8 +45,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * </pre>
  *
  * <p><b>锚点只在物理线程。</b>{@code ArmsBodyPhysics#anchor} 是约束 A 端的运动学刚体，没有客户端副本，
- * 也不参与任何插值；它只出现在 {@code server-physics} 里。{@code client/ClientMechaAnchor.java} 是
- * 同一名字下的另一个对象（模型用的可视插值锚点），与本录制无关，不进任何一列。</p>
+ * 也不参与任何插值；它只出现在 {@code server-physics} 里。客户端那条呈现时间轴在录制的
+ * {@code pres_ctrl} 行（控制器呈现缓冲的右端，见 {@link #appendPresentation}），与它无关。</p>
  *
  * <p><b>开关。</b>服务端用 {@code /arms record start|stop}，客户端用 {@code /armsc record start|stop}
  * （客户端命令见 {@code client/ClientTelemetryCommand.java}）。两端各写各的文件；单人游戏下两端在同一个
@@ -370,8 +370,8 @@ public final class MechaTelemetry {
     }
 
     /**
-     * 控制器呈现缓冲的右端，也就是客户端模型锚点（{@code client/ClientMechaAnchor.java#acceptFromSyncedData}）
-     * 每 tick 取到的那一点，外加该缓冲的三个计数。
+     * 控制器呈现缓冲的右端，也就是客户端模型每 tick 取到的那个位置
+     * （{@code client/MechaAnimatable.java#samplePresentationPosition}），外加该缓冲的三个计数。
      * <p>
      * 与 {@code sub} 行对照即可看出「模型」与「SubPart 调试框」这两条呈现时间轴各自停在哪里：
      * 两条轴的滞后期望相同，实际偏移随各自的停帧节奏摆动。

@@ -45,9 +45,9 @@ import java.util.UUID;
  * <ol>
  *   <li><b>持有动画体</b>：按装配体 UUID 缓存 {@link MechaAnimatable}，寿命与
  *       {@link MechaCoreRegistry} 的客户端表一致（创建包到达后建立、注销或换维度后回收）；</li>
- *   <li><b>驱动动画</b>：每客户端 tick 采样一次同步位姿并推进动画（{@link MechaAnimatable#clientTick(long)}）。
- *       采样必须每 tick 做一次而不是渲染时做，因为 {@code ClientMechaAnchor} 的插值自变量是"距最近一次
- *       采样过了多少 tick"；</li>
+ *   <li><b>驱动动画</b>：每客户端 tick 采样一次同步位姿并推进动画（{@link MechaAnimatable#clientTick()}）。
+ *       采样必须每 tick 做一次而不是渲染时做，因为物理线程的 LOD 分档按它算距离，而同步数据只允许
+ *       主线程读；</li>
  *   <li><b>绘制</b>：在 {@link RenderPlayerEvent.Pre} 里取消原版玩家模型，并把机体就地画在同一位姿上。</li>
  * </ol>
  *
@@ -96,8 +96,6 @@ public final class MechaPlayerRenderer {
         Level level = mc.player.level();
         if (!level.isClientSide()) return;
 
-        long tick = level.getGameTime();
-
         // 回收：本 tick 注册表里查不到的 UUID 一律丢弃。放在创建之前，淘汰就不依赖后面的
         // 创建循环能否跑完（循环中途抛异常也不会把淘汰一起跳过）。
         // 不用「两张表的大小比较」来省这一次遍历：那等于用集合大小推断差集，只在
@@ -108,7 +106,7 @@ public final class MechaPlayerRenderer {
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             MechaAnimatable animatable = ANIMATABLES.computeIfAbsent(
                     core.getAssemblyId(), id -> new MechaAnimatable(core));
-            animatable.clientTick(tick);
+            animatable.clientTick();
             injectAnimTarget(core, animatable);
         }
     }

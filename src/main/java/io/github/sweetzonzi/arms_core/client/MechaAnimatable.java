@@ -43,22 +43,25 @@ import java.util.Map;
  *
  * <h3>位姿来源</h3>
  * 客户端不为 {@code ArmsCore} 重建物理体（计划 D18），位姿只有同步来的 {@code DATA_POS} /
- * {@code DATA_YAW}。采样与插值复用 {@link ClientMechaAnchor}（含传送 / 断流跳变判据），本类负责把它的
- * 结果组装成模型矩阵：{@link #getModelSpaceMatrix(Number, double, double, double, float)} 供"画在宿主
- * 实体上"那条路径使用（锚点就地，位置由实体提供），{@link #getWorldPositionMatrix(Number)} 是接口
- * 要求的绝对位姿版本，按同步位姿组装。朝向按 {@code rotateY(π − yaw)} 组装，与 Spark-Core 自己的实体
- * 公式同式（{@code IEntityAnimatable.kt:31-35}）。
+ * {@code DATA_YAW}，以及它们经呈现缓冲平滑后的那对样点
+ * （{@code common/ArmsCore.java#lerpPresentationPosition}；缓冲的播放与传送跳变规则见
+ * {@code ../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/PoseDelayBuffer.java#push}）。
+ * 本类负责把这对样点组装成模型矩阵：
+ * {@link #getModelSpaceMatrix(Number, double, double, double, float)} 供"画在宿主实体上"那条路径使用
+ * （锚点就地，位置由实体提供），{@link #getWorldPositionMatrix(Number)} 是接口要求的绝对位姿版本，
+ * 按呈现缓冲的插值位姿组装。朝向按 {@code rotateY(π − yaw)} 组装，与 Spark-Core 自己的实体公式同式
+ * （{@code IEntityAnimatable.kt:31-35}）。
  *
  * <h3>生命周期与线程</h3>
  * 由 {@link MechaPlayerRenderer} 在主线程按装配体 UUID 创建并驱动（一个客户端实例只在一个维度，
  * 与 {@code MechaCoreRegistry} 的客户端表同寿命）：每客户端 tick 采样一次
- * （{@link #clientTick(long)}）并调 {@code AnimController.tick()} 发布骨骼姿态，渲染在同一线程读取。
+ * （{@link #clientTick()}）并调 {@code AnimController.tick()} 发布骨骼姿态，渲染在同一线程读取。
  * <p>
  * 另一半在物理线程：本对象作为动画目标注入表现层编排器
  * （{@code common/control/presentation/MechaAnimPresenter.java}），由后者在每个物理子步推进动画
  * 时间与权重（{@code AnimController.physTick()}）并混合骨骼。这是 Spark-Core 自身的分工
  * （{@code physTick} 在物理线程、{@code tick} 在主线程），不是本项目的取舍。因此本对象被两个线程
- * 触碰：主线程调 {@link #clientTick(long)}，物理线程调 {@code AnimController.physTick()}。
+ * 触碰：主线程调 {@link #clientTick()}，物理线程调 {@code AnimController.physTick()}。
  *
  * @author Sweetzonzi
  */
@@ -107,8 +110,20 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     @NotNull
     private final MechaMolangContext molangContext;
 
-    /** 同步位姿的采样与插值状态 */
-    private final ClientMechaAnchor anchor = new ClientMechaAnchor();
+    /**
+     * 最近一次客户端 tick 采到的呈现位姿（控制器碰撞体中心，世界坐标）。
+     * <p>
+     * 读它的两处都在物理线程：{@code AnimController#physTick} 的 LOD 分档与 MoLang 的
+     * {@code q.camera_distance}（经 {@link #getRenderPosition(Number)}）；写它的只有主线程的
+     * {@link #clientTick()}。因此按三个 {@code volatile} 分量发布而不是发布一个共享对象：跨 tick 撕裂
+     * （x 来自本 tick、y 来自下一 tick）在这两处都无所谓，它们要的是一个 20 Hz 量级的位置。
+     */
+    private volatile float sampledX;
+    private volatile float sampledY;
+    private volatile float sampledZ;
+
+    /** 采样用的复用缓冲；只在主线程的 {@link #samplePresentationPosition()} 里用 */
+    private final Vector3f sampleScratch = new Vector3f();
 
     /** 服务器 tick 率：同步速度 (m/s) 与每 tick 位移 (m/tick) 之间换算，也是角速度差分的时间基 */
     private static final float TICKS_PER_SECOND = 20f;
@@ -132,9 +147,10 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     private float lifeTimeSeconds;
 
     /**
-     * 同步插值位姿的复用缓冲。
+     * 呈现位姿的复用缓冲。
      * <p>
-     * 只服务于世界阶段那条路径的调试绘制；模型画在宿主实体上时不用它，因为那条路径的位置来自实体自身。
+     * 只服务于接口契约那条路径（{@link #getWorldPositionMatrix(Number)}，渲染线程在两端样本间插值）；
+     * 模型画在宿主实体上时不用它，因为那条路径的位置来自实体自身。
      */
     private final Vector3f worldScratchPos = new Vector3f();
 
@@ -163,18 +179,35 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     // ==========================================
 
     /**
-     * 客户端主线程每 tick 调用一次：采样同步位姿、补齐模型、发布骨骼姿态。
+     * 客户端主线程每 tick 调用一次：采样呈现位姿、补齐模型、发布骨骼姿态。
      * <p>
-     * 采样必须每 tick 做一次而不是渲染时做：{@link ClientMechaAnchor} 的插值自变量是
-     * 「距最近一次采样过了多少 tick」，采样频率决定了插值的两个端点。
-     *
-     * @param clientTick 当前客户端 tick（{@code Level.getGameTime()}）
+     * 采样必须每 tick 做一次而不是渲染时做：{@link #getRenderPosition(Number)} 的调用者在物理线程，
+     * 而 {@code SynchedEntityData} 与呈现缓冲只允许主线程读，所以这里把当前值取出来发布一次。
      */
-    public void clientTick(long clientTick) {
-        anchor.acceptFromSyncedData(animatable, clientTick);
+    public void clientTick() {
+        samplePresentationPosition();
         publishMolangInputs();
         refreshModelIfNeeded();
         animController.tick();
+    }
+
+    /**
+     * 采样本 tick 的呈现位姿（呈现区间右端，即这一 tick 模型应该站的位置），发布给物理线程。
+     * <p>
+     * 用右端而不是两端插值：本方法只喂 LOD 分档与 {@code q.camera_distance}，两处都只需要
+     * 「这一刻在哪」。呈现缓冲还没有样本时（首包之前、刚入世）退回同步真值，避免把位置读成原点。
+     */
+    private void samplePresentationPosition() {
+        if (animatable.lerpPresentationPosition(1f, sampleScratch)) {
+            sampledX = sampleScratch.x;
+            sampledY = sampleScratch.y;
+            sampledZ = sampleScratch.z;
+            return;
+        }
+        Vector3f synced = animatable.getSyncedData().get(ArmsCore.DATA_POS);
+        sampledX = synced.x;
+        sampledY = synced.y;
+        sampledZ = synced.z;
     }
 
     /**
@@ -244,7 +277,8 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     }
 
     /**
-     * 世界位姿矩阵：把模型空间换算到世界空间，锚点是<b>胶囊中心</b>（同步来的 {@code DATA_POS}）。
+     * 世界位姿矩阵：把模型空间换算到世界空间，锚点是<b>胶囊中心</b>（呈现缓冲的插值位姿，
+     * 缓冲还没有样本时退回同步来的 {@code DATA_POS}）。
      * <p>
      * 这是 {@code IAnimatable} 要求的绝对位姿出口，{@code IGeoRenderer.kt:25} 一类通用渲染路径会调它。
      * <b>本模组当前的绘制不走这条路</b>：模型挂在宿主实体的渲染事件上，位置由实体提供、朝向取宿主的
@@ -257,11 +291,14 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     @Override
     public @NotNull Matrix4f getWorldPositionMatrix(@NotNull Number partialTicks) {
         float partial = partialTicks.floatValue();
-        long clientTick = animatable.getLevel().getGameTime();
-        anchor.lerpPosition(clientTick, partial, worldScratchPos);
+        if (!animatable.lerpPresentationPosition(partial, worldScratchPos)) {
+            // 呈现缓冲还没有样本：退回同步真值，与 lerpPresentationYaw 内部同一条降级路径
+            Vector3f synced = animatable.getSyncedData().get(ArmsCore.DATA_POS);
+            worldScratchPos.set(synced);
+        }
         return getModelSpaceMatrix(partial,
                 worldScratchPos.x, worldScratchPos.y, worldScratchPos.z,
-                anchor.lerpYaw(clientTick, partial));
+                animatable.lerpPresentationYaw(partial));
     }
 
     /**
@@ -295,12 +332,12 @@ public final class MechaAnimatable implements IAnimatable<ArmsCore> {
     /**
      * LOD 用的轻量世界坐标。
      * <p>
-     * 覆写是为了避开接口默认实现里的矩阵构造（{@code IAnimatable.kt:58-61}）。
-     * 取最近一次采样的位置而不做插值：它只用于距离分档，插值没有意义。
+     * 覆写是为了避开接口默认实现里的矩阵构造（{@code IAnimatable.kt:58-61}）。取最近一次采样发布的位置
+     * 而不做插值：它只用于距离分档，插值没有意义。返回的是新对象，因为调用方可能是物理线程，而
+     * {@link #samplePresentationPosition()} 每 tick 在主线程改写发布值。
      */
     @Override
     public @NotNull Vec3 getRenderPosition(@NotNull Number partialTicks) {
-        Vector3f pos = anchor.current();
-        return new Vec3(pos.x, pos.y, pos.z);
+        return new Vec3(sampledX, sampledY, sampledZ);
     }
 }
