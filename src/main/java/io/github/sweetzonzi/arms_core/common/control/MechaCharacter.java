@@ -426,6 +426,10 @@ public class MechaCharacter extends PhysicsRigidBody {
     /** 着地判据的连续命中计数（正数 = 还在保持窗口内），用于 {@link #GROUND_MIN_HOLD_STEPS}。 */
     private int groundHoldSteps;
 
+    private PhysicsRigidBody deckSupport;
+    private final Vector3f deckVelocity = new Vector3f();
+    private final Vector3f candidateDeckVelocity = new Vector3f();
+
     /**
      * 支撑法线（世界坐标，Y 上）。
      * <p>
@@ -807,6 +811,9 @@ public class MechaCharacter extends PhysicsRigidBody {
      */
     public void warp(Vector3f location) {
         displaceTo(location, 0f);
+        deckSupport = null;
+        grounded = false;
+        groundHoldSteps = 0;
     }
 
     // ═══════════════════════════════════════════════
@@ -1012,19 +1019,21 @@ public class MechaCharacter extends PhysicsRigidBody {
      *   <li>端点定窗口而不是扫满再比 fraction：起点取碰撞体中心 + 0.3、终点取中心 − 0.1，
      *       长度 0.4 正好是引擎下限，而「有任何合法命中」就等于「贴地」</li>
      * </ol>
-     * 结果筛：排除自己 → 只留对方组为 {@link CollisionGroups#TERRAIN} → 只留法线竖直分量
+     * 结果筛：排除自己，接受地形与允许接触的外部物理体，再筛法线竖直分量
      * {@code ≥ }{@link #GROUND_NORMAL_THRESHOLD}。{@code sweepTest} 的结果是<b>无序</b>的
      * （与 {@code rayTest} 不同），因此必须「先筛再取」，不能取 {@code results.get(0)}。
      * <p>
-     * 法线取通过筛的那些里最竖直的一条，它有两个消费者：越障判决与力律的 {@code cosθ}。
+     * 地形候选按最竖直的法线选取。涉及甲板时优先选脚底间隙较小的命中。
      * <p>
-     * 着地布尔另加最小保持（{@link #GROUND_MIN_HOLD_STEPS}），防止接缝处的一次漏判把
-     * {@code ON_GROUND} 翻成假。
+     * 地形着地另加最小保持（{@link #GROUND_MIN_HOLD_STEPS}），以吸收接缝处的一次漏判。
      */
     private void updateGround() {
         PhysicsSpace space = resolveSpace();
+        deckSupport = null;
+        deckVelocity.zero();
         if (space == null) {
             grounded = false;
+            groundHoldSteps = 0;
             groundNormal.set(0f, 1f, 0f);
             groundGap = GROUND_WINDOW_ABOVE;
             return;
@@ -1034,41 +1043,69 @@ public class MechaCharacter extends PhysicsRigidBody {
         // 0.0x m/s 的**正**垂直速度（接触迭代的残差），严格大于 0 会让着地在「有支撑」与
         // 「上升中」之间来回翻，地面摩擦随之周期性断开（实测破坏性：速度不再收敛）。
         // 取 0.5 m/s 的门限后，跳跃的起跳速度（8 m/s 量级）照旧封掉，而噪声被滤掉
-        boolean rising = getLinearVelocity(tmp1).y > GROUNDED_VERTICAL_SNAP;
+        Vector3f velocity = getLinearVelocity(tmp1);
+        boolean rising = velocity.y > GROUNDED_VERTICAL_SNAP;
         boolean support = false;
         float bestUpY = GROUND_NORMAL_THRESHOLD;
         float bestGap = GROUND_WINDOW_ABOVE;
 
-        if (!rising) {
-            Vector3f center = getPhysicsLocation(tmp2);
-            Vector3f start = new Vector3f(center.x, center.y + GROUND_WINDOW_ABOVE, center.z);
-            Vector3f end = new Vector3f(center.x, center.y - GROUND_WINDOW_BELOW, center.z);
+        Vector3f center = getPhysicsLocation(tmp2);
+        Vector3f start = new Vector3f(center.x, center.y + GROUND_WINDOW_ABOVE, center.z);
+        Vector3f end = new Vector3f(center.x, center.y - GROUND_WINDOW_BELOW, center.z);
 
-            sweepResults.clear();
-            space.sweepTest((ConvexShape) getCollisionShape(),
-                    new Transform(start, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
-                    new Transform(end, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
-                    sweepResults, 0f);
+        sweepResults.clear();
+        space.sweepTest((ConvexShape) getCollisionShape(),
+                new Transform(start, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
+                new Transform(end, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
+                sweepResults, 0f);
 
-            for (PhysicsSweepTestResult result : sweepResults) {
-                PhysicsCollisionObject hit = result.getCollisionObject();
-                if (hit == this || hit == null) continue;
-                if (hit.getCollisionGroup() != CollisionGroups.TERRAIN) continue;
-                Vector3f normal = result.getHitNormalLocal(tmp3);
-                if (normal.y < GROUND_NORMAL_THRESHOLD) continue;
+        for (PhysicsSweepTestResult result : sweepResults) {
+            PhysicsCollisionObject hit = result.getCollisionObject();
+            if (hit == this || hit == null) continue;
+            boolean terrain = hit.getCollisionGroup() == CollisionGroups.TERRAIN;
+            PhysicsRigidBody deck = null;
+            if (terrain) {
+                if (rising) continue;
+            } else {
+                if (!(hit instanceof PhysicsRigidBody rigid)
+                        || hit.getCollisionGroup() != CollisionGroups.PHYSICS_BODY
+                        || !hit.isContactResponse() || hit.getCollisionSpace() != space
+                        || ignores(hit) || hit.ignores(this)
+                        || ((hit.getCollideWithGroups() & getCollisionGroup()) == 0
+                            && (getCollideWithGroups() & hit.getCollisionGroup()) == 0)) continue;
+                deck = rigid;
+            }
+            Vector3f normal = result.getHitNormalLocal(tmp3);
+            if (normal.y < GROUND_NORMAL_THRESHOLD) continue;
 
-                support = true;
-                float gap = GROUND_WINDOW_ABOVE - result.getHitFraction() * GROUND_PROBE_LENGTH;
-                if (normal.y > bestUpY) {
-                    bestUpY = normal.y;
-                    groundNormal.set(normal.x, normal.y, normal.z);
-                    bestGap = gap;
+            float gap = GROUND_WINDOW_ABOVE - result.getHitFraction() * GROUND_PROBE_LENGTH;
+            if (deck != null) {
+                candidateDeckVelocity.zero();
+                if (deck.isDynamic()) {
+                    // 扫掠只返回比例和法线。用脚底中心在命中高度处估算甲板点速度。
+                    Vector3f arm = deck.getPhysicsLocation(tmp4).negateLocal().addLocal(
+                            center.x, center.y - MechaBodyPreset.HALF_TOTAL - gap, center.z);
+                    deck.getAngularVelocity(candidateDeckVelocity).crossLocal(arm.x, arm.y, arm.z)
+                            .addLocal(deck.getLinearVelocity(tmp4));
                 }
+                if (velocity.dot(normal) - candidateDeckVelocity.dot(normal) > GROUNDED_VERTICAL_SNAP) continue;
+            }
+            boolean choose = !support || (deck == null && deckSupport == null
+                    ? normal.y > bestUpY
+                    : gap < bestGap || (gap == bestGap && normal.y > bestUpY));
+            support = true;
+            if (choose) {
+                bestUpY = normal.y;
+                groundNormal.set(normal.x, normal.y, normal.z);
+                bestGap = gap;
+                deckSupport = deck;
+                if (deck != null) deckVelocity.set(candidateDeckVelocity);
+                else deckVelocity.zero();
             }
         }
 
         if (support) {
-            groundHoldSteps = GROUND_MIN_HOLD_STEPS;
+            groundHoldSteps = deckSupport == null ? GROUND_MIN_HOLD_STEPS : 0;
             grounded = true;
             groundGap = bestGap;
         } else if (groundHoldSteps > 0) {
@@ -1225,7 +1262,12 @@ public class MechaCharacter extends PhysicsRigidBody {
             // 着地且本步没有越障：走地面力律。
             // 法向力与刹车预算按**刚体质量**算：它们描述求解器实际承受的重力与需要停下的动量
             float slopeCos = supportSlopeCos();
-            float traction = getEffectiveFriction() * bodyMass * MechaWalkingAttr.GRAVITY * slopeCos;
+            float friction = deckSupport == null ? getEffectiveFriction()
+                    : Math.min(10f, getFriction() * deckSupport.getFriction());
+            float traction = friction * bodyMass * MechaWalkingAttr.GRAVITY * slopeCos;
+            float relativeX = vx - deckVelocity.x;
+            float relativeZ = vz - deckVelocity.z;
+            float relativeSpeed = (float) Math.sqrt(relativeX * relativeX + relativeZ * relativeZ);
 
             float controlX = 0f;
             float controlZ = 0f;
@@ -1234,17 +1276,17 @@ public class MechaCharacter extends PhysicsRigidBody {
                 // 驱动力沿 û 施加，**不按运动方向投影**：投影会在两个地方出错——静止起步时
                 // 投影值恒为 0（|v·û|/|v| 是 0/0），角色永远动不起来；侧向滑行时 v·û ≈ 0，
                 // 驱动也会被抹掉。逆向移动时控制力变成制动这一点留给引擎的接触摩擦去表达
-                float drive = computeDriveForce(hSpeed) * forceScale;
+                float drive = computeDriveForce(relativeSpeed) * forceScale;
                 if (drive > traction) drive = traction;
                 controlX = drive * dirX;
                 controlZ = drive * dirZ;
-            } else if (hSpeed > EPSILON) {
+            } else if (relativeSpeed > EPSILON) {
                 // 无输入：引擎的接触摩擦就是刹车，这里不再自己算减速度（§7.1 移出项二）。
                 // 但「引擎摩擦反着滑动方向」是负反馈，不能前馈，因此只施加控制力、不加前馈。
                 // 上限取「一步之内把动量停住」所需的力，避免大幅超调
-                float brake = Math.min(traction, bodyMass * hSpeed / dt);
-                controlX = -brake * (vx / hSpeed);
-                controlZ = -brake * (vz / hSpeed);
+                float brake = Math.min(traction, bodyMass * relativeSpeed / dt);
+                controlX = -brake * (relativeX / relativeSpeed);
+                controlZ = -brake * (relativeZ / relativeSpeed);
             }
 
             // 摩擦锥前馈：把求解器在接触点上给出的那份反向摩擦加回去（方向取目标移动方向 û）。
@@ -1297,7 +1339,7 @@ public class MechaCharacter extends PhysicsRigidBody {
         // 真的离地一拍、地面摩擦断一拍、再落回来——实测表现为速度无界的周期性抖动。
         // 因此只有 vy ≤ 本值时才动垂直分量，且此时写成 min(vy, 0) + 助推增量：噪声被抹平成 0，
         // 跳跃的起跳速度（> 本值）与助推增量都不受影响
-        if (grounded) {
+        if (grounded && deckSupport == null) {
             float vy = getLinearVelocity(tmp1).y;
             if (vy <= GROUNDED_VERTICAL_SNAP) {
                 float settledY = (vy > 0f ? 0f : vy) + boostDvY;
@@ -1372,7 +1414,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * @return 本步是否完成了一次越障
      */
     private boolean tryStepUp(float dt) {
-        if (!grounded) return false;
+        if (!grounded || deckSupport != null) return false;
 
         // 方向：优先用本步输入意图，无输入时用当前水平速度的方向
         Vector3f velocity = getLinearVelocity(tmp1);
@@ -1627,9 +1669,14 @@ public class MechaCharacter extends PhysicsRigidBody {
             float mass = getMass();
             float dv = computeJumpImpulse() / mass;
             float vy = getLinearVelocity(tmp1).y;
-            float targetVy = Math.min(vy + dv, getJumpSpeedCap());
+            float targetVy = Math.min(vy + dv, getJumpSpeedCap() + deckVelocity.y);
             if (targetVy > vy) {
                 applyCentralImpulse(tmp2.set(0f, (targetVy - vy) * mass, 0f));
+                if (deckSupport != null) {
+                    grounded = false;
+                    deckSupport = null;
+                    deckVelocity.zero();
+                }
             }
             jumpBoostRemainingS = MechaJumpAttr.T_BOOST_MAX;
         }

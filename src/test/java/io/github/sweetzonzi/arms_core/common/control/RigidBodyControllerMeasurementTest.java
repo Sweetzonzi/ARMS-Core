@@ -8,8 +8,10 @@ import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -28,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code μN}」，因此 {@code μ_eff·N·û} 那条前馈是否该叠加（{@code usesFrictionFeedforward()}）
  * 必须用数据定，这里把两档一起打出来。
  * <p>
- * <b>本类以输出数值为主，不做基线断言。</b>断言只有两类：一是「场景确实成立」这一类前提（越障真的
+ * <b>测量用例以输出数值为主。</b>其断言覆盖两类：一是「场景确实成立」这一类前提（越障真的
  * 发生、起步确实在加速），因为场景不成立时量到的数没有意义；二是两条**判据本身的契约**——
  * 第 ⑤ 组的「一次越障的抬升量不超过步高」（越障两级吃法的回归）与第 ⑥ 组的「楼梯上得去、
  * 坡不该由越障接手」（判据认不认得出立面，`docs/角色控制器-刚体原型与引擎约束.md` §11.6 末段）。
@@ -40,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Sweetzonzi
  */
+@Tag("measurement")
 class RigidBodyControllerMeasurementTest {
 
     /** 与游戏内一致的物理步长：tps = 100 */
@@ -59,6 +62,73 @@ class RigidBodyControllerMeasurementTest {
 
     /** 稳态速率的统计时长（步）：末段 100 步内的最大值 */
     private static final int STEADY_WINDOW = 100;
+
+    @Test
+    void deckSupportsWalkingAndJumping() {
+        PhysicsSpace space = newSpace();
+        try {
+            PhysicsRigidBody deck = addDeck(space, 0f);
+            MechaCharacter body = newController(space, true);
+            for (int i = 0; i < 50; i++) {
+                body.prePhysicsTick(DT);
+                space.update(DT, 0, 0x0);
+            }
+            assertTrue(body.isOnGround());
+
+            body.setMoveIntent(1f, 0f);
+            for (int i = 0; i < 20; i++) {
+                body.prePhysicsTick(DT);
+                space.update(DT, 0, 0x0);
+            }
+            assertTrue(body.getHSpeed() > 0.5f, "deck friction must release under walking input");
+
+            body.setJumpInput(true, false);
+            body.prePhysicsTick(DT);
+            assertTrue(body.getLinearVelocity(null).y > 1f);
+            assertFalse(body.isOnGround());
+
+            body.warp(new Vector3f(0f, MechaBodyPreset.HALF_TOTAL, 0f));
+            body.setJumpInput(false, true);
+            deck.addToIgnoreList(body);
+            body.prePhysicsTick(DT);
+            assertFalse(body.isOnGround(), "ignored bodies must be excluded from sweep support");
+        } finally {
+            space.destroy();
+        }
+    }
+
+    @Test
+    void matchingDeckVelocityDoesNotBrakeOrClearVerticalMotion() {
+        PhysicsSpace space = newSpace();
+        try {
+            PhysicsRigidBody deck = addDeck(space, 1000f);
+            MechaCharacter body = newController(space, true);
+            Vector3f deckVelocity = new Vector3f(10f, 1f, 0f);
+            deck.setLinearVelocity(deckVelocity);
+            body.setLinearVelocity(deckVelocity);
+
+            body.prePhysicsTick(DT);
+            assertTrue(body.isOnGround());
+            assertEquals(0f, body.getLastAppliedForce().length(), 1e-5f);
+            assertEquals(1f, body.getLinearVelocity(null).y, 1e-5f);
+
+            space.removeCollisionObject(deck);
+            body.prePhysicsTick(DT);
+            assertFalse(body.isOnGround());
+        } finally {
+            space.destroy();
+        }
+    }
+
+    private static PhysicsRigidBody addDeck(PhysicsSpace space, float mass) {
+        PhysicsRigidBody deck = new PhysicsRigidBody(new BoxCollisionShape(new Vector3f(8f, 0.5f, 8f)), mass);
+        deck.setPhysicsLocation(new Vector3f(0f, -0.5f, 0f));
+        deck.setFriction(1f);
+        deck.setCollisionGroup(CollisionGroups.PHYSICS_BODY);
+        deck.setCollideWithGroups(CollisionGroups.PAWN);
+        space.addCollisionObject(deck);
+        return deck;
+    }
 
     // ═══════════════════════════════════════════════
     // 场景搭建
