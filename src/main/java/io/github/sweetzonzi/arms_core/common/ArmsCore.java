@@ -1,8 +1,11 @@
 package io.github.sweetzonzi.arms_core.common;
 
 import cn.solarmoon.spark_core.api.SparkLevel;
+import cn.solarmoon.spark_core.physics.body.PhysicsBodyEvent;
 import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
+import cn.solarmoon.spark_core.physics.level.PhysicsLevel;
 import cn.solarmoon.spark_core.util.PPhase;
+import com.jme3.bullet.collision.PhysicsCollisionObject;
 import com.jme3.math.Quaternion;
 import com.jme3.math.Transform;
 import com.jme3.math.Vector3f;
@@ -30,6 +33,7 @@ import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPartType;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.RegularPartType;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
+import io.github.sweetzonzi.machine_max.common.mech.vehicle.collision.CollisionPostSettlement;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.connector.AbstractConnector;
 import lombok.Getter;
 import lombok.Setter;
@@ -54,6 +58,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
@@ -239,6 +244,14 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     private final AtomicBoolean inPhysicsSpace = new AtomicBoolean(false);
 
     /**
+     * 本装配体拥有的物理体：控制器刚体（按稳定名字索引）。
+     * <p>
+     * 只登记控制器；装配体内的 SubPart 各自是 {@code PhysicsHost}，由它们自己登记。
+     * 物理线程写（入世 / 离世），主线程读（调试与查询），因此用并发容器。
+     */
+    private final Map<String, PhysicsCollisionObject> physicsBodies = new ConcurrentHashMap<>();
+
+    /**
      * 宿主位置写入的来源分类与位移摄入（作用域栈 + 锚点 + pin）。
      * <p>
      * 由 {@code mixin/EntityPositionWriteMixin} 的判定点写入、{@link #applyExternalDisplacement} 采纳，
@@ -344,6 +357,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             MechaCharacter body = new MechaCharacter(
                     MechaBodyPreset.newBodyShape(),
                     SparkLevel.getPhysicsLevel(level).getWorld());
+            attachRideContactHandlers(body);
             this.mechaControl = new MechaControl(this, body);
         } else {
             // 客户端也建编排器，但不给身体：表现层编排（常驻并行动画层、姿态状态机）住在它里面，
@@ -398,7 +412,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         });
     }
 
-    private static List<SubPart> collectSubParts(java.util.Collection<AbstractPart<?>> parts) {
+    private static List<SubPart> collectSubParts(Collection<? extends AbstractPart<?>> parts) {
         return parts.stream().flatMap(part -> part.subParts.values().stream()).toList();
     }
 
@@ -620,6 +634,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * @param dt 物理步长 (s)
      */
     public void prePhysicsTick(float dt) {
+        // 乘客态每步刷新：窄相否决的判据必须与本步的乘坐状态一致
+        riddenAssembly = isRemoved ? null : getRiddenAssembly();
         MechaControl control = this.mechaControl;
         if (control == null || isRemoved || authoritative && !isInLevel()) return;
 
@@ -677,6 +693,9 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         var physicalBody = new ArmsBodyPhysics(corePart, partMap.values(), body.getTransform(null),
                 frame == null ? 0f : frame.coreHeightOffset());
         try {
+            // owner 让碰撞过滤能从控制器刚体反查到本装配体；名字先固定，setOwner 用它做索引键。
+            body.name = "controller";
+            PhysicsBodyExtensionKt.setOwner(body, this);
             space.addCollisionObject(body);
             physicalBody.enter(space, body);
             bodyPhysics = physicalBody;
@@ -684,6 +703,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         } catch (RuntimeException | Error failure) {
             physicalBody.leave(space);
             if (body.isInWorld()) space.removeCollisionObject(body);
+            PhysicsBodyExtensionKt.setOwner(body, null);
             physicalBody.release(body);
             throw failure;
         }
@@ -787,6 +807,16 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         return control.getBody();
     }
 
+    @Override
+    public PhysicsLevel getPhysicsLevel() {
+        return SparkLevel.getPhysicsLevel(level);
+    }
+
+    @Override
+    public Map<String, PhysicsCollisionObject> getAllPhysicsBodies() {
+        return physicsBodies;
+    }
+
     // ==========================================
     // IPartAssembly
     // ==========================================
@@ -822,6 +852,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         if (current == part) return;
         if (current != null) throw new IllegalArgumentException("部件 UUID 重复：" + part.uuid);
         part.assembly = this;
+        // 肢体刚体的窄相处理与控制器同源：乘坐时本装配体的任何刚体都不与载具的 SubPart 产生接触响应
+        for (SubPart subPart : part.subParts.values()) {
+            attachRideContactHandlers(subPart.body);
+        }
         bodyDirty = true;
     }
 
@@ -885,6 +919,110 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Override
     public AbstractPart<?> findPart(UUID id) {
         return partMap.get(id);
+    }
+
+    /**
+     * 本装配体当前乘坐的载具装配体；物理线程每步刷新，窄相回调里只读。
+     *
+     * <p>乘客态是窄相否决的判据，而 {@code Collide.Pre} 的回调本身不带「本装配体是否在乘坐」的信息，
+     * 只能由这里提供。两端都刷新：客户端的运动学肢体同样不该与所乘客的载具产生接触对。</p>
+     */
+    @Nullable
+    private volatile IPartAssembly riddenAssembly;
+
+    /**
+     * 窄相否决：本装配体的刚体与所乘客的载具的 SubPart 之间不产生接触点（物理线程）。
+     *
+     * <p><b>为什么不用 {@code NeedsCollisionEvent}</b>：Spark 的 {@code needsCollision} 挂在 Bullet 的
+     * 重叠过滤回调上（{@code ../Libbulletjme/src/main/native/glue/jmeCollisionSpace.cpp} 的
+     * {@code jmeFilterCallback::needBroadphaseCollision}），而该回调只在配对进入重叠缓存时被求值
+     * （{@code ../Libbulletjme/src/main/native/bullet3/BulletCollision/BroadphaseCollision/btOverlappingPairCache.h}
+     * 的 {@code btHashedOverlappingPairCache::addOverlappingPair}）；上/下车改变的是<b>已有配对</b>的结论，
+     * 缓存不重算，于是乘坐期间早已存在的肢体-车体配对继续参与求解。</p>
+     *
+     * <p><b>为什么不用 ignore list</b>：忽略条目确实每个物理步都重查（{@code btCollisionDispatcher::needsCollision}
+     * 里两向 {@code checkCollideWith}，见 {@code ../Libbulletjme/src/main/native/bullet3/BulletCollision/CollisionDispatch/btCollisionDispatcher.cpp}），
+     * 但它让 {@code processCollision} 整个跳过，那条 manifold 不再刷新：残留接触点仍被求解器按旧冲量
+     * 积分。实测（Libbulletjme 23.1.2、100 Hz、两个盒子）屏蔽后恒速推开约 1.2 cm/步且不衰减。</p>
+     *
+     * <p><b>为什么只有否决不够</b>：{@code onContactConceived} 只在新接触点产生时被问，上车前已有的
+     * 接触点由各算法的 {@code refreshContactPoints()} 继续维持。同场景实测：接触点建立之后再开始否决，
+     * 6 步共下移 0.11 m 且每步仍在增大，而 {@code onContactProcessed} 每步仍为 4 条旧点派发。
+     * 这批旧点由 {@link #neutralizeRideContact} 在同一物理步里取消求解。</p>
+     *
+     * <p><b>为什么是这里</b>：{@code Collide.Pre} 由窄相里的 {@code onContactConceived} 派发
+     * （{@code ../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/PhysicsWorld.kt} 的
+     * {@code PhysicsWorld.onContactConceived}），返回 {@code false} 即丢弃该接触点：接触点不进 manifold，
+     * 求解器没有约束，也不触发 {@code Collide.Processed}——MM 的碰撞音效与 {@code part_collision} 伤害
+     * 都挂在那条路径上（{@code ../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/collision/CollisionHandler.java}
+     * 的 {@code CollisionHandler.onContactProcessed}）。判据每个接触点现算，与配对何时建立无关，
+     * 因此上/下车立即生效。</p>
+     *
+     * <p>本方法只拦<b>新</b>接触点。上车之前就已经存在的接触点由
+     * {@link #neutralizeRideContact} 在同一个物理步里取消求解。</p>
+     *
+     * @param event 窄相接触点事件；{@code o1} 是挂着本监听器的刚体，{@code o2} 是对方
+     * @return true 表示保留这条接触
+     */
+    private boolean vetoRideContact(PhysicsBodyEvent.Collide.Pre event) {
+        IPartAssembly vehicle = riddenAssembly;
+        if (vehicle == null) return true;
+        return !(event.getO2().getUserObject() instanceof SubPart other && other.part.assembly == vehicle);
+    }
+
+    /**
+     * 为刚体挂上乘坐期的两段窄相处理：拒绝新的接触点（{@link #vetoRideContact}），
+     * 并取消已有接触点的求解（{@link #neutralizeRideContact}）。
+     *
+     * <p>两段必须成对：只挂前者，上车前已存在的接触点会一直留在 manifold 里被求解；
+     * 只挂后者，新接触点会在被取消之前先求解一步。</p>
+     *
+     * @param body 本装配体的刚体（控制器或某个 SubPart）
+     */
+    private void attachRideContactHandlers(PhysicsCollisionObject body) {
+        PhysicsBodyExtensionKt.onCollidePre(body, this::vetoRideContact);
+        PhysicsBodyExtensionKt.onCollideProcessed(body, event -> {
+            neutralizeRideContact(event);
+            return null;
+        });
+    }
+
+    /**
+     * 已存在接触点的取消求解：把这一步的距离改成「分离」，让求解器建不出有效约束（物理线程）。
+     *
+     * <p><b>为什么需要</b>：{@link #vetoRideContact} 挂在 {@code onContactConceived} 上，只拦新接触点。
+     * 上车时肢体与载具已经接触的话，那条 manifold 里的旧点不会被删除——各算法的
+     * {@code refreshContactPoints()} 只要两个刚体保持接触就持续刷新它们
+     * （{@code ../Libbulletjme/src/main/native/bullet3/BulletCollision/NarrowPhaseCollision/btPersistentManifold.cpp}
+     * 的 {@code btPersistentManifold::refreshContactPoints}），求解器于是继续按旧冲量积分：
+     * 应用侧收不到任何接触回调，两个刚体却仍被稳定推开。</p>
+     *
+     * <p><b>为什么改距离有效</b>：{@code Collide.Processed} 由 {@code onContactProcessed} 派发，
+     * 位置在 {@code refreshContactPoints()} 重算完距离之后、同一个物理步的求解器之前
+     * （{@code ../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/level/PhysicsWorld.kt}
+     * 的 {@code PhysicsWorld.onContactProcessed}）。把距离写成
+     * {@link CollisionPostSettlement#DISABLED_DISTANCE} 后，求解器读到的
+     * {@code penetration = distance + linearSlop} 为正
+     * （{@code ../Libbulletjme/src/main/native/bullet3/BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.cpp}
+     * 的 {@code setupContactConstraint}）：位置修正项归零、速度项被推成大负值、冲量在下界 0 处截断，
+     * 这条点本步不再产生推力。三个缓存冲量一并清零，否则 warm start 会在本步先施加一次旧冲量
+     * （同文件 {@code convertContact}）。下一步 {@code refreshContactPoints()} 会按真实几何重算距离，
+     * 所以每步都要重做。</p>
+     *
+     * <p>球-球接触不派发 {@code onContactProcessed}（见 {@code PhysicsSpace#onContactProcessed} 的注释），
+     * 本装配体的刚体不是球体，与载具 SubPart 的配对不会落到那一路。</p>
+     *
+     * @param event 窄相接触点事件；{@code o1} 是挂着本监听器的刚体，{@code o2} 是对方
+     */
+    private void neutralizeRideContact(PhysicsBodyEvent.Collide.Processed event) {
+        IPartAssembly vehicle = riddenAssembly;
+        if (vehicle == null) return;
+        if (!(event.getO2().getUserObject() instanceof SubPart other) || other.part.assembly != vehicle) return;
+        var point = event.getO1Point();
+        point.setDistance(CollisionPostSettlement.DISABLED_DISTANCE);
+        point.setAppliedImpulse(0f);
+        point.setAppliedImpulseLateral1(0f);
+        point.setAppliedImpulseLateral2(0f);
     }
 
     /** 保存身体组成；核心通过 UUID 引用集合中的唯一实例。 */
@@ -964,6 +1102,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
                     bodyPhysics.release(getBody());
                 }
                 if (getBody().isInWorld()) space.removeCollisionObject(getBody());
+                PhysicsBodyExtensionKt.setOwner(getBody(), null);
                 bodyPhysics = null;
                 inPhysicsSpace.set(false);
                 java.util.Objects.requireNonNull(level.getServer()).execute(this::releaseMembers);
@@ -984,6 +1123,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             bodyPhysics.release(getBody());
             bodyPhysics = null;
         }
+        if (authoritative) PhysicsBodyExtensionKt.setOwner(getBody(), null);
         releaseMembers();
     }
 
