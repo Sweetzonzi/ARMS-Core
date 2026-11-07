@@ -9,6 +9,7 @@
     "sub_parts": {
       "body": {
         "start_bone": "AllBody",
+        "block_collision": "false",
         "mass": 32.0,
         "hit_boxes": {
           "torso_hit_chest": {

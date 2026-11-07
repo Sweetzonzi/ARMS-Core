@@ -16,6 +16,7 @@ import cn.solarmoon.spark_core.molang.SparkMolangContext;
 import cn.solarmoon.spark_core.state_machine.graph.StateMachineGraph;
 import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import io.github.sweetzonzi.arms_core.ARMS;
+import lombok.Getter;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
@@ -31,8 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 它由 {@code common/control/MechaControl.java} 持有并随每个物理步推进（见该文件
  * {@code #onPhysicsStep}），因此表现层与逻辑层同处一个物理线程，条件读取的是逻辑层刚写下的变量。
- * 它不认识渲染：动画目标以 {@link IAnimatable} 的形式从外部注入，客户端那一种实现
- * （{@code client/MechaAnimatable.java}）留在 client 包，本类不引用它。
+ * 装配体构造时通过 {@link #attach(List)} 注入 {@link IAnimatable} 动画目标。
  *
  * <h3>职责</h3>
  * <ol>
@@ -48,12 +48,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * </ol>
  *
  * <h3>线程模型</h3>
- * {@link #attach(List)} 由客户端主线程调用（注入动画目标），只写一个 volatile 引用；
+ * {@link #attach(List)} 发布一个不可变目标列表。
  * {@link #progress(float)} 由物理线程调用，其余字段都只被物理线程访问。
  *
- * <h3>服务端为空转</h3>
- * 权威侧不注入动画目标（首版的唯一目标是客户端对象），因此 {@code targets} 恒为空，
- * {@link #progress(float)} 在第一步就返回。表现层首版只在客户端产出画面。
+ * AllBody 两端的目标都是 {@link MechaBodyAnimation}。服务端用混合结果驱动关节，
+ * 客户端用混合结果更新零件的装饰骨骼。
  *
  * @author Sweetzonzi
  */
@@ -66,6 +65,7 @@ public final class MechaAnimPresenter {
     private final GameplayTagContainer tags;
 
     /** 注入的动画目标（主线程写、物理线程读） */
+    @Getter
     private volatile List<IAnimatable<?>> targets = List.of();
 
     /** 是否已注入过。注入是幂等的：第一次非空注入生效，之后不再改变 */
@@ -84,6 +84,7 @@ public final class MechaAnimPresenter {
     private SparkMolangContext<?> molangContext;
 
     /** 常驻层与四台机器是否已就位 */
+    @Getter
     private boolean started;
 
     /**
@@ -103,9 +104,7 @@ public final class MechaAnimPresenter {
     /**
      * 注入动画目标，幂等。
      * <p>
-     * 由客户端主线程在第一次遍历到该装配体时调用一次，内容为单元素列表
-     * {@code [mechaAnimatable]}；装配体改为逐零件渲染之后，注入者换成装配体、内容换成全体零件的
-     * 动画体，本类不需要改动。
+     * 每端注入整机动画体。AllBody 的零件读取同一个混合姿态，复用片段时间与过渡权重。
      * <p>
      * 空列表无效：它表达的是「还没准备好」，不是一次注入。
      *
@@ -115,11 +114,6 @@ public final class MechaAnimPresenter {
         if (newTargets == null || newTargets.isEmpty()) return;
         if (!attached.compareAndSet(false, true)) return;
         this.targets = List.copyOf(newTargets);
-    }
-
-    /** 当前注入的动画目标；尚未注入时为空列表。 */
-    public List<IAnimatable<?>> getTargets() {
-        return targets;
     }
 
     // ==========================================
@@ -245,8 +239,7 @@ public final class MechaAnimPresenter {
     /**
      * 建四台姿态状态机。
      * <p>
-     * 载体取广播式（{@link MultiAnimStateMachine}）而不是单个动画体的那种：装配体改为逐零件渲染之后
-     * 目标要扩成多元素列表，届时不用改图结构，附带收益是三级动画回退可用。
+     * 姿态图通过 {@link MultiAnimStateMachine} 启动整机片段。AllBody 的各部件共享混合输出。
      * <p>
      * 变量与标签容器传的是 {@link #variables} / {@link #tags}（外部实例），不是 null：
      * 传 null 会让控制器自建一个空容器，条件就读不到逻辑层写下的值。
@@ -366,11 +359,6 @@ public final class MechaAnimPresenter {
     /** 常驻层当前持有的实例数，用于确认槽位有没有起起来。 */
     public int persistentInstanceCount() {
         return persistentInstances.size();
-    }
-
-    /** 表现层是否已建立（常驻层与四台机器就位）。 */
-    public boolean isStarted() {
-        return started;
     }
 
     // ==========================================

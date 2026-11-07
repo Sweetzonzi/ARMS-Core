@@ -826,7 +826,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 物理步扇出与主线程同步写包 | `common/ArmsCoreServerEvents.java#onPrePhysicsTick`、`#syncToClients`、`#onPlayerJoinLevel` |
 | 载荷注册与协议版本 | `network/ARMSNetwork.java#PROTOCOL_VERSION`、`#register`（三处 `playToClient`、一处 `playToServer`） |
 | 客户端输入采集与重发窗口 | `client/ARMSClient.java#RESEND_WINDOW`、`#onClientTick`、`#queueEvent` |
-| 客户端可视位姿与其渲染 | `client/MechaAnimatable.java#clientTick`、`#samplePresentationPosition`（呈现位姿右端采样）、`#getRenderPosition`（物理线程的 LOD 距离）、`#getModelSpaceMatrix`、`#getWorldPositionMatrix`；`client/MechaPlayerRenderer.java#onClientTick`（驱动动画体）、`#onRenderPlayerPre`（取消玩家模型并就地绘制机体） |
+| 客户端可视位姿与其渲染 | `common/control/presentation/MechaBodyAnimation.java#updateClientInputs` 采样装配体呈现位姿用于动画 LOD；`client/MechaPlayerRenderer.java#renderBodyParts` 按各 SubPart 的插值位姿绘制机体。 |
 | 调试命令 | `common/command/ArmsCoreDebugCommand.java` |
 | `onPhysicsStep` 顺序 | `common/control/MechaControl.java#onPhysicsStep` |
 | 事件帧首取走（单帧边沿语义） | `common/control/MechaControl.java#frameLogic`（帧首 `getAndSet(空集)` 取走整批） |

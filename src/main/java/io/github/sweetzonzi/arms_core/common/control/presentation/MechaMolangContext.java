@@ -19,16 +19,16 @@ import org.jetbrains.annotations.Nullable;
  *
  * <h3>为什么泛型取 {@code IAnimatable<ArmsCore>}</h3>
  * 求值对象是装配体 {@link ArmsCore}，经 {@code getEntity().getAnimatable()} 直接取到，
- * 无需强转也不依赖客户端包（{@code client/MechaAnimatable.java} 反过来依赖本类）。
+ * 调用方可以直接使用装配体接口。
  * 这条形状与 Machine-Max 的 {@code MechMolangContext} 一致。
  *
  * <h3>值的来源与线程约定</h3>
  * 每个量都是「一个 volatile 字段 + 一个发布方法 + 一个只读 {@link QueryBinding}」：
  * <ul>
- *   <li><b>客户端主线程写、物理线程读</b>：运动、朝向、头部、寿命、每 tick 位移都由客户端主线程
- *       在每 tick 采样同步数据时发布（{@code client/MechaAnimatable.java#clientTick}），
- *       头部两项由渲染路径发布（{@code client/MechaPlayerRenderer.java#onRenderPlayerPre}，
- *       那是唯一拿得到宿主实体的相位）。</li>
+ *   <li><b>客户端主线程写、物理线程读</b>：{@link MechaBodyAnimation#updateClientInputs}
+ *       每 tick 发布运动、朝向、寿命和每 tick 位移。头部两项从宿主渲染路径发布
+ *       （{@code client/MechaPlayerRenderer.java#onRenderPlayerPre}）。</li>
+ *   <li><b>服务端物理线程写和读</b>：{@link MechaBodyAnimation#updateServerInputs} 从控制器及其输入取值。</li>
  *   <li><b>物理线程独占</b>：{@link #attachVariables(StateVariableContainer)} 注入的逻辑层变量容器，
  *       读写都在物理线程，因此不加同步。</li>
  * </ul>

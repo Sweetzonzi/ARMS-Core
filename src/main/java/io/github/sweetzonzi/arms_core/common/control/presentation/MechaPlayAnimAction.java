@@ -7,6 +7,7 @@ import cn.solarmoon.spark_core.animation.state.MultiAnimStateMachine;
 import cn.solarmoon.spark_core.state_machine.graph.StateAction;
 import cn.solarmoon.spark_core.state_machine.graph.StateGraphController;
 import com.mojang.serialization.MapCodec;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * 在广播式动画状态机上按名字播一个动画 —— {@link cn.solarmoon.spark_core.state_machine.graph.actions.PlayAnimAction}
@@ -65,7 +66,7 @@ public final class MechaPlayAnimAction implements StateAction {
     }
 
     @Override
-    public MapCodec<? extends StateAction> getCodec() {
+    public @NotNull MapCodec<? extends StateAction> getCodec() {
         return MapCodec.unit(this);
     }
 

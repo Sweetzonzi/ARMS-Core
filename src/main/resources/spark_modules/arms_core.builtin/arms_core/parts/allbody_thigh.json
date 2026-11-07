@@ -11,6 +11,7 @@
       "sub_parts": {
         "body": {
           "start_bone": "LeftLeg",
+          "block_collision": "false",
           "mass": 7.0,
           "hit_boxes": {
             "left_thigh_hit_thigh": {
@@ -40,6 +41,7 @@
       "sub_parts": {
         "body": {
           "start_bone": "RightLeg",
+          "block_collision": "false",
           "mass": 7.0,
           "hit_boxes": {
             "right_thigh_hit_thigh": {

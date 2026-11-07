@@ -16,7 +16,6 @@ import io.github.sweetzonzi.arms_core.common.control.MechaEvent;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.common.part.ArmsFrameModule;
-import io.github.sweetzonzi.arms_core.common.part.BodyParts;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.arguments.ResourceLocationArgument;
@@ -32,15 +31,13 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * {@code /arms} 调试命令 —— 阶段 1–3 唯一的权威端驱动入口。
- * <p>
- * 客户端不发任何输入包的阶段（阶段 1），以及不启动客户端时的专用服务端调试（阶段 2.7），
- * 都靠这里的子命令直接写 {@code conditionSnapshot} 与投递 {@link MechaEvent}。
- * 上行输入通道接通后（阶段 2），本命令保留为旁路调试源。
+ * {@code /arms} 服务端调试命令负责创建与绑定机体、写输入快照、投递事件和位姿录制。
+ * 输入快照和事件经 {@link ArmsCore} 的入口交给物理线程消费。
  * <p>
  * 子命令：
  * <ul>
- *   <li>{@code /arms spawn [frame]} —— 在命令执行者脚底创建并绑定机体，可指定内容包素体</li>
+ *   <li>{@code /arms spawn [frame]} —— 在命令执行者脚底创建并绑定机体，省略素体时使用
+ *       {@link ArmsCore#DEFAULT_FRAME_ID}</li>
  *   <li>{@code /arms list} —— 列出当前维度的装配体</li>
  *   <li>{@code /arms remove [uuid]} —— 注销装配体（省略 uuid 时注销全部）</li>
  *   <li>{@code /arms move <forward> <strafe> [yaw]} —— 写移动输入快照</li>
@@ -75,7 +72,7 @@ public final class ArmsCoreDebugCommand {
         CommandDispatcher<CommandSourceStack> dispatcher = event.getDispatcher();
         dispatcher.register(Commands.literal("arms")
                 .requires(source -> source.hasPermission(2))
-                .then(Commands.literal("spawn").executes(ctx -> spawn(ctx, null))
+                .then(Commands.literal("spawn").executes(ctx -> spawn(ctx, ArmsCore.DEFAULT_FRAME_ID))
                         .then(Commands.argument("frame", ResourceLocationArgument.id())
                                 .executes(ctx -> spawn(ctx, ResourceLocationArgument.getId(ctx, "frame")))))
                 .then(Commands.literal("list").executes(ArmsCoreDebugCommand::list))
@@ -123,15 +120,10 @@ public final class ArmsCoreDebugCommand {
         ServerLevel level = source.getLevel();
 
         UUID coreId = UUID.randomUUID();
-        ArmsCore core;
-        if (frameId == null) {
-            core = new ArmsCore(level, coreId, BodyParts.createDefault(level));
-        } else {
-            if (ArmsFrameModule.INSTANCE.get(false, frameId) == null) {
-                throw new SimpleCommandExceptionType(Component.literal("找不到素体 " + frameId)).create();
-            }
-            core = ArmsCore.fromFrame(level, coreId, frameId, new Transform());
+        if (ArmsFrameModule.INSTANCE.get(false, frameId) == null) {
+            throw new SimpleCommandExceptionType(Component.literal("找不到素体 " + frameId)).create();
         }
+        ArmsCore core = ArmsCore.fromFrame(level, coreId, frameId, new Transform());
 
         // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心（计划 §3.14）
         float[] center = MechaBodyPreset.controllerCenterFromFeet(

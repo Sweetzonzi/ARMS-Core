@@ -151,8 +151,8 @@ public class MechaControl {
     /**
      * 表现层编排器：常驻并行动画层与四台姿态状态机。
      * <p>
-     * 两端都建、都由 {@link #onPhysicsStep(float)} 推进；权威侧没有注入动画目标（首版唯一的
-     * 目标是客户端对象），因此在那边是空转。它的建立与物理步推进都不依赖 {@link #body}。
+     * 两端都由 {@link #onPhysicsStep(float)} 推进。AllBody 的权威侧目标由
+     * {@link io.github.sweetzonzi.arms_core.common.ArmsCore} 注入，供动画关节驱动采样。
      */
     @Getter
     private final MechaAnimPresenter presentation;
@@ -431,7 +431,7 @@ public class MechaControl {
             // TODO: dispatchEventsToLocalMachines();
         }
 
-        // —— 3. 表现层推进（两端；权威侧没有注入动画目标，因此是空转） ——
+        // —— 3. 推进整机动画 ——
         presentation.progress(dt);
 
         // —— 4. 动画根位移与控制器物理步（仅权威侧） ——

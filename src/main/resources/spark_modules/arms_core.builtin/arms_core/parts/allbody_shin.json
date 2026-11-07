@@ -11,6 +11,7 @@
       "sub_parts": {
         "body": {
           "start_bone": "LeftLowerLeg",
+          "block_collision": "false",
           "mass": 5.0,
           "hit_boxes": {
             "left_shin_hit_shin": {
@@ -39,6 +40,7 @@
       "sub_parts": {
         "body": {
           "start_bone": "RightLowerLeg",
+          "block_collision": "false",
           "mass": 5.0,
           "hit_boxes": {
             "right_shin_hit_shin": {

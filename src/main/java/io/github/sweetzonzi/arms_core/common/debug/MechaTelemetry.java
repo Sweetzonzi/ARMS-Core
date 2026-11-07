@@ -11,22 +11,18 @@ import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyPhysics;
 import io.github.sweetzonzi.machine_max.common.mech.vehicle.SubPart;
+import io.github.sweetzonzi.machine_max.util.QueuedCsvWriter;
 import net.minecraft.core.Rotations;
 import net.neoforged.fml.loading.FMLPaths;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Queue;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -53,15 +49,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * JVM 里，但各走各的静态会话与写线程。</p>
  *
  * <p><b>线程模型。</b>采样点有两个：物理步（物理线程）与主线程 tick（主线程）。物理线程只把已经格式化的行
- * 放进 {@link Channel} 的无锁队列，主线程每 tick 排空写盘；因此磁盘慢不会拖住物理步进。队列本身是线程安全的，
+ * 放进 {@link QueuedCsvWriter} 的无锁队列，主线程每 tick 排空写盘；因此磁盘慢不会拖住物理步进。队列本身是线程安全的，
  * 写入口只有一个。</p>
  *
  * <p>列定义见 {@link #HEADER}。{@code role} 的取值：{@code controller}（控制器刚体）、
  * {@code anchor}（运动学锚点，仅服务端物理通道）、{@code sub}（核心 subPart 刚体）、
- * {@code sync_ctrl}（同步值）、{@code host}（宿主实体，两端都记：服务端是回写后的实体位置，客户端是
- * 机体模型被画在的那个渲染原点）、{@code sub_old}（渲染插值的起点）、
+ * {@code sync_ctrl}（同步值）、{@code host}（宿主实体位置）、{@code sub_old}（零件渲染插值的起点）、
  * {@code sub_raw}（核心 subPart 自己的同步值，即它的网络真值）、
- * {@code pres_ctrl}（控制器呈现缓冲的右端，客户端模型锚点的取样源）。速度列：控制器与核心刚体读刚体本身；
+ * {@code pres_ctrl}（控制器呈现缓冲的右端，供宿主摆位与动画 LOD 使用）。速度列：控制器与核心刚体读刚体本身；
  * 锚点写 {@code ArmsBodyPhysics} 保存的本步目标速度（运动学刚体的速度读不回来）；客户端 subPart 也是
  * 运动学刚体，写 {@code NaN}。</p>
  *
@@ -72,8 +67,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 少于播放的 tick（停住数一直涨、余量始终 0），还是积压后的追赶（丢弃数上涨）。服务端没有呈现缓冲，
  * 这些列在服务端写 {@code 0/0/-1}。</p>
  *
- * <p><b>{@code host} 的附加列是 {@code xo/yo/zo}。</b>它们与主位置列一起构成渲染期实际使用的那一对
- * {@code lerp(xo, x, partialTick)}，用来核对模型渲染原点与子零件调试框是否插值在同样的两份样本上
+ * <p><b>{@code host} 的附加列是 {@code xo/yo/zo}。</b>它们与主位置列一起给出宿主的插值区间
  * （见 {@link #appendHost}）。</p>
  *
  * @author Sweetzonzi
@@ -220,9 +214,8 @@ public final class MechaTelemetry {
      *
      * <p>客户端没有控制器刚体，也没有约束锚点：控制器一侧能拿到的是同步后的 {@code DATA_POS} /
      * {@code DATA_VEL}，插值一侧是 {@code SubPart.transform} / {@code oldTransform}。</p>
-     * <p>{@code host} 行在客户端记的是宿主实体（本机玩家）的位置，也就是机体模型被画在的那个渲染原点；
-     * 它与 {@code sub}（子零件调试框的取样端）指向同一份位姿的两个消费者，两者错位就是
-     * 「调试框跑到机体前面」。</p>
+     * <p>{@code sub}/{@code sub_old} 提供零件模型与调试框共用的插值样对，见
+     * {@code client/MechaPlayerRenderer.java#renderBodyParts}。</p>
      */
     public static void onClientMainTick(ArmsCore core) {
         Session session = clientSession;
@@ -270,7 +263,7 @@ public final class MechaTelemetry {
         }
     }
 
-    private static void appendRigid(Channel out, long wall, long nanos, long tick, long seq,
+    private static void appendRigid(QueuedCsvWriter out, long wall, long nanos, long tick, long seq,
                                     String side, String lane, UUID assembly, String role, String name,
                                     PhysicsRigidBody body, String extra1) {
         Vector3f location = body.getPhysicsLocation(null);
@@ -286,7 +279,7 @@ public final class MechaTelemetry {
      * 锚点行：位姿直接读刚体，速度用 {@link ArmsBodyPhysics} 保存的本步写入值。
      * 运动学刚体的 {@code getLinearVelocity} 在 Minie 里带 {@code assert isDynamic()}，读不回来。
      */
-    private static void appendAnchor(Channel out, long wall, long nanos, long tick, long seq,
+    private static void appendAnchor(QueuedCsvWriter out, long wall, long nanos, long tick, long seq,
                                      String side, UUID assembly, ArmsBodyPhysics physics, String extra1) {
         PhysicsRigidBody anchor = physics.anchor();
         append(out, wall, nanos, tick, seq, side, "physics", assembly, "anchor", "anchor",
@@ -317,9 +310,7 @@ public final class MechaTelemetry {
     /**
      * 宿主实体行：位置是实体当前坐标，附加列写 {@code xo/yo/zo}（上一 tick 的坐标）。
      * <p>
-     * 两个值合起来就是渲染期实际用的那一对：{@code lerp(xo, x, partialTick)}。客户端据此可以核对
-     * 「模型渲染原点的插值区间」与 {@code sub}/{@code sub_old} 给出的「子零件调试框的插值区间」
-     * 是否指向同两份样本。
+     * 结合 {@code sub}/{@code sub_old} 可以核对宿主与零件各自的插值位置。
      */
     private static void appendHost(Session session, ArmsCore core, long wall, long nanos, long tick, long seq) {
         IArmsHost host = core.getHost();
@@ -371,7 +362,7 @@ public final class MechaTelemetry {
 
     /**
      * 控制器呈现缓冲的右端，也就是客户端模型每 tick 取到的那个位置
-     * （{@code client/MechaAnimatable.java#samplePresentationPosition}），外加该缓冲的三个计数。
+     * （{@code common/control/presentation/MechaBodyAnimation.java#updateClientInputs}），外加该缓冲的三个计数。
      * <p>
      * 与 {@code sub} 行对照即可看出「模型」与「SubPart 调试框」这两条呈现时间轴各自停在哪里：
      * 两条轴的滞后期望相同，实际偏移随各自的停帧节奏摆动。
@@ -393,7 +384,7 @@ public final class MechaTelemetry {
     /**
      * 写一行。任一位姿缺失时写 {@code NaN}，保持列数不变。
      */
-    private static void append(Channel out, long wall, long nanos, long tick, long seq,
+    private static void append(QueuedCsvWriter out, long wall, long nanos, long tick, long seq,
                                String side, String lane, UUID assembly, String role, String name,
                                @Nullable Vector3f location, @Nullable Quaternion rotation,
                                @Nullable Vector3f linear, @Nullable Vector3f angular,
@@ -428,24 +419,35 @@ public final class MechaTelemetry {
 
     private static @Nullable Session open(String side) {
         try {
-            Channel physics = Channel.open(side, "physics", HEADER);
-            Channel main = Channel.open(side, "main", HEADER);
-            return new Session(side, physics, main);
+            QueuedCsvWriter physics = openChannel(side, "physics");
+            try {
+                QueuedCsvWriter main = openChannel(side, "main");
+                return new Session(side, physics, main);
+            } catch (IOException failure) {
+                try { physics.close(); } catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                throw failure;
+            }
         } catch (IOException e) {
             ARMS.LOGGER.error("[ARMS-Core] 无法创建 {} 录制文件: {}", side, e.toString());
             return null;
         }
     }
 
+    private static QueuedCsvWriter openChannel(String side, String lane) throws IOException {
+        Path directory = FMLPaths.GAMEDIR.get().resolve("logs/arms_core");
+        return QueuedCsvWriter.open(directory, side + "-" + lane + "-"
+                + FILE_STAMP.format(LocalDateTime.now()), HEADER, 65536);
+    }
+
     /** 一端一次录制的两条通道与各自的序号。 */
     private static final class Session {
         private final String side;
-        private final Channel physics;
-        private final Channel main;
+        private final QueuedCsvWriter physics;
+        private final QueuedCsvWriter main;
         private final AtomicLong physicsSeq = new AtomicLong();
         private final AtomicLong mainSeq = new AtomicLong();
 
-        private Session(String side, Channel physics, Channel main) {
+        private Session(String side, QueuedCsvWriter physics, QueuedCsvWriter main) {
             this.side = side;
             this.physics = physics;
             this.main = main;
@@ -456,103 +458,26 @@ public final class MechaTelemetry {
                     + "，main=" + main.path() + "（" + main.samples() + " 行）";
         }
 
+        private boolean overflowReported;
+
         private void flush() {
-            physics.flush();
-            main.flush();
+            try { physics.flush(); main.flush(); }
+            catch (IOException failure) {
+                ARMS.LOGGER.error("位姿记录写盘失败", failure);
+                close();
+            }
+            if (!overflowReported && physics.dropped() + main.dropped() > 0) {
+                overflowReported = true;
+                ARMS.LOGGER.warn("位姿记录队列溢出，文件不完整：{}", describe());
+            }
         }
 
         private void close() {
-            physics.close();
-            main.close();
+            for (QueuedCsvWriter channel : new QueuedCsvWriter[]{physics, main}) {
+                try { channel.close(); }
+                catch (IOException failure) { ARMS.LOGGER.error("位姿记录关闭失败 {}", channel.path(), failure); }
+            }
         }
     }
 
-    /**
-     * 一个 CSV 文件。物理线程只入队，主线程每 tick 排空写盘；磁盘慢不会拖住物理步进。
-     * {@link #offer(String)} 可在任意线程调用，{@link #flush()} 与 {@link #close()} 必须在主线程调用。
-     */
-    private static final class Channel implements AutoCloseable {
-
-        private final Path path;
-        private final Queue<String> pending = new ConcurrentLinkedQueue<>();
-        private final AtomicLong samples = new AtomicLong();
-
-        /** 主线程独占的写入口。 */
-        private final BufferedWriter writer;
-
-        /** 是否已停止接收；物理线程读取。 */
-        private volatile boolean closed;
-
-        private Channel(Path path, BufferedWriter writer) {
-            this.path = path;
-            this.writer = writer;
-        }
-
-        /** 新建一个采样文件并写入列名。 */
-        private static Channel open(String side, String lane, String header) throws IOException {
-            Path directory = FMLPaths.GAMEDIR.get().resolve("logs").resolve("arms_core");
-            Files.createDirectories(directory);
-            String name = side + "-" + lane + "-" + FILE_STAMP.format(LocalDateTime.now()) + ".csv";
-            Path file = directory.resolve(name);
-            BufferedWriter writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8);
-            writer.write(header);
-            writer.newLine();
-            writer.flush();
-            return new Channel(file, writer);
-        }
-
-        /** 物理线程：提交一行采样。已关闭时丢弃。 */
-        private void offer(String line) {
-            if (closed) return;
-            pending.add(line);
-            samples.incrementAndGet();
-        }
-
-        /** 主线程：把队列里的行写盘并 flush。没有排队行时不碰磁盘。 */
-        private void flush() {
-            if (closed) return;
-            try {
-                writePending();
-            } catch (IOException e) {
-                ARMS.LOGGER.error("[ARMS-Core] 录制写盘失败 {}，本路录制结束: {}", path, e.toString());
-                close();
-            }
-        }
-
-        private void writePending() throws IOException {
-            String line = pending.poll();
-            if (line == null) return;
-            do {
-                writer.write(line);
-                writer.newLine();
-            } while ((line = pending.poll()) != null);
-            writer.flush();
-        }
-
-        /** 主线程：写完剩余行并关闭文件。可重复调用。 */
-        @Override
-        public void close() {
-            if (closed) return;
-            closed = true;
-            try {
-                writePending();
-            } catch (IOException e) {
-                ARMS.LOGGER.error("[ARMS-Core] 录制收尾失败 {}: {}", path, e.toString());
-            }
-            try {
-                writer.close();
-            } catch (IOException e) {
-                ARMS.LOGGER.error("[ARMS-Core] 录制关闭失败 {}: {}", path, e.toString());
-            }
-        }
-
-        private Path path() {
-            return path;
-        }
-
-        /** 已提交的行数，含尚未写盘的。 */
-        private long samples() {
-            return samples.get();
-        }
-    }
 }

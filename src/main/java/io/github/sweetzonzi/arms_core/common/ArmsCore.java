@@ -6,11 +6,13 @@ import cn.solarmoon.spark_core.util.PPhase;
 import com.jme3.math.Quaternion;
 import com.jme3.math.Transform;
 import com.jme3.math.Vector3f;
+import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
+import io.github.sweetzonzi.arms_core.common.control.presentation.MechaBodyAnimation;
 import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyAssembly;
@@ -94,6 +96,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @author Sweetzonzi
  */
 public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHolder {
+
+    public static final ResourceLocation DEFAULT_FRAME_ID =
+            ResourceLocation.fromNamespaceAndPath(ARMS.MOD_ID, "allbody_joint_test");
 
     // ═══════════════════════════════════════════════
     // 同步字段（accessor 表，只追加）
@@ -190,8 +195,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * {@link PoseDelayBuffer}。
      * <p>
      * 消费者只有两个：客户端摆放本地玩家实体的
-     * {@code client/ClientHostPoseEvents.java#applySyncedPose}，以及渲染侧的
-     * {@code client/MechaAnimatable.java}（模型矩阵取两端插值、LOD 距离取右端）。
+     * {@code client/ClientHostPoseEvents.java#applySyncedPose}，以及取右端计算 LOD 距离的
+     * {@link MechaBodyAnimation#updateClientInputs}。
      */
     private final @Nullable PoseDelayBuffer presentationPose;
 
@@ -255,6 +260,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     private final @NotNull BodyPart corePart;
     /** 身体组成引用的素体 ID；直接构造的身体可以没有素体。 */
     private final Optional<ResourceLocation> frameId;
+    @Getter
+    private final @Nullable MechaBodyAnimation bodyAnimation;
     /** 服务端创建或恢复时解析的定义，用于约束目标。 */
     private final @Nullable ArmsFrame frame;
     /** 身体的实际外部连接；客户端只持有端点和参考系。 */
@@ -344,6 +351,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
             // 四项由下行通道写入（见 common/control/MechaControl.java 的类注释）。
             this.mechaControl = new MechaControl(this, null);
         }
+        this.bodyAnimation = DEFAULT_FRAME_ID.equals(frameId.orElse(null)) ? new MechaBodyAnimation(this) : null;
+        if (bodyAnimation != null) mechaControl.getPresentation().attach(List.of(bodyAnimation));
         this.syncedData = buildSyncedData(this);
         // 呈现缓冲只在客户端分配：服务端没有呈现路径，{@code DATA_POS} 在那边就是权威值本身
         this.presentationPose = level.isClientSide()
@@ -614,9 +623,23 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         MechaControl control = this.mechaControl;
         if (control == null || isRemoved || authoritative && !isInLevel()) return;
 
+        if (bodyAnimation != null) {
+            bodyAnimation.ensureModel();
+            if (authoritative) bodyAnimation.updateServerInputs(control, dt);
+        }
         // ② 下行状态写入 → 帧逻辑（仅权威侧） → 表现层推进 → extractAnimRootDelta → 控制器物理步
         control.onPhysicsStep(dt);
-        if (bodyPhysics != null) bodyPhysics.followControllerStep(getBody());
+        if (bodyPhysics != null) {
+            bodyPhysics.followControllerStep(getBody());
+            if (bodyAnimation != null) bodyAnimation.drive(control);
+        } else if (!authoritative && bodyAnimation != null) {
+            var model = bodyAnimation.getModelController().getModel();
+            if (model != null) {
+                for (var part : partMap.values()) {
+                    if (part instanceof BodyPart bodyPart) bodyPart.applySharedAnimation(model.getPose());
+                }
+            }
+        }
         // 调试录制：未开启时只是一次 volatile 读，开销可忽略（见 common/debug/MechaTelemetry）
         MechaTelemetry.onPhysicsStep(this, dt);
 
@@ -913,6 +936,10 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     /** 主线程推进身体成员，并发送成员变化产生的完整组成快照。 */
     public void tickBody() {
         if (isRemoved) return;
+        if (bodyAnimation != null) {
+            if (!authoritative) bodyAnimation.updateClientInputs();
+            bodyAnimation.getAnimController().tick();
+        }
         partMap.values().forEach(AbstractPart::onTick);
         if (authoritative && bodyDirty && MechaCoreRegistry.get(level, assemblyId) == this) {
             MechaCoreRegistry.syncBody(this);
@@ -930,6 +957,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         if (authoritative && isInLevel()) {
             var physicsLevel = SparkLevel.getPhysicsLevel(level);
             physicsLevel.submitImmediateTask(PPhase.PRE, () -> {
+                if (bodyAnimation != null) bodyAnimation.releaseDrives();
                 var space = physicsLevel.getWorld();
                 if (bodyPhysics != null) {
                     bodyPhysics.leave(space);

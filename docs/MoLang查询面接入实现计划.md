@@ -26,9 +26,9 @@
 
 | 事实 | 内容 | 证据 |
 |------|------|------|
-| 动画体的求值上下文是缓存的 | `MechaAnimatable` 有一个 `molangContext` 字段，构造时建一次；因为它是 `IAnimatable` 上同名方法的实现，接口默认实现（每次新建）不会生效 | `client/MechaAnimatable.java#molangContext`、`client/MechaAnimatable.java#MechaAnimatable` |
+| 动画体缓存求值上下文 | AllBody 的每个动画体构造时创建一个 `MechaMolangContext` | `common/control/presentation/MechaBodyAnimation.java#molangContext` |
 | presenter 用的就是这个上下文 | `MechaAnimPresenter` 在建立四台姿态机时取 `readyTargets.get(0).getMolangContext()` 作为 `contextProvider`，所以换掉它的实现类即可同时作用于**图条件**与**骨骼 molang** | `common/control/presentation/MechaAnimPresenter.java#molangContext`、`common/control/presentation/MechaAnimPresenter.java#startPostureMachines` |
-| 客户端主线程已在读同步数据 | `client/MechaAnimatable.java#clientTick` 每 tick 采样一次呈现位姿（`client/MechaAnimatable.java#samplePresentationPosition`，无样本时退回 `DATA_POS`），并在 `client/MechaAnimatable.java#publishMolangInputs` 里读 `DATA_VEL` / `DATA_YAW` | `client/MechaAnimatable.java#clientTick`、`client/MechaAnimatable.java#publishMolangInputs`、`common/ArmsCore.java#lerpPresentationPosition` |
+| 客户端运动数据 | 每 tick 采样呈现位姿，无样本时取 `DATA_POS`，运动查询读 `DATA_VEL` 与 `DATA_YAW` | `common/control/presentation/MechaBodyAnimation.java#updateClientInputs`、`common/ArmsCore.java#lerpPresentationPosition` |
 | 速度已经同步好了 | `DATA_VEL` 是 `Vector3f`，服务端每 tick 由刚体的线速度写入，单位 m/s（`DATA_POS` / `DATA_YAW` 同批） | `common/ArmsCoreServerEvents.java#syncToClients`、`common/ArmsCore.java#DATA_VEL` |
 | 客户端没有宿主实体 | `ArmsCore.host` 在客户端恒为 `null`（绑定关系只在服务端），因此 `head_*_rotation` / `is_in_water` 一类查询在客户端没有现成的源头，见 §6 | `common/ArmsCore.java#host` |
 | 四项逻辑状态已有下行 | 客户端主线程把 `DATA_POSTURE` / `DATA_GAIT` / `DATA_VERTICAL` / `DATA_ENERGY` 投影进 `MechaControl.variables` 的枚举与 one-hot（`IS_CROUCHING` / `IN_WATER_POSTURE` / `IS_FALLING` 等） | `common/ArmsCoreServerEvents.java#projectLogicState`、`common/control/state/MechaStateVariableKeys.java#IS_CROUCHING` |
@@ -78,7 +78,7 @@
 
 名字 `MechaMolangContext`，放表现层包（它与 `MechaAnimPresenter` 同层，被后者当 `contextProvider` 使用）。
 
-泛型**不写** `MechaAnimatable` 而写 `IAnimatable<ArmsCore>`：`MechaAnimatable` 在 `client` 包，写它会让 `common` 反向依赖客户端；写 `IAnimatable<ArmsCore>` 之后 `getEntity().getAnimatable()` 直接得到 `ArmsCore`，无需强转，也不必 import 客户端类。Machine-Max 的 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/molang/MechMolangContext.java#MechMolangContext` 用的是同一手法（那边泛型取 `IAnimatable<Part>`）。
+泛型使用 `IAnimatable<ArmsCore>`。`getEntity().getAnimatable()` 直接返回装配体。Machine-Max 的 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/molang/MechMolangContext.java#MechMolangContext` 对应使用 `IAnimatable<Part>`。
 
 类必须是 `public` 且有无参构造（§0.1 的原型规则）。
 
@@ -86,7 +86,7 @@
 
 `ground_speed` = 水平模长 `sqrt(vx² + vz²)`，`vertical_speed` = `v.y`（正向上，与内容包 `vertical_speed>0` 的用法一致），单位 m/s。取 m/s 而不是格/tick 的理由：内容包的用法是 `math.clamp(ground_speed*3, 0, 30)` 一类**转角**（度），格/tick 下冲刺 0.216 会让转角永远小于 1°，只有 m/s 量级才落在作者想要的 0~30° 区间。
 
-发布点放 `client/MechaAnimatable.java#clientTick`：它已经是「主线程每 tick 读一次同步数据」的位置（采样呈现位姿的 `client/MechaAnimatable.java#samplePresentationPosition` 与发布运动量的 `client/MechaAnimatable.java#publishMolangInputs` 都挂在这条调用链上），读 `core.getSyncedData().get(ArmsCore.DATA_VEL)` 不需要新的线程约定，也不需要新字段表项。
+客户端发布点为 `common/control/presentation/MechaBodyAnimation.java#updateClientInputs`，在主线程读同步速度并写入求值上下文。服务端的 `common/control/presentation/MechaBodyAnimation.java#updateServerInputs` 在物理步直接采样控制器。
 
 **不**在 `@QueryBinding` 方法里读 `SynchedEntityData`：同步数据容器只在主线程读，物理线程求值直接读它是跨线程读一个非线程安全结构。
 
@@ -149,13 +149,13 @@ public class MechaMolangContext extends SparkMolangContext<IAnimatable<ArmsCore>
 
 要点：两个字段与两个方法都在类上，没有静态状态（引擎按类缓存原型，但求值发生在**上下文实例**上，所以实例字段是正确的载体）。
 
-### 3.2 `MechaAnimatable` 的接线
+### 3.2 AllBody 动画体的接线
 
 | 位置 | 改动 |
 |------|------|
-| 字段 `molangContext` | 类型由 `SparkMolangContext<MechaAnimatable>` 改为 `MechaMolangContext`（`Getter` 生成的方法仍然满足 `IAnimatable` 上的 `getMolangContext()`） |
+| 字段 `molangContext` | 构造时创建 `MechaMolangContext`，由 `IAnimatable#getMolangContext` 提供给状态机和骨骼动画。 |
 | 构造 | `this.molangContext = new MechaMolangContext(this);` |
-| `clientTick` | 在采样呈现位姿之后读一次 `DATA_VEL`，算水平模长与 y 分量，调 `molangContext.setMotion(groundSpeed, verticalSpeed)` |
+| `updateClientInputs` | 采样呈现位姿和同步速度，把水平模长与 y 分量发布到 `setMotion`。 |
 
 速度读数的写法（不变更任何载荷与字段表）：
 
@@ -190,9 +190,9 @@ molangContext.setMotion(ground, velocity.y);
 
 | 项 | 内容 |
 |----|------|
-| 改动 | 新增 `common/control/presentation/MechaMolangContext.java`；`client/MechaAnimatable.java` 换上下文类型并在 `clientTick` 里发布速度 |
+| 改动 | 新增 `common/control/presentation/MechaMolangContext.java`；`common/control/presentation/MechaBodyAnimation.java#updateClientInputs` 在主线程发布速度 |
 | 验收 | 单元：`q.ground_speed` / `q.vertical_speed` 在给定上下文后读回设定值；未设定时读 0；`jump` / `fly` 的原式在 `v = 0` 与 `v = 3` 下均有限（依赖上游 A1）。实机：进入空中姿态四肢正常显示，且摆臂幅度随上升/下落速度变化 |
-| 落地位置 | `common/control/presentation/MechaMolangContext.java`（新增）、`client/MechaAnimatable.java#molangContext`、`client/MechaAnimatable.java#clientTick` |
+| 落地位置 | `common/control/presentation/MechaMolangContext.java`（新增）、`common/control/presentation/MechaBodyAnimation.java#molangContext`、`common/control/presentation/MechaBodyAnimation.java#updateClientInputs` |
 
 ### 阶段 2：其余八个 `q.*`（已落地）
 
@@ -202,16 +202,16 @@ molangContext.setMotion(ground, velocity.y);
 |--------|---------:|------|------|
 | `is_in_water` | 133 | `common/control/state/MechaStateVariableKeys.java#IN_WATER_POSTURE`（下行 one-hot） | 需要 presenter 把 `MechaControl.variables` 交给上下文（新增 `common/control/presentation/MechaMolangContext.java` 的 `attachVariables(StateVariableContainer)`，由 `MechaAnimPresenter` 在建立机器前调一次） |
 | `is_sneaking` | 4 | `common/control/state/MechaStateVariableKeys.java#IS_CROUCHING` | 同 `is_in_water`（presenter 注入变量容器） |
-| `body_y_rotation` | 10 | 同步 `DATA_YAW` 的 y（度） | 与 `setMotion` 同批在 `clientTick` 发布 |
+| `body_y_rotation` | 10 | 同步 `DATA_YAW` 的 y（度） | 与 `setMotion` 同批在 `updateClientInputs` 发布 |
 | `yaw_speed` | 6 | `DATA_YAW` 的 y 对时间的差分（度/秒），一阶滤波 | 同 `body_y_rotation`（并保存上一次的 yaw 与 tick） |
 | `head_x_rotation` | 5 | 宿主实体的头部俯仰（度） | 只在渲染期拿得到宿主实体（`client/MechaPlayerRenderer.java#onRenderPlayerPre`）；由渲染路径发布 |
 | `head_y_rotation` | 1 | 宿主实体的头部偏航（度） | 同 `head_x_rotation`（渲染路径发布） |
-| `position_delta` | 4 | 世界系每 tick 位移：`DATA_VEL` 三分量各除以 20（tick/s） | 与 `setMotion` 同批在 `clientTick` 发布；单位依据见 §4 落地差异第 1 条 |
-| `life_time` | 2 | 动画体创建以来的秒数 | `MechaAnimatable` 自持一个计数器，`clientTick` 里更新后发布 |
+| `position_delta` | 4 | 世界系每 tick 位移：`DATA_VEL` 三分量各除以 20（tick/s） | 与 `setMotion` 同批在 `updateClientInputs` 发布；单位依据见 §4 落地差异第 1 条 |
+| `life_time` | 2 | 动画体创建以来的秒数 | `MechaBodyAnimation` 在发布运动数据时按秒累加。 |
 
 验收：同一批表达式在绑定上下文上全部求值成功（不抛异常）；`is_in_water` / `is_sneaking` 在对应状态下取 1、其余取 0（用调试打印比对 `variables` 的 one-hot）。
 
-落地位置：`common/control/presentation/MechaMolangContext.java`、`common/control/presentation/MechaAnimPresenter.java`（注入变量容器）、`client/MechaAnimatable.java`、`client/MechaPlayerRenderer.java`。
+落地位置：`common/control/presentation/MechaMolangContext.java`、`common/control/presentation/MechaAnimPresenter.java`（注入变量容器）、`common/control/presentation/MechaBodyAnimation.java`、`client/MechaPlayerRenderer.java`。
 
 ### 阶段 3：全包有限性用例（回归闸门）（已落地）
 
@@ -227,17 +227,17 @@ molangContext.setMotion(ground, velocity.y);
 
 | 项 | 内容 |
 |----|------|
-| 改动 | `common/control/presentation/MechaMolangContext.java` 的类注释（值的来源、线程约定、为何不读同步容器）；`client/MechaAnimatable.java` 的 `molangContext` 字段注释；`AGENTS.md` 的 `common/control/presentation/` 行与文档参考表；`docs/分层控制器与状态机设计.md` 的 MoLang 一节（记录 `q.*` 查询面已落地的那部分，与 `ctrl.*` 仍未落地分开写） |
+| 改动 | `common/control/presentation/MechaMolangContext.java` 的类注释（值的来源、线程约定、为何不读同步容器）；`common/control/presentation/MechaBodyAnimation.java#molangContext` 的接线；`AGENTS.md` 的 `common/control/presentation/` 行与文档参考表；`docs/分层控制器与状态机设计.md` 的 MoLang 一节（记录 `q.*` 查询面已落地的那部分，与 `ctrl.*` 仍未落地分开写） |
 | 验收 | `pwsh -NoProfile -File tools/check_doc_refs.ps1` 退出码 0；按 `AGENTS.md` 的文档编辑规范做一次触发词扫描 |
 
 ### 落地差异
 
 以下是落地形态与本文方案不同的地方。每条都给出代码坐标；读方案时以这里为准。
 
-1. **`position_delta` 的单位取 m/tick，不是 m/s。** 阶段 2 表把它写成「`DATA_POS` 的每 tick 位移（m/s 矢量）」，两种说法互相矛盾；落地取「每 tick 位移」，因为用法的量纲站在这一边：内容包把它与 `ysm.bone_pivot_abs('Root')/16` 这类「格」量相加减（`bmpt_main.animation.json:8913` 的 `head_forward_delta` 一行），乘上内容侧系数 2.2 之后必须仍落在格的量级上——冲刺 5.6 m/s 若按 m/s 传入，`2.2*5.6` 会比同式的枢轴项大一个数量级，按 m/tick 传入则是 0.62 格。三个轴都由 `DATA_VEL` 的各分量除以 20（tick/s）发布，越界轴返回 0。语义（世界系还是局部系）仍待实机确认，仍未闭合的部分记在 §6。坐标 `common/control/presentation/MechaMolangContext.java#queryPositionDelta`、`client/MechaAnimatable.java#publishMolangInputs`。
+1. **`position_delta` 的单位取 m/tick，不是 m/s。** 阶段 2 表把它写成「`DATA_POS` 的每 tick 位移（m/s 矢量）」，两种说法互相矛盾；落地取「每 tick 位移」，因为用法的量纲站在这一边：内容包把它与 `ysm.bone_pivot_abs('Root')/16` 这类「格」量相加减（`bmpt_main.animation.json:8913` 的 `head_forward_delta` 一行），乘上内容侧系数 2.2 之后必须仍落在格的量级上——冲刺 5.6 m/s 若按 m/s 传入，`2.2*5.6` 会比同式的枢轴项大一个数量级，按 m/tick 传入则是 0.62 格。三个轴都由 `DATA_VEL` 的各分量除以 20（tick/s）发布，越界轴返回 0。语义（世界系还是局部系）仍待实机确认，仍未闭合的部分记在 §6。坐标 `common/control/presentation/MechaMolangContext.java#queryPositionDelta`、`common/control/presentation/MechaBodyAnimation.java#publishMotion`。
 2. **`head_y_rotation` 取「头 − 身体」的相对角。** 阶段 2 表写的是「宿主实体的头部偏航（度）」。落地取相对角：机体本身已经按头朝向摆放（`client/MechaPlayerRenderer.java#onRenderPlayerPre` 的 `facingYaw`），绝对偏航会随朝向整体翻转，而内容包要的是「头相对身体的转角」这件事本身。两个角都在渲染路径按部分 tick 插值，与画模型用的是同一个部分 tick。
-3. **`life_time` 取秒。** 阶段 2 表写的是「动画体创建以来的秒数」，落地就是按客户端 tick 累加 `1/20`（`client/MechaAnimatable.java#lifeTimeSeconds`）。`../Spark-Core/src/main/java/cn/solarmoon/spark_core/molang/SparkEntityContext.java#lifeTime` 提供的同名查询是 tick 数，与本类量级不同，取秒是为内容包的用法：`math.sin(100*query.life_time)`（`bmpt_main.animation.json:2961`、`:2975`）按秒约 16 Hz，按 tick 则是每 tick 100 rad。
-4. **`yaw_speed` 是一阶滤波后的度/秒。** 差分走最短角路径（`Mth.wrapDegrees`），首次采样时不差分（还没有前值）；滤波时间常数 0.1 s、每 tick 一次采样下系数 0.4（`client/MechaAnimatable.java#YAW_SPEED_SMOOTHING`）。滤波的理由是同步偏航按 1/256 度量化，未滤波的 20 Hz 差分噪声会让 `math.abs(q.yaw_speed)>120`（`bmpt_main.animation.json:9202`）一类判据误触发。
+3. **`life_time` 取秒。** 阶段 2 表写的是「动画体创建以来的秒数」，落地就是按客户端 tick 累加 `1/20`（`common/control/presentation/MechaBodyAnimation.java#lifeTime`）。`../Spark-Core/src/main/java/cn/solarmoon/spark_core/molang/SparkEntityContext.java#lifeTime` 提供的同名查询是 tick 数，与本类量级不同，取秒是为内容包的用法：`math.sin(100*query.life_time)`（`bmpt_main.animation.json:2961`、`:2975`）按秒约 16 Hz，按 tick 则是每 tick 100 rad。
+4. **`yaw_speed` 是一阶滤波后的度/秒。** 差分走最短角路径（`Mth.wrapDegrees`），首次采样时不差分（还没有前值）；滤波时间常数 0.1 s、每 tick 一次采样下系数 0.4（`common/control/presentation/MechaBodyAnimation.java#YAW_SPEED_SMOOTHING`）。滤波的理由是同步偏航按 1/256 度量化，未滤波的 20 Hz 差分噪声会让 `math.abs(q.yaw_speed)>120`（`bmpt_main.animation.json:9202`）一类判据误触发。
 5. **阶段 2 的两项非运动量查询取自逻辑层的姿态 one-hot。** `is_sneaking` → `IS_CROUCHING`、`is_in_water` → `IN_WATER_POSTURE`（`common/control/state/MechaStateVariableKeys.java`）。容器由表现层编排器在建立四台姿态机之前注入（`common/control/presentation/MechaAnimPresenter.java#start`），与阶段 2 表第一行的接线方式一致。
 6. **新增一项上游依赖：一元负号后紧跟函数调用的解析错位。** 实施期间发现内容包里 6 处 `-math.clamp(query.ground_speed*4,0,40)` 与 `-30-math.clamp(...)`（jump / fly 的手臂旋转，`bmpt_main.animation.json:2861`、`:2932`、`:2935` 与 `bmpt_tac.animation.json:1503`、`:1574`、`:1577`）在修正前求值恒为 0：表达式被解析成「对函数表达式取负再调用」，两条求值路径都取不到该函数。修正在 `../Spark-Core/docs/molang_compiled_path_defects_plan.md` §4（D4），本仓库由 `common/control/presentation/MechaMolangContextTest.java#negatedClampCurveKeepsItsValue` 守住。
 7. **阶段 3 的用例比方案多一条断言。** 方案列了三条（不抛、有限、总数下限 2323）；落地把「不抛」与「有限」合并成同一次遍历的失败清单，一次报出全部失败项而不是第一条就中断——内容包出问题时需要看到全集。

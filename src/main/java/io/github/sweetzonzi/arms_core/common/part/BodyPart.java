@@ -1,5 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.part;
 
+import cn.solarmoon.spark_core.animation.model.ModelPose;
+import cn.solarmoon.spark_core.animation.model.origin.OModel;
 import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
 import io.github.sweetzonzi.machine_max.common.mech.part.AbstractPart;
 import io.github.sweetzonzi.machine_max.common.mech.part.PartCreationContext;
@@ -7,6 +9,8 @@ import io.github.sweetzonzi.machine_max.common.mech.part.PartRestoreMode;
 import lombok.Getter;
 import net.minecraft.world.level.Level;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 /** 身体部件，持有由 ArmsCore 统一入世的子结构。 */
@@ -15,6 +19,8 @@ public final class BodyPart extends AbstractPart<BodyPartType> {
     /** 结构资源是否已经释放；部件受损摧毁由 MM 的耐久判据负责。 */
     @Getter
     private boolean disposed;
+    private OModel animationModel;
+    private Set<String> fixedAnimationBones = Set.of();
 
     /** 新建部件，身份独立，结构定义由同端实例共享。 */
     public BodyPart(BodyPartType type, String variant, Level level) {
@@ -44,6 +50,24 @@ public final class BodyPart extends AbstractPart<BodyPartType> {
     @Override public float repairLimitRatio() { return 1f; }
     @Override public boolean permitsRepair() { return false; }
     @Override public float assemblyDamage(float amount, float remaining, boolean destroyed) { return amount; }
+
+    /** 物理线程复制装饰骨骼动画。刚体承载的基准骨骼及祖先保留绑定姿态。 */
+    public void applySharedAnimation(ModelPose source) {
+        var model = getModelController().getModel();
+        if (model == null) return;
+        var origin = model.getOrigin();
+        if (origin != animationModel) {
+            var fixed = new HashSet<String>();
+            for (var sub : subParts.values()) {
+                for (var bone = origin.getBone(sub.attr.getStartBone()); bone != null; bone = bone.getParent()) {
+                    fixed.add(bone.getName());
+                }
+            }
+            fixedAnimationBones = fixed;
+            animationModel = origin;
+        }
+        model.getPose().copyPhysicsAnimationFrom(source, fixedAnimationBones);
+    }
 
     /** 同步核心状态时保持部件身份和刚体实例，拒绝借快照更换定义。 */
     public void applySavedState(BodyPartData data) {
