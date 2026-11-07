@@ -14,6 +14,7 @@ import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ import java.util.List;
  *
  * @author Sweetzonzi
  */
+@Tag("measurement")
 class RigidBodyControllerPrototypeTest {
 
     /** 与游戏内一致的物理步长：tps = 100 */

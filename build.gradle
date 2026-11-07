@@ -19,7 +19,10 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('test', Test).configure {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        // 常规 test 只跑回归；可行性/标定测量要输出数值、耗时分钟级，走 measurementTest。
+        excludeTags 'measurement'
+    }
 }
 
 dependencies {
@@ -149,6 +152,26 @@ tasks.register("generateGameTestStructure", Test) {
     filter {
         includeTestsMatching 'io.github.sweetzonzi.arms_core.tools.GenerateGameTestStructure'
     }
+    outputs.upToDateWhen { false }
+}
+
+// 可行性与标定测量：真 PhysicsSpace、输出数值、分钟级。
+// 与 generateGameTestStructure 同一形态：克隆 test 的类路径与 NeoForge JUnit 启动参数，
+// 否则裸 Test 任务会因缺 mainargs.txt 失败。
+tasks.register("measurementTest", Test) {
+    group = 'verification'
+    description = 'Run feasibility/calibration measurements (slow; excluded from the regular test task)'
+    def base = tasks.named('test', Test).get()
+    testClassesDirs = base.testClassesDirs
+    classpath = base.classpath
+    jvmArgs = base.jvmArgs
+    jvmArgumentProviders.addAll(base.jvmArgumentProviders)
+    workingDir = base.workingDir
+    useJUnitPlatform {
+        includeTags 'measurement'
+    }
+    systemProperty 'fml.junit.argsfile',
+            layout.buildDirectory.file('moddev/junit/programArgs.txt').get().asFile.absolutePath
     outputs.upToDateWhen { false }
 }
 

@@ -16,6 +16,7 @@ import com.jme3.math.Quaternion;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -118,6 +119,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * @author Sweetzonzi
  */
+@Tag("measurement")
 class TerrainSeamContactTest {
 
     // ═══════════════════════════════════════════════

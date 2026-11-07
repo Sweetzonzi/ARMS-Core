@@ -28,8 +28,11 @@
 # 重新生成 GameTest 场地结构模板（改了场地几何后才需要）
 .\gradlew --offline generateGameTestStructure
 
-# 单元测试（纯逻辑层；不需要启动 Minecraft）
+# 回归测试（纯逻辑层；不需要启动 Minecraft）
 .\gradlew --offline test
+
+# 可行性与标定测量（慢速；不进入常规 test）
+.\gradlew --offline measurementTest
 
 # 构建产物（jar 在 build/libs）
 .\gradlew --offline build
@@ -40,15 +43,16 @@
 
 - **命令一律带 `--offline`。** 本仓库的依赖已经全部落在本地 Gradle 缓存里，联网解析会白白花掉十几分钟：同一份 `.\gradlew test` 联网 **14 分 32 秒**、带 `--offline` **12～16 秒**，而编译与用例本身是秒级（联网那一轮的输出里 23 个任务全部 `UP-TO-DATE`，时间全在依赖解析）。只有确实要拉新依赖时才去掉它：升级 `neo_version` / `minecraft_version`、新增 Maven 依赖、或改了 `gradle.properties` 里的版本号。带 `--offline` 时若真有依赖缺失，Gradle 会直接报「No cached version available for offline mode」，不会静默地少解析一部分。
 
-- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaControlClientTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/presentation/`（`MechaPresentationGraphsTest` 四张姿态图的转移与映射一致性、`MechaPresentationPresetTest` 枚举往返 / 下行写入 / 映射表对内容包的核对、`MechaMolangContextTest` 查询面取值与未发布时的默认值、布尔上下文里的绑定查询、`MechaPackMolangTest` 内容包 2323 条 molang 的有限性与不抛）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`network/ARMSNetworkCodecTest`。全部为纯逻辑、不触碰 jme3 native，因此 `test` 可独立运行；`test` 已配置为 `useJUnitPlatform()` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的四条：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率、越障高度契约），以输出数值为主、不做基线断言（例外是两条判据契约：越障高度契约判「一次越障的抬升量不超过步高」这条不变量本身，楼梯与坡那条判「判据认不认得出立面」——楼梯一级一级上去、坡一次都不触发），结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10 与 `docs/角色控制器-刚体原型与引擎约束.md` §11.6；`TerrainSeamContactTest` 量**地形拼缝**上的接触（裸圆柱与正式控制器两路 × 七档地形拼法 × 速度阶梯 × 一个步长的 12 个相位，另有圆柱底缘边距五档与地形盒边距四档两条阶梯；按水平顿挫触发打出踢起来那一步的全部接触的法线 / 距离 / 冲量；第 ④ 组量**接触修正**：门（本体参与 / 对方是地形刚体）× 写法（改竖直 / 吸最近轴 / 改距离丢弃 / 取消这条点）× 回调（只 conceived / 只 processed / 两个 / 步进之后）× 含不含贴着 × 深度三档与接触点 yaw 通道，外加三条危险车道（悬出棱线、拼缝一堵墙、半砖台阶）与站在拼缝上的静置，每档都报判据命中数；其中 `SECTION_PRODUCTION` 一档直接调生产判据本体），结论见同文 §11.10、§11.11。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。
+- 单元测试位于 `src/test/java/` 下：`common/control/`（`MechaControlTest`、`MechaControlClientTest`、`MechaCharacterFacingTest`、`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与四个状态机图测试）、`common/control/presentation/`（`MechaPresentationGraphsTest` 四张姿态图的转移与映射一致性、`MechaPresentationPresetTest` 枚举往返 / 下行写入 / 映射表对内容包的核对、`MechaMolangContextTest` 查询面取值与未发布时的默认值、布尔上下文里的绑定查询、`MechaPackMolangTest` 内容包 2323 条 molang 的有限性与不抛）、`common/control/attr/MechaBodyPresetTest`、`common/FlightAbilityModifierTest`、`network/ARMSNetworkCodecTest`。除下面这些测量用例外为纯逻辑、不触碰 jme3 native；`test` 配置为 `useJUnitPlatform { excludeTags 'measurement' }` 并纳入 `check`（`build.gradle` 的 `test` 任务配置）。搭真实 `PhysicsSpace` 并按 100 Hz 步进的用例：`RigidBodyControllerPrototypeTest` 用**裸刚体**度量刚体路线的机制（锁转站立稳定性、撞墙归零、自写越障阈值、引擎摩擦标定、分轴锁转及换形/改质量后的保持、地面姿态控制方案对照、落地收敛的最小旋转与 `(0,1,0)` 对照、单轴初态朝向无偏与斜置初态朝向偏差的量级），数值以 `System.out` 输出供标定，结论见 `docs/角色控制器-刚体原型与引擎约束.md`；`RigidBodyControllerMeasurementTest` 用**正式控制器**量落地形态的数值（越障速率残留、每步 yaw 写入的步内偏差、起步头十步的加速度、前馈开关两档的稳态速率、越障高度契约），以输出数值为主、不做基线断言（例外是两条判据契约：越障高度契约判「一次越障的抬升量不超过步高」这条不变量本身，楼梯与坡那条判「判据认不认得出立面」——楼梯一级一级上去、坡一次都不触发），结论见 `docs/角色控制器-刚体动力学方案.md` §7.4、§12.9、§12.10 与 `docs/角色控制器-刚体原型与引擎约束.md` §11.6；`TerrainSeamContactTest` 量**地形拼缝**上的接触（裸圆柱与正式控制器两路 × 七档地形拼法 × 速度阶梯 × 一个步长的 12 个相位，另有圆柱底缘边距五档与地形盒边距四档两条阶梯；按水平顿挫触发打出踢起来那一步的全部接触的法线 / 距离 / 冲量；第 ④ 组量**接触修正**：门（本体参与 / 对方是地形刚体）× 写法（改竖直 / 吸最近轴 / 改距离丢弃 / 取消这条点）× 回调（只 conceived / 只 processed / 两个 / 步进之后）× 含不含贴着 × 深度三档与接触点 yaw 通道，外加三条危险车道（悬出棱线、拼缝一堵墙、半砖台阶）与站在拼缝上的静置，每档都报判据命中数；其中 `SECTION_PRODUCTION` 一档直接调生产判据本体），结论见同文 §11.10、§11.11。`MechaCharacterWalkPhysicsTest` 与 `MechaCharacterStepTest` 保留着 KCC 承载时期的基线，已标 `@Disabled`，等按同文 §11 的 P2 行重建。`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest` 与 `TerrainSeamContactTest` 标 `@Tag("measurement")`，常规 `test` 用 `excludeTags 'measurement'` 排除，由 `measurementTest` 运行。
 - **测试类不得放在 `mixin` 包下**：`io.github.sweetzonzi.arms_core.mixin.*` 已被 `arms_core.mixins.json` 声明为 Mixin 独占包，其中的类不能被直接引用，放进去会在测试启动时报 `IllegalClassLoadError: ... is in a defined mixin package ... and cannot be referenced directly`。
 - 启动时工作目录是 `run/`，由 NeoForge MDK 自动生成；首次运行会下载 MC 资产。
 
-### 两条测试车道
+### 三条测试车道
 
 | 车道 | 命令 | 能覆盖什么 |
 |------|------|-----------|
-| JUnit | `.\gradlew --offline test` | 纯逻辑与力学：不需要活着的世界，可搭裸 `PhysicsSpace` 步进刚体控制器。十余秒到几分钟（搭空间并跑长跑的用例是分钟级） |
+| JUnit 回归 | `.\gradlew --offline test` | 纯逻辑与力学：不需要活着的世界；`@Tag("measurement")` 的用例被排除。十余秒到一分钟 |
+| 测量 | `.\gradlew --offline measurementTest` | 真 `PhysicsSpace` 上的可行性与标定读数（`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest`、`TerrainSeamContactTest`）；分钟级，不进常规 `test` |
 | GameTest | `.\gradlew --offline runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前两条探针：「物理空间就绪且 `ArmsCore` 构造得出来」，以及「位置写入分类与锚点判据」（镜像不摄入、只有栈空且目标 ≠ 锚点才采纳）；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
 
 - GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前唯一一处是 `common/gametest/ArmsCoreGameTest.java`。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
