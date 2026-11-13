@@ -53,7 +53,7 @@
 - [x] 确认 `ragdoll` 的生命周期：作为终态，通过 `reset()` 或 stop/start 回到初始状态，不隐式回到 `stand`。
 - [x] 补齐 `crouch`、`prone` 的环境转移：离地进入 `air`，入水进入 `water`，不能在悬空或水中继续保持地面姿态。
 - [x] 细化 `air` 落水/着地优先级。角色落入浅水且同时 `ON_GROUND = true`、`IN_WATER = true` 时，一次转入 `water`。
-- [x] 蹲伏改为**连续状态**：`IS_SNEAKING` 条件直接映射 `stand ↔ crouch`（蹲下即 crouch、站直即 stand，与 onGround/inWater 同属环境条件），不再使用 `sneak` 事件；环境条件（air/water）优先级高于蹲伏。
+- [x] 蹲伏改为**连续状态**：`TRY_CROUCH` 条件直接映射 `stand ↔ crouch`（蹲下即 crouch、站直即 stand，与 onGround/inWater 同属环境条件），不再使用 `sneak` 事件；环境条件（air/water）优先级高于蹲伏。
 - [ ] 明确 `riding` 下死亡、载具失效、强制下车的转移；骑乘时是否忽略普通 `ON_GROUND`/`IN_WATER` 条件也需固定。
 - [ ] 为 `isSleeping`、`isFallFlying` 等已采集环境状态确定归属：加入现有 posture/vertical，或标注为当前里程碑明确不支持，避免快照字段长期悬空。
 

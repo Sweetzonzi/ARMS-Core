@@ -70,7 +70,7 @@ public interface MechaControlHolder {
 public class MechaConditionSnapshot {
     // 玩家输入
     float inputForward, inputStrafe;  // [-1, 1]
-    boolean jumpPressed, sprintPressed;
+    boolean jumpPressed, trySprint;
     // 视角
     float viewYaw, viewPitch;
     // 宿主环境条件
@@ -168,7 +168,7 @@ public void onPhysicsStep(float dt):
 
   2. 汇入快照字段到 StateVariableContainer
      variables.set(INPUT_FORWARD,    snapshot.inputForward)
-     variables.set(IS_SPRINTING,     snapshot.sprintPressed)
+     variables.set(TRY_SPRINT,       snapshot.trySprint())
      variables.set(IN_WATER,         snapshot.inWater)
      variables.set(IS_DEAD,          snapshot.isDead)
      ...

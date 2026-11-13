@@ -51,7 +51,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.graph.SimpleVa
  *
  * <p>
  * 蹲伏（crouch）是<b>连续状态</b>：stand ↔ crouch 由玩家蹲伏输入
- * （快照 {@code sneaking} → {@code IS_SNEAKING}）直接驱动，不是事件切换——
+ * （快照 {@code tryCrouch} → {@code TRY_CROUCH}）直接驱动，不是事件切换——
  * 蹲下即 crouch、站直即 stand，与 onGround / inWater 同属环境条件。
  * 卧倒（prone）仍为事件切换（{@code event:prone}，蹲伏 ⇄ 卧倒）。
  * </p>
@@ -99,11 +99,11 @@ public final class PostureLogicGraphs {
     /** 有击倒事件 */
     private static final StateCondition COND_KNOCKDOWN = isTrue(EVENT_KNOCKDOWN);
 
-    /** 玩家正在蹲伏（连续状态，快照 sneaking → IS_SNEAKING） */
-    private static final StateCondition COND_SNEAKING = isTrue(IS_SNEAKING);
+    /** 有蹲伏请求（连续状态，快照 tryCrouch → TRY_CROUCH） */
+    private static final StateCondition COND_SNEAKING = isTrue(TRY_CROUCH);
 
-    /** 玩家未蹲伏 */
-    private static final StateCondition COND_NOT_SNEAKING = isFalse(IS_SNEAKING);
+    /** 没有蹲伏请求 */
+    private static final StateCondition COND_NOT_SNEAKING = isFalse(TRY_CROUCH);
 
     // ═══════════════════════════════════════════════
     // 进入/退出动作常量

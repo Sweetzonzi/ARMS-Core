@@ -28,12 +28,12 @@ public record MechaConditionSnapshot(
         float inputStrafe,
         /** 跳跃键是否按住（持续状态，用于保持跳跃助推窗口） */
         boolean jumpPressed,
-        /** 玩家是否处于冲刺（含双击 W 与冲刺键两条触发路径） */
-        boolean sprintPressed,
-        /** 慢走输入（精细移动，触发 creep gait）；客户端当前由潜行键驱动 */
-        boolean walkKeyPressed,
-        /** 玩家是否处于蹲伏（连续状态，hold 语义：蹲下即 crouch、站直即 stand，驱动 posture stand ↔ crouch） */
-        boolean sneaking,
+        /** 冲刺请求：输入源想要冲刺；能否进入 sprint 由步态图判定 */
+        boolean trySprint,
+        /** 慢走请求：精细移动，触发 creep gait */
+        boolean tryWalk,
+        /** 蹲伏请求：驱动 posture stand ↔ crouch，hold 语义（蹲下即 crouch、撤回即 stand） */
+        boolean tryCrouch,
         /** 水平朝向（度，0=南，90=西，与 Minecraft yaw 一致） */
         float viewYaw,
         /** 俯仰角（度，正=上） */

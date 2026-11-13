@@ -9,7 +9,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.IN_WATER;
-import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.IS_SNEAKING;
+import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.TRY_CROUCH;
 import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVariableKeys.POSTURE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -121,7 +121,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void sneakIsContinuousConditionMappingStandToCrouch() {
         // 蹲下 → crouch
-        variables.set(IS_SNEAKING, true);
+        variables.set(TRY_CROUCH, true);
         machine.progress(TEST_DT);
         assertEquals(Posture.CROUCH, variables.get(POSTURE));
 
@@ -130,7 +130,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
         assertEquals(Posture.CROUCH, variables.get(POSTURE));
 
         // 站直 → stand
-        variables.set(IS_SNEAKING, false);
+        variables.set(TRY_CROUCH, false);
         machine.progress(TEST_DT);
         assertEquals(Posture.STAND, variables.get(POSTURE));
     }
@@ -138,7 +138,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void environmentTakesPriorityOverSneaking() {
         // 蹲伏中入水 → water，而非 crouch
-        variables.set(IS_SNEAKING, true);
+        variables.set(TRY_CROUCH, true);
         machine.progress(TEST_DT);
         assertEquals(Posture.CROUCH, variables.get(POSTURE));
 
@@ -150,7 +150,7 @@ class PostureLogicGraphsTest extends LogicStateMachineTestSupport {
     @Test
     void airborneTakesPriorityOverSneaking() {
         // 蹲伏中离地 → air，而非 crouch
-        variables.set(IS_SNEAKING, true);
+        variables.set(TRY_CROUCH, true);
         machine.progress(TEST_DT);
         assertEquals(Posture.CROUCH, variables.get(POSTURE));
 

@@ -1,6 +1,7 @@
 package io.github.sweetzonzi.arms_core.common.control.state;
 
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -83,6 +84,17 @@ class GaitSubGraphsTest extends LogicStateMachineTestSupport {
         setMovement(true, false, false, 1f);
         machine.progress(TEST_DT);
         assertEquals(Gait.JOG, variables.get(GAIT));
+    }
+
+    @Test
+    void walkRequestInAirDoesNotCreep() {
+        enterPosture(Posture.AIR);
+
+        setMovement(true, true, false, 1f);
+        machine.progress(TEST_DT);
+
+        assertEquals(Gait.JOG, variables.get(GAIT),
+                "慢走是地面步态：空中撤回该请求只保留常速");
     }
 
     @Test

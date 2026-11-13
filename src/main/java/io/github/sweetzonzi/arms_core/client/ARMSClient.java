@@ -61,6 +61,24 @@ public final class ARMSClient {
     /** 上帧跳跃键状态，用于检测松开边沿 */
     private static boolean wasJumpDown;
 
+    /**
+     * 双击前进键的触发窗口（tick）。
+     * <p>
+     * 与 {@code net.minecraft.client.player.LocalPlayer#sprintTriggerTime} 同值同义：7 tick 在
+     * 20 TPS 下约 350 ms，也就是两次按下的间隔上限。这是<b>键位手势</b>，只属于本机按键这一侧；
+     * 上行出去的是「请求冲刺」这个结果，服务端与其它输入源都不需要知道双击。
+     */
+    private static final int SPRINT_WINDOW_TICKS = 7;
+
+    /** 双击窗口剩余 tick；大于 0 表示下一次按下前进键会置位冲刺请求 */
+    private static int sprintWindowTicks;
+
+    /** 上帧前进键是否按住，用于取按下沿 */
+    private static boolean wasForwardDown;
+
+    /** 冲刺请求：按住冲刺键，或双击窗口内的第二次按下前进键 */
+    private static boolean trySprint;
+
     /** 上帧是否已随目标切换重置过跟踪状态 */
     private static Level trackedLevel;
 
@@ -105,6 +123,9 @@ public final class ARMSClient {
             hasSentOnce = false;
             pendingEventBits = 0;
             resendRemaining = 0;
+            sprintWindowTicks = 0;
+            wasForwardDown = false;
+            trySprint = false;
         }
 
         UUID coreId = resolveTargetCore(level, player);
@@ -165,20 +186,20 @@ public final class ARMSClient {
         boolean jumpReleased = wasJumpDown && !jumpDown;
         wasJumpDown = jumpDown;
 
+        // 三个连续量都只报「请求」：双击 W 这类键位手势在本类折算成冲刺请求，蹲伏与慢走直接取
+        // 潜行键。都不读宿主实体的原版状态（isSprinting / isCrouching 那套属于宿主，且带着飞行、
+        // 游泳、碰撞体能否放下这些与机体无关的门）。请求能不能兑现由服务端的姿态图与步态图判断。
+        boolean forwardDown = mc.options.keyUp.isDown();
+        boolean forwardPressed = forwardDown && !wasForwardDown;
+        wasForwardDown = forwardDown;
+        boolean sneakDown = mc.options.keyShift.isDown();
+        trySprint = advanceSprintRequest(mc, forwardDown, forwardPressed, sneakDown);
+
         int keyFlags = 0;
         if (jumpDown) keyFlags |= MechaInputPayload.BIT_JUMP;
-        // 冲刺取原版冲刺状态，不取冲刺键：双击 W 走的是 sprintTriggerTime → setSprinting(true)，
-        // 那一刻 keySprint 并没有按下。isSprinting() 同时覆盖双击与按键两条路径，松手、撞墙、
-        // 饱食度不足这些原版门控也一并沿用，模组不需要再实现一遍。
-        if (player.isSprinting()) keyFlags |= MechaInputPayload.BIT_SPRINT;
-        // 蹲伏同样取原版状态：它已经把飞行 / 游泳 / 骑乘 / 蹲伏盒能否放下这些门都过了，
-        // 而这几种情形在姿态图里各有自己的姿态（air / water / riding），都不接受 crouch 边。
-        boolean crouching = player.isCrouching();
-        if (crouching) keyFlags |= MechaInputPayload.BIT_SNEAK;
-        // 慢走复用潜行键。驱动分支按 gait 选档、不乘 MOVE_SPEED_MODIFIER
-        // （common/control/MechaControl.java#pushDriveInput、common/control/MechaCharacter.java#updateWalk），
-        // 蹲伏要真正慢下来只能靠 creep 档：1.6 m/s 对 jog 的 4.317 m/s。
-        if (crouching) keyFlags |= MechaInputPayload.BIT_WALK;
+        if (trySprint) keyFlags |= MechaInputPayload.BIT_TRY_SPRINT;
+        if (sneakDown) keyFlags |= MechaInputPayload.BIT_TRY_CROUCH;
+        if (sneakDown) keyFlags |= MechaInputPayload.BIT_TRY_WALK;
 
         float viewYaw = player.getYRot();
         float viewPitch = player.getXRot();
@@ -224,6 +245,52 @@ public final class ARMSClient {
         if (resendRemaining > 0) {
             resendRemaining--;
         }
+    }
+
+    /**
+     * 推进本 tick 的冲刺请求。
+     * <p>
+     * 判据只有三条，都是键位层面的手势，不读实体的碰撞与状态：
+     * <ol>
+     *   <li>按住冲刺键且有前进输入 → 请求冲刺；</li>
+     *   <li>前进键的按下沿落在双击窗口内 → 请求冲刺（窗口随即关闭，避免连按三次仍然触发）；</li>
+     *   <li>否则保持上一 tick 的请求；松开前进键或按住蹲伏即撤回。</li>
+     * </ol>
+     * <p>
+     * 蹲伏那一支既清窗口也清请求：慢走与冲刺在步态图上互斥。
+     *
+     * @param mc             客户端实例，按键状态从这里读
+     * @param forwardDown    本 tick 前进键是否按住
+     * @param forwardPressed 本 tick 是否为前进键的按下沿
+     * @param sneakDown      本 tick 潜行键是否按住
+     * @return 本 tick 的冲刺请求
+     */
+    private static boolean advanceSprintRequest(Minecraft mc, boolean forwardDown,
+                                                boolean forwardPressed, boolean sneakDown) {
+        if (sprintWindowTicks > 0) {
+            sprintWindowTicks--;
+        }
+        if (sneakDown) {
+            // 蹲伏与冲刺在步态图上互斥；原版在按下蹲伏时同样把双击窗口归零
+            sprintWindowTicks = 0;
+            return false;
+        }
+        if (!forwardDown) {
+            // 松开前进只结束请求，不动窗口：双击的两次按下之间隔着的那次松开不该取消双击
+            return false;
+        }
+        if (mc.options.keySprint.isDown()) {
+            sprintWindowTicks = 0;
+            return true;
+        }
+        if (forwardPressed) {
+            if (sprintWindowTicks > 0) {
+                sprintWindowTicks = 0;
+                return true;
+            }
+            sprintWindowTicks = SPRINT_WINDOW_TICKS;
+        }
+        return trySprint;
     }
 
     // ==========================================

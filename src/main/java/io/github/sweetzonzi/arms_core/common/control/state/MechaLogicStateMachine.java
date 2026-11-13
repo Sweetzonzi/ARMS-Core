@@ -45,7 +45,7 @@ import static io.github.sweetzonzi.arms_core.common.control.state.MechaStateVari
  *   // 3. 每帧：写入快照 + 控制器状态到 variables
  *   logic.getVariables().set(ON_GROUND, body.isOnGround());
  *   logic.getVariables().set(HAS_INPUT, snapshot.inputForward() != 0 || ...);
- *   logic.getVariables().set(IS_SNEAKING, snapshot.sneaking()); // 蹲伏为连续状态，直接映射 crouch posture
+ *   logic.getVariables().set(TRY_CROUCH, snapshot.tryCrouch()); // 蹲伏请求是连续量，由姿态图决定 stand ↔ crouch
  *   // ...
  *
  *   // 4. 注入离散事件（broadcastEvent 沿活跃树递归传播）

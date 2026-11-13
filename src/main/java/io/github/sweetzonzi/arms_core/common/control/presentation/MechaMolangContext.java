@@ -247,8 +247,8 @@ public class MechaMolangContext extends SparkMolangContext<IAnimatable<ArmsCore>
     /**
      * 蹲伏姿态。
      * <p>
-     * 取逻辑层的姿态 one-hot（{@code IS_CROUCHING}）而不是快照里的按键状态
-     * （{@code IS_SNEAKING}）：内容包用这个名字问「机体是不是蹲着」，
+     * 取逻辑层的姿态 one-hot（{@code IS_CROUCHING}）而不是快照里的蹲伏请求
+     * （{@code TRY_CROUCH}）：内容包用这个名字问「机体是不是蹲着」，
      * 决定蹲姿的那条链是「按键 → posture」，重定向或强制姿态时两者会分叉。
      */
     @QueryBinding("is_sneaking")

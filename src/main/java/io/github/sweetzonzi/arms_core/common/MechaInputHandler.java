@@ -127,11 +127,11 @@ public final class MechaInputHandler {
                 .inputForward(payload.forward())
                 .inputStrafe(payload.strafe())
                 .jumpPressed((payload.keyFlags() & MechaInputPayload.BIT_JUMP) != 0)
-                .sprintPressed((payload.keyFlags() & MechaInputPayload.BIT_SPRINT) != 0)
-                .walkKeyPressed((payload.keyFlags() & MechaInputPayload.BIT_WALK) != 0)
+                .trySprint((payload.keyFlags() & MechaInputPayload.BIT_TRY_SPRINT) != 0)
+                .tryWalk((payload.keyFlags() & MechaInputPayload.BIT_TRY_WALK) != 0)
                 .viewYaw(payload.viewYaw())
                 .viewPitch(payload.viewPitch())
-                .sneaking((payload.keyFlags() & MechaInputPayload.BIT_SNEAK) != 0);
+                .tryCrouch((payload.keyFlags() & MechaInputPayload.BIT_TRY_CROUCH) != 0);
         if (controller == null) {
             // 控制者已离开（例如换维度途中），环境按最保守的静止形态给出
             return builder.build();

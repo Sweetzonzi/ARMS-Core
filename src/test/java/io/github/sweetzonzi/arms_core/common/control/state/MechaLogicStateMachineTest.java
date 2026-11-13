@@ -99,7 +99,7 @@ class MechaLogicStateMachineTest extends LogicStateMachineTestSupport {
                 otherVariables, new GameplayTagContainer());
         other.reset();
 
-        variables.set(IS_SNEAKING, true);
+        variables.set(TRY_CROUCH, true);
         machine.progress(TEST_DT);
 
         assertEquals(Posture.CROUCH, variables.get(POSTURE));

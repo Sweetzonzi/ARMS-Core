@@ -27,7 +27,7 @@ import net.minecraft.resources.ResourceLocation;
  *   <li><b>表现层便利布尔</b> — IS_CREEPING / IS_FALLING 等，与枚举同时写入</li>
  *   <li><b>输入许可</b> — gait / vertical 分别产出许可，MechaControl 合并为 CAN_MOVE / CAN_JUMP</li>
  *   <li><b>浮点</b> — MOVE_SPEED_MODIFIER，KCC 直接读取</li>
- *   <li><b>快照写入</b> — HAS_INPUT / WALK_KEY_DOWN 等</li>
+ *   <li><b>快照写入</b> — HAS_INPUT / TRY_SPRINT / TRY_WALK / TRY_CROUCH 等</li>
  *   <li><b>事件 latch</b> — EVENT_* 系列</li>
  * </ul>
  *
@@ -206,13 +206,17 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> HAS_INPUT =
             key("arms_core:has_input", false);
 
-    /** 慢走输入是否按住（精细移动，触发 creep gait）；客户端当前由潜行键驱动 */
-    public static final StateVariableKey<Boolean> WALK_KEY_DOWN =
-            key("arms_core:walk_key_down", false);
+    /** 冲刺请求（连续量）：输入源想要冲刺；能否真的进入 sprint 由步态图判定 */
+    public static final StateVariableKey<Boolean> TRY_SPRINT =
+            key("arms_core:try_sprint", false);
 
-    /** 玩家是否处于蹲伏（连续状态，由快照 sneaking 汇入，驱动 posture stand ↔ crouch） */
-    public static final StateVariableKey<Boolean> IS_SNEAKING =
-            key("arms_core:is_sneaking", false);
+    /** 慢走请求（连续量）：精细移动，触发 creep gait；只在地面上成立 */
+    public static final StateVariableKey<Boolean> TRY_WALK =
+            key("arms_core:try_walk", false);
+
+    /** 蹲伏请求（连续量）：驱动 posture stand ↔ crouch；姿态图决定能不能蹲 */
+    public static final StateVariableKey<Boolean> TRY_CROUCH =
+            key("arms_core:try_crouch", false);
 
     /** 是否在水中（眼部位置浸水检测，快照字段） */
     public static final StateVariableKey<Boolean> IN_WATER =

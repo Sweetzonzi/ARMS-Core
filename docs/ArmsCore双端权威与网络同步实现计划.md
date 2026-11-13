@@ -494,7 +494,7 @@ btVector3 btKinematicCharacterController::getLinearVelocity() const
 | `coreId` | `UUID` | 目标 `ArmsCore` |
 | `forward` / `strafe` | `float` | 与 `MechaConditionSnapshot` 同约定（正 = 前进 / 左移） |
 | `viewYaw` / `viewPitch` | `float` | 玩家视角（度）。`MechaControl.applyFacing` 用 `viewYaw` 绝对赋值控制器朝向（`MechaCharacter.setViewYaw`），行走方向再由该朝向解出 |
-| `keyFlags` | `int` 位集 | `jumpHeld`、`sprintHeld`、`walkKeyHeld`、`sneaking` —— 连续量，可丢可合并 |
+| `keyFlags` | `int` 位集 | `jump`、`trySprint`、`tryWalk`、`tryCrouch` —— 连续量，可丢可合并 |
 | `eventSeq` | `int` | 单调递增的事件序号。每次"产生一个事件"自增一次（不是每 tick 自增），服务端据此判断新旧 |
 | `eventBits` | `int` 位集 | 本包携带的事件类型集合，位序 = `MechaEvent.ordinal()`（当前 13 项，`int` 足够；超过 32 项时改 `long` 或 `int[]`）。跳跃松开是其中的 `MechaEvent.JUMP_RELEASE`，与 `DODGE` / `TOGGLE_*` 同批投递；快照只承载连续量 |
 
@@ -752,7 +752,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 |---|------|------|
 | 4.1 | 引入 `IArmsHost` | 宿主上下文接口。**已落地**，接口面与本文设想不同：`common/IArmsHost.java` 只承载绑定关系与位姿入口（`getHostEntity`、`getControlledArmsCore`、`setControlledArmsCore`、`applyPose`、`applyVelocity`），不含 `getLevel()` 与伤害转发；玩家宿主经 `mixin/PlayerHostMixin.java` 实现。逐条理由见 `docs/IArmsHost宿主接口设计.md` |
 | 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标。**已落地**：`common/ArmsCore.java#getHost` / `#setHost` / `#bindHostOf`，创建包与移除包的实现见 `network/payload/ArmsCoreCreatePayload.java#handle`、`network/payload/ArmsCoreRemovePayload.java#handle` |
-| 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 15 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `sprintPressed` / `walkKeyPressed`）、视角（`viewYaw` / `viewPitch`）、环境（`sneaking` / `inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
+| 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 15 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `trySprint` / `tryWalk` / `tryCrouch`）、视角（`viewYaw` / `viewPitch`）、环境（`inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
 | 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java#pendingEventBuffer`、`#postEvent`） |
 | 4.5 | `rootSubPart` 与 `Part` 装配接入 | 补 `getRootSubPart()`；接 `ArmsCore.prePhysicsTick()` 第 ① 步（§3.6）；同时启用 `extractAnimRootDelta()` 的真实实现，`DATA_YAW` 从本阶段起才有验收意义（§3.12） |
 | 4.6 | `mech_chassis.json` / `MechAttr` | 落地素体定义与 `getAttr()`，替换阶段 0 定义的临时胶囊参数（该组值同时需要补进 `docs/角色控制器-行走物理设计.md` 的 §5.1 参数表）；回归一次手感 |

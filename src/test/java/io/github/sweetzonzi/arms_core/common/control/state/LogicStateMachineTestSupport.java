@@ -30,10 +30,11 @@ abstract class LogicStateMachineTestSupport {
 
         variables.set(StateVariableKeys.ON_GROUND, true);
         variables.set(StateVariableKeys.SPEED, 0f);
-        variables.set(StateVariableKeys.IS_SPRINTING, false);
+        variables.set(TRY_SPRINT, false);
         variables.set(StateVariableKeys.IS_DEAD, false);
         variables.set(HAS_INPUT, false);
-        variables.set(WALK_KEY_DOWN, false);
+        variables.set(TRY_WALK, false);
+        variables.set(TRY_CROUCH, false);
         variables.set(IN_WATER, false);
         variables.set(KCC_JUMP_BOOSTING, false);
         variables.set(ENERGY, 100f);
@@ -50,8 +51,8 @@ abstract class LogicStateMachineTestSupport {
 
     protected void setMovement(boolean hasInput, boolean walkKey, boolean sprint, float speed) {
         variables.set(HAS_INPUT, hasInput);
-        variables.set(WALK_KEY_DOWN, walkKey);
-        variables.set(StateVariableKeys.IS_SPRINTING, sprint);
+        variables.set(TRY_WALK, walkKey);
+        variables.set(TRY_SPRINT, sprint);
         variables.set(StateVariableKeys.SPEED, speed);
     }
 
@@ -76,12 +77,12 @@ abstract class LogicStateMachineTestSupport {
                 machine.progress(TEST_DT);
             }
             case CROUCH -> {
-                // 蹲伏是连续状态：IS_SNEAKING = true → stand → crouch
-                variables.set(IS_SNEAKING, true);
+                // 蹲伏是连续状态：TRY_CROUCH = true → stand → crouch
+                variables.set(TRY_CROUCH, true);
                 machine.progress(TEST_DT);
             }
             case PRONE -> {
-                variables.set(IS_SNEAKING, true);
+                variables.set(TRY_CROUCH, true);
                 machine.progress(TEST_DT);
                 machine.broadcastEvent("prone");
                 machine.progress(TEST_DT);

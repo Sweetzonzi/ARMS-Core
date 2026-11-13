@@ -86,7 +86,7 @@ public final class GaitSubGraphs {
 
     private static final StateCondition COND_HAS_INPUT = isTrue(HAS_INPUT);
     private static final StateCondition COND_NO_INPUT = isFalse(HAS_INPUT);
-    private static final StateCondition COND_WALK_KEY = isTrue(WALK_KEY_DOWN);
+    private static final StateCondition COND_WALK_KEY = isTrue(TRY_WALK);
 
     /** 无输入且已经停止。 */
     private static final StateCondition COND_STOPPED = new StateCondition.All(List.of(
@@ -106,24 +106,34 @@ public final class GaitSubGraphs {
             floatGt(StateVariableKeys.SPEED, DRIFT_ENTRY_SPEED_THRESHOLD)
     ));
 
-    /** 有输入 + 慢走键 → creep gait */
-    private static final StateCondition COND_CREEP =
-            new StateCondition.All(List.of(COND_HAS_INPUT, COND_WALK_KEY));
+    /** 有输入 + 慢走请求 → creep gait；着地才成立，空中与游泳时该请求不生效 */
+    private static final StateCondition COND_CREEP = new StateCondition.All(List.of(
+            COND_HAS_INPUT,
+            COND_WALK_KEY,
+            isTrue(StateVariableKeys.ON_GROUND)
+    ));
 
-    /** 有输入 + 非慢走键 → jog gait（默认常速） */
-    private static final StateCondition COND_JOG =
-            new StateCondition.All(List.of(COND_HAS_INPUT, isFalse(WALK_KEY_DOWN)));
+    /**
+     * 有输入 + 不满足 creep → jog gait（默认常速）。
+     * <p>
+     * 第二项写成「没有慢走请求，或不在空中」而不是单纯的「没有慢走请求」：慢走只在地面成立，
+     * 空中按住潜行键仍应走常速，而不是两个 creep/jog 条件同时为假、步态停在原地。
+     */
+    private static final StateCondition COND_JOG = new StateCondition.All(List.of(
+            COND_HAS_INPUT,
+            new StateCondition.Any(List.of(isFalse(TRY_WALK), isFalse(StateVariableKeys.ON_GROUND)))
+    ));
 
-    /** sprint 条件：有常速输入 + 冲刺键按住 + 能量 > 0 */
+    /** sprint 条件：有常速输入 + 冲刺请求 + 能量 > 0 */
     private static final StateCondition COND_SPRINT = new StateCondition.All(List.of(
             COND_JOG,
-            isTrue(StateVariableKeys.IS_SPRINTING),
+            isTrue(TRY_SPRINT),
             floatGt(ENERGY, 0f)
     ));
 
-    /** sprint 退出条件：松开冲刺键 或 能量耗尽 */
+    /** sprint 退出条件：冲刺请求撤回 或 能量耗尽 */
     private static final StateCondition COND_NOT_SPRINT = new StateCondition.Any(List.of(
-            isFalse(StateVariableKeys.IS_SPRINTING),
+            isFalse(TRY_SPRINT),
             floatLe(ENERGY, 0f)
     ));
 

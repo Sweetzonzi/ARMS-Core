@@ -574,12 +574,12 @@ public class MechaControl {
 
         variables.set(StateVariableKeys.INPUT_FORWARD, snap.inputForward());
         variables.set(StateVariableKeys.INPUT_STRAFE, snap.inputStrafe());
-        variables.set(StateVariableKeys.IS_SPRINTING, snap.sprintPressed());
+        variables.set(TRY_SPRINT, snap.trySprint());
         variables.set(StateVariableKeys.IS_DEAD, snap.isDead());
         variables.set(HAS_INPUT, hasInput);
-        variables.set(WALK_KEY_DOWN, snap.walkKeyPressed());
+        variables.set(TRY_WALK, snap.tryWalk());
         variables.set(IN_WATER, snap.inWater());
-        variables.set(IS_SNEAKING, snap.sneaking());
+        variables.set(TRY_CROUCH, snap.tryCrouch());
 
         variables.set(StateVariableKeys.ON_GROUND, body.isOnGround());
         // 水平速度直接从刚体读：三轴统一为 m/s，没有量纲换算，也没有动画根运动那条位移叠加
@@ -822,7 +822,7 @@ public class MechaControl {
         ARMS.LOGGER.info("[MechaCtrl] posture={} gait={} vertical={} | input=({}, {}) sprint={} jump={} "
                         + "| ground={} hSpeed={} vSpeed={}",
                 posture.molangName(), gait.molangName(), vertical.molangName(),
-                snap.inputForward(), snap.inputStrafe(), snap.sprintPressed(), snap.jumpPressed(),
+                snap.inputForward(), snap.inputStrafe(), snap.trySprint(), snap.jumpPressed(),
                 body.isOnGround(), variables.get(StateVariableKeys.SPEED),
                 variables.get(StateVariableKeys.VERTICAL_SPEED));
     }

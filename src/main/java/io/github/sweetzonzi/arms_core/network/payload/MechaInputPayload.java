@@ -34,7 +34,7 @@ import java.util.UUID;
  * @param viewYaw      玩家水平朝向（度）。服务端用它绝对赋值控制器朝向（`MechaControl.applyFacing` →
  *                     `MechaCharacter.setViewYaw`），行走方向再由该朝向解出
  * @param viewPitch    玩家俯仰角（度）
- * @param keyFlags     {@link #BIT_JUMP} / {@link #BIT_SPRINT} / {@link #BIT_WALK} / {@link #BIT_SNEAK} 组成的位集
+ * @param keyFlags     {@link #BIT_JUMP} / {@link #BIT_TRY_SPRINT} / {@link #BIT_TRY_WALK} / {@link #BIT_TRY_CROUCH} 组成的位集
  * @param eventSeq     单调递增的事件序号；每次「产生一个事件」自增一次，而非每 tick 自增
  * @param eventBits    本包携带的事件类型集合，位序 = {@link MechaEvent#ordinal()}
  * @author Sweetzonzi
@@ -56,12 +56,12 @@ public record MechaInputPayload(
 
     /** 跳跃键按住（连续量） */
     public static final int BIT_JUMP = 1;
-    /** 冲刺（连续量）：原版冲刺状态，涵盖双击 W 与冲刺键两条触发路径 */
-    public static final int BIT_SPRINT = 1 << 1;
-    /** 慢走（连续量）：精细移动，触发 creep gait；客户端当前由潜行键驱动 */
-    public static final int BIT_WALK = 1 << 2;
-    /** 蹲伏（连续量）：原版蹲伏状态 */
-    public static final int BIT_SNEAK = 1 << 3;
+    /** 冲刺请求（连续量）：输入源想要冲刺；能否进入 sprint 由服务端步态图判定 */
+    public static final int BIT_TRY_SPRINT = 1 << 1;
+    /** 慢走请求（连续量）：精细移动，触发 creep gait */
+    public static final int BIT_TRY_WALK = 1 << 2;
+    /** 蹲伏请求（连续量）：驱动 posture stand ↔ crouch */
+    public static final int BIT_TRY_CROUCH = 1 << 3;
 
     /**
      * 手写编解码器。

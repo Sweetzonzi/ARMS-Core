@@ -58,7 +58,7 @@ class ARMSNetworkCodecTest {
     void inputPayloadRoundTripsAllEightFields() {
         MechaInputPayload original = new MechaInputPayload(
                 UUID.randomUUID(), 0.75f, -0.25f, 123.5f, -42.5f,
-                MechaInputPayload.BIT_JUMP | MechaInputPayload.BIT_SPRINT,
+                MechaInputPayload.BIT_JUMP | MechaInputPayload.BIT_TRY_SPRINT,
                 7, 1 << MechaEvent.DODGE.ordinal());
 
         RegistryFriendlyByteBuf buffer = newBuffer();
