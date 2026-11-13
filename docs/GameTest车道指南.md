@@ -123,9 +123,10 @@ float32 在整数坐标上的可表示间隔（ULP）：
 
 ## 7. 本仓库现在的用法与边界
 
-- 用例一：`src/main/java/io/github/sweetzonzi/arms_core/common/gametest/ArmsCoreGameTest.java#physicsSpaceIsReadyAndCoreConstructs`。它只断言四件事：服务端构造成功、拿到权威实例与 KCC、装配体持有位移摄入状态、物理步长是有限正数。**这四条都与坐标无关**，因此随机原点不影响它。
-- 用例二：同类的 `#intakeClassifiesMirrorsAndAdoptsOnlyRealDisplacement`。它绑一个 `GameTestHelper#makeMockPlayer` 到装配体，然后在作用域内外直接调 `Entity#setPos`，断言位置写入的分类（三类已知镜像不摄入、其中第 2/4 类推进锚点、第 1 类不推进、栈空且目标 ≠ 锚点才采纳一次、重复写入不重复采纳）。**这些断言也是纯逻辑**：作用域深度、锚点的三个 double、已采纳次数，用的都是整数级坐标（`0.5`、`40.0`），与 float32 的量化步长无关；量不了的只是「KCC 有没有落到目标」。
-- 批次名必须自成一档（`ArmsCoreGameTest#BATCH = "armsCore"`）：每个批次至多一个 `@BeforeBatch`，兄弟仓库 BallisticsFramework 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
+- `common/gametest/ArmsCoreGameTest.java` 两条（批次 `armsCore`）：`common/gametest/ArmsCoreGameTest.java#physicsSpaceIsReadyAndCoreConstructs` 只断言服务端构造成功、拿到权威实例与控制器刚体、装配体持有位移摄入状态、物理步长是有限正数；`#intakeClassifiesMirrorsAndAdoptsOnlyRealDisplacement` 绑一个 `GameTestHelper#makeMockPlayer` 到装配体，在作用域内外直接调 `Entity#setPos`，断言三类已知镜像不摄入（第 2/4 类推进锚点、第 1 类不推进）、栈空且目标 ≠ 锚点才采纳一次、重复写入不重复采纳。两条都是纯逻辑断言，与坐标无关。
+- `common/gametest/BodyPartGameTest.java` 四条（批次 `armsBody`）：`common/gametest/BodyPartGameTest.java#allBodyFrameLoadsFromContentPack`、`#allBodyFrameConstructsAndRestoresJoints`、`#allBodyRunsAlongsidePlayerController`、`#bodyCompositionRoundTripsWithoutEnteringPhysics`。
+- 批次名必须自成一档：每个批次至多一个 `@BeforeBatch`，兄弟仓库 BallisticsFramework 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
+- 这两个类只服务本车道：`gradlew build` 的 jar 与 sourcesJar 排除 `io/github/sweetzonzi/arms_core/common/gametest/**`（`build.gradle` 的 `tasks.withType(Jar)`），与 Machine-Max 同一写法。
 - 该车道**不适合**承载的东西：位移量本身（`/tp`、末影珍珠、紫颂果落在哪）、KCC 落地与越障、速度积分、闪避冲量、跳跃继承——全部是 §5.2 那一类。这些走 `gradlew test` 的 JUnit 车道（`MechaCharacterWalkPhysicsTest`、`MechaCharacterStepTest` 在裸 `PhysicsSpace` 里按 100 Hz 步进，坐标在原点附近）。
 - 适合继续加的：注册表与字段表一致性、载荷编解码、状态机图的纯逻辑、位移摄入的**判据**（分类与锚点），以及「物理空间就绪」这类构造性断言；真实 `ServerLevel` + 真物理线程 + 真 tick 循环这一层，用它验证构造、接线与判据，而不是验证数值。
 

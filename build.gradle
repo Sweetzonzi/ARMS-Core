@@ -224,6 +224,12 @@ sourceSets.main.resources.srcDir generateModMetadata
 // To avoid having to run "generateModMetadata" manually, make it run on every project reload
 neoForge.ideSyncTask generateModMetadata
 
+// GameTest 只服务开发期的 runGameTestServer：那条 run 加载的是 classes 目录而不是 jar，
+// 因此发布产物（jar / sourcesJar）排除这批类，游戏内用不到它们。
+tasks.withType(Jar).configureEach {
+    exclude 'io/github/sweetzonzi/arms_core/common/gametest/**'
+}
+
 // Example configuration to allow publishing using the maven-publish plugin
 publishing {
     publications {

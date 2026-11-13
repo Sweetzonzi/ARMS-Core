@@ -53,9 +53,10 @@
 |------|------|-----------|
 | JUnit 回归 | `.\gradlew --offline test` | 纯逻辑与力学：不需要活着的世界；`@Tag("measurement")` 的用例被排除。十余秒到一分钟 |
 | 测量 | `.\gradlew --offline measurementTest` | 真 `PhysicsSpace` 上的可行性与标定读数（`RigidBodyControllerPrototypeTest`、`RigidBodyControllerMeasurementTest`、`TerrainSeamContactTest`、`GroundDriveRefactorMeasurementTest`）；分钟级，不进常规 `test` |
-| GameTest | `.\gradlew --offline runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前两条探针：「物理空间就绪且 `ArmsCore` 构造得出来」，以及「位置写入分类与锚点判据」（镜像不摄入、只有栈空且目标 ≠ 锚点才采纳）；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
+| GameTest | `.\gradlew --offline runGameTestServer` | 真 `ServerLevel` + 真物理线程 + 真服务端 tick 循环。当前六条用例、两个批次：`common/gametest/ArmsCoreGameTest.java` 的「物理空间就绪且 `ArmsCore` 构造得出来」与「位置写入分类与锚点判据」，`common/gametest/BodyPartGameTest.java` 的素体加载、关节往返、与宿主控制器并行、组成往返；**它量不了位移与速度**——测试网格落在随机原点（±1.5e7）上，那里 float32 的量化步长是 1 格，原因与实测见 `docs/GameTest车道指南.md`。跑完自动退出，退出码是失败的必要用例条数 |
 
-- GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前唯一一处是 `common/gametest/ArmsCoreGameTest.java`。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
+- GameTest 的用例类放 `src/main/java/**/gametest/`，用 `@GameTestHolder(ARMS.MOD_ID)` + `@PrefixGameTestTemplate(false)` + `@GameTest(template = "empty_platform", batch = ...)`；当前两个类是 `common/gametest/ArmsCoreGameTest.java`（批次 `armsCore`）与 `common/gametest/BodyPartGameTest.java`（批次 `armsBody`）。**批次名必须自成一档**：框架要求每个批次至多一个 `@BeforeBatch`，而 `../BallisticsFramework` 的用例占用 `defaultBatch`，撞上会让服务端在注册阶段直接失败。
+- **GameTest 类不进发布产物**：这条车道加载的是 `build/classes` 而不是 jar，因此 `build.gradle` 的 `tasks.withType(Jar)` 把 `io/github/sweetzonzi/arms_core/common/gametest/**` 从 jar 与 sourcesJar 里排除（与 Machine-Max 同一写法）。
 - **结构模板必须事先存在于资源里，不能用 `@BeforeBatch` 现搭**：框架在 `net/minecraft/gametest/framework/GameTestRunner.java` 的 `createStructuresForBatch` 里读模板，该时点早于同批次的批次函数（同文件下方几行），缺模板会抛 `IllegalStateException: Missing test structure`。模板由 `gradlew --offline generateGameTestStructure` 生成（源在 `src/test/java/**/tools/GenerateGameTestStructure.java`，走游戏自己的 NBT 序列化），产物是 `src/main/resources/data/arms_core/structure/empty_platform.nbt`。
 - `.vscode/launch.json` 已有 `GameTestServer` 启动项，依赖 `build/moddev/gameTestServerRunProgramArgs.txt`（由 `gradlew --offline prepareGameTestServerRun` 生成）。
 
