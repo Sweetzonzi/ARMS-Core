@@ -31,8 +31,6 @@ import org.spongepowered.asm.mixin.Unique;
  * <b>方法名不加 {@code @Unique}。</b> 这五个方法必须是目标类上真实可调用的接口实现——调用方会写
  * {@code ((IArmsHost) player).applyPose(...)}，方法被重命名或移除会让该调用点失去目标。只有
  * 字段用 {@code armsCore$} 前缀（同时配 {@code @Unique}）避免与其它模组的注入成员撞名。
- * <p>
- * 接口签名、参数基准与单位、以及被排除在接口之外的成员，见 `docs/IArmsHost宿主接口设计.md`。
  *
  * @author Sweetzonzi
  */
@@ -137,7 +135,7 @@ public class PlayerHostMixin implements IArmsHost {
      * 落地控制器刚体的线速度，并把三个轴从 m/s 换算到实体单位。
      * <p>
      * 入参三个轴统一是 m/s，而 {@code deltaMovement} 三个分量统一是每 tick 位移，因此换算是同一个
-     * 因子，不需要再区分轴（`docs/角色控制器-刚体动力学方案.md` §6 的量纲统一）：
+     * 因子，不需要再区分轴：
      *
      * <pre>
      * m/s → 每 tick 位移：÷ 20    （1 tick = 1/20 s，1 m/s 即每 tick 走 1/20 格）

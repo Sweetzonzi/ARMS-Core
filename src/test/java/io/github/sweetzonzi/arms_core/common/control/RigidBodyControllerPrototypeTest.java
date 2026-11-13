@@ -828,7 +828,7 @@ class RigidBodyControllerPrototypeTest {
      * {@code tilt · λ} 量级，累计量随倾角超线性增长（实测 27.99° 给 3.53°、70° 给 10–30°、85° 给 40–57°）。
      * 这一项按**设计**保留：机体是被撞歪的，收敛只做「把上轴转正」这一件事，不为抹掉这个偏差再加一步。
      * 落地后朝向由 `common/control/MechaControl.java#currentYaw` 的写入方每物理步从输入绝对覆盖
-     * （见该类的 `#applyFacing`），因此它只在收敛窗口内存在。见 `docs/角色控制器-刚体原型与引擎约束.md` §8.4。
+     * （见该类的 `#applyFacing`），因此它只在收敛窗口内存在。
      *
      * @param body     控制器刚体
      * @param lambda   每步的收敛系数（0 = 不动，1 = 一步到位）
@@ -945,7 +945,7 @@ class RigidBodyControllerPrototypeTest {
         // 脚底读数的说明：初态是「底面贴地之后原地转 30°」，对底面为平面的形体这是几何上不可能的
         // 姿态——最低点比底面低 半径 × sin 30° = 0.2 m，起步就埋在地里，因此这个读数里含一份
         // 与控制器无关的穿透恢复（仅穿透恢复、不做收敛写入的那一档实测最高 0.0246 m）。
-        // 阈值按实测取 0.05 m，量级上仍是「几厘米的一次抬起」，不是「弹离地面」（§8.2）
+        // 阈值按实测取 0.05 m，量级上仍是「几厘米的一次抬起」，不是「弹离地面」
         assertTrue(locked.maxFeet() < 0.05f,
                 "运动学收敛不应把碰撞体弹离地面，实际脚底最高 " + locked.maxFeet() + " m");
         assertTrue(locked.maxPitchRollAngularSpeed() < 1.0e-4f,
@@ -1177,7 +1177,7 @@ class RigidBodyControllerPrototypeTest {
                 "运动学收敛应把倾角带回竖直，实际 " + endTilt + "°");
         assertTrue(maxTilt < 31f, "过程不应超过初始 30°，实际 " + maxTilt + "°");
         // 与 [原型⑧] 同一份说明：初态对底面为平面的形体是几何上不可能的（最低点比底面低 0.2 m），
-        // 读数里含一份与控制器无关的穿透恢复，因此阈值按实测取 0.05 m（§8.2）
+        // 读数里含一份与控制器无关的穿透恢复，因此阈值按实测取 0.05 m
         assertTrue(maxFeet < 0.05f, "不应弹离地面，实际脚底最高 " + maxFeet + " m");
         assertTrue(maxPitchRollAngVel < 1.0e-4f,
                 "首步即锁 pitch/roll 之后求解器无法注入这两个轴的角速度，实际 "
@@ -1266,7 +1266,7 @@ class RigidBodyControllerPrototypeTest {
             // λ ≤ 0 表示不做收敛写入：这一档量的是<b>初态本身的穿透恢复</b>。
             // 「倾角 30° 且底面贴地」这个初态对底面是平面的形体是几何上不可能的：绕底边
             // 转过 30° 之后最低点比底面还低 0.19 m，求解器必须先把它推出来。因此
-            // 「脚底最高」这个读数里含着一份与控制器无关的抬升，基线必须单独量（§8.2）
+            // 「脚底最高」这个读数里含着一份与控制器无关的抬升，基线必须单独量
             if (lambda > 0f && settleTowardUpright(controller, lambda, 0.5f)) {
                 lockedAt = i + 1;
                 break;

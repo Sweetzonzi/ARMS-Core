@@ -97,9 +97,9 @@ public class MechaControl {
      * 初速度」，也不是一段位移：赋值把水平速度改写成 {@code (max(v·u, 0) + Δv)·u}（{@code u} 是闪避轴），
      * 此后由通用力模型接管，因此单次闪避的<b>位移是派生量</b>——地面无输入时由制动
      * {@code μ·g = 9.81 m/s²} 削、地面按住输入时只被内阻 {@code c₀·g ≈ 1.9 m/s²} 削、空中没有摩擦
-     * 因此原样保留。调参调的是本值，不是距离。模型见 `docs/角色控制器-行走物理设计.md` §3.8。
+     * 因此原样保留。调参调的是本值，不是距离。
      * <p>
-     * 取值集中在这里，待素体定义（阶段 4.6）落地后移交到素体参数表。
+     * 取值集中在这里，待素体定义落地后移交到素体参数表。
      */
     public static final float DODGE_IMPULSE = 840f;
 
@@ -250,9 +250,9 @@ public class MechaControl {
     // 状态机与动画（待 Spark-Core 基础设施）
     // ==========================================
 
-    // TODO: MultiAnimStateMachine — 中央状态机（locomotion / hold / swing 等），见分层控制器与状态机设计 §6
+    // TODO: MultiAnimStateMachine — 中央状态机（locomotion / hold / swing 等），尚未接入
     // TODO: AnimStateMachine — 本地状态机（武器开火等），挂在各 SubPart 的 AnimController 上
-    // TODO: MechaMolangContext — MoLang ctrl.* 绑定上下文，见分层控制器与状态机设计 §9
+    // TODO: ctrl.* 命名空间的查询面（q.* 已由 MechaMolangContext 提供）
 
     /** 中央状态机映射：控制器名 → MultiAnimStateMachine */
     // TODO: Map<String, MultiAnimStateMachine> centralMachines;
@@ -387,7 +387,7 @@ public class MechaControl {
 
     // TODO: 当轮子(MotorSubsystem)/推进器(ThrusterSubsystem)/机翼(WingSubsystem)等
     // 子系统在 DRIVE 状态下施加驱动力时，通过此方法汇聚后叠加到控制器刚体。
-    // 设计文档 §7 — DRIVE 状态下轮子/推进器施力于躯干刚体，不经控制器中转。
+    // DRIVE 状态下轮子/推进器施力于躯干刚体，不经控制器中转。
     // 当前阶段（仅 WALK）暂不需要。
 
     /**
@@ -399,7 +399,7 @@ public class MechaControl {
      */
     public void addSubsystemForce(float forceX, float forceY, float forceZ) {
         // TODO: DRIVE 状态下施加到躯干刚体（WALK 下忽略）
-        // 见行走物理设计 §7 — WALK 下轮子不施加驱动力
+        // WALK 下轮子不施加驱动力
     }
 
     // ==========================================
@@ -501,7 +501,7 @@ public class MechaControl {
      * <ol>
      *   <li><b>速度倍率</b> —— {@code MOVE_SPEED_MODIFIER}（= posture.speedModifier ×
      *       gait.baseSpeedModifier）写进控制器，作为控制力的缩放系数（稳态速率随之等比缩放，
-     *       不是另设一道速度上限；见 `docs/角色控制器-刚体动力学方案.md` §7.4 的力平衡）</li>
+     *       不是另设一道速度上限）</li>
      *   <li><b>闪避</b> —— 进入 dodge 状态的那一帧解出闪避轴，把水平速度赋值到该轴上（只保留沿轴的
      *       同向分量，再叠加一次 Δv）并开启无敌窗口</li>
      * </ol>
@@ -517,9 +517,8 @@ public class MechaControl {
         body.setMoveSpeedModifier(speedMod == null ? 1.0f : speedMod);
 
         // —— ② 胶囊尺寸 ——
-        // 未接入，属 P5 的范围（`docs/角色控制器-刚体动力学方案.md` §11 的 P5 行）。
-        // 刚体路线已经解掉 KCC 那条硬阻塞——PhysicsRigidBody#setCollisionShape 允许在世换形
-        // （`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测）——但接管它还需要两件事：
+        // 未接入。刚体路线已经解掉 KCC 那条硬阻塞——PhysicsRigidBody#setCollisionShape 允许在世换形，
+        // 但接管它还需要两件事：
         // 变高前先向上扫掠确认头顶空间、换形后按新的半高把脚底重新对齐到换形前的脚底高度。
         // Posture posture = variables.get(POSTURE);
         // if (posture != null) body.applyPostureShape(posture);
@@ -732,17 +731,16 @@ public class MechaControl {
     /**
      * 从躯干 SubPart 的 body_root 骨骼提取帧间位移与旋转，写入控制器供多通道合成。
      * <p>
-     * 设计依据：行走物理设计 §1.2（多通道合成）和 §10.3（叠加公式）。
      * body_root 骨骼通过 New6Dof 世界锚点约束与控制器刚体链接。
      * <p>
      * 提取内容：
      * <ul>
      *   <li><b>位移</b> (dx, dy, dz, m/tick) — 世界坐标帧间差，作为力源数据交给
      *       {@code MechaCharacter#setAnimRootDelta}（刚体上动画位移走标准力 / 冲量通道，
-     *       不占用物理位移字段，见 `docs/角色控制器-刚体动力学方案.md` §6 的 B3 行）</li>
+     *       不占用物理位移字段）</li>
      *   <li><b>Y 轴旋转</b> (deltaYaw, rad/tick) — 面向帧间差，用于转身斩/回旋踢/
      *       idle 微晃等动画驱动面向变化。控制器的角因子是 {@code (0,1,0)}，偏航以外
-     *       两轴不接受角冲量（`docs/角色控制器-刚体动力学方案.md` §4.1、§8.3）</li>
+     *       两轴不接受角冲量</li>
      * </ul>
      */
     private void extractAnimRootDelta() {
@@ -885,13 +883,12 @@ public class MechaControl {
     /**
      * 逻辑层状态的不可变快照 —— 物理线程 → 主线程的跨线程出口。
      * <p>
-     * 这四项住在 {@link StateVariableContainer}（物理线程独占），主线程不得读写该容器
-     * （`docs/下一步开发TODO.md:113`）。本 record 与 {@link MechaConditionSnapshot} 是同一模式
+     * 这四项住在 {@link StateVariableContainer}（物理线程独占），主线程不得读写该容器。
+     * 本 record 与 {@link MechaConditionSnapshot} 是同一模式
      * （不可变 record + volatile 引用），方向相反：本类是物理线程发布、主线程读取。
      * <p>
      * 唯一的消费者是同步写包路径——主线程据它填 `DATA_POSTURE` / `DATA_GAIT` /
-     * `DATA_VERTICAL` / `DATA_ENERGY`
-     * （`docs/ArmsCore双端权威与网络同步实现计划.md` §2.2、§3.5）。
+     * `DATA_VERTICAL` / `DATA_ENERGY`。
      * <b>同一 record 在下行通道上方向相反。</b> 权威侧方向是产出：容器由逻辑树写、快照由
      * {@link #snapshotLogicState()} 读出，供主线程写同步数据。客户端方向是输入：主线程从同步数据
      * 读出字段、组装成同一个 record 后经 {@link #applySyncedLogicState(LogicStateSnapshot)}

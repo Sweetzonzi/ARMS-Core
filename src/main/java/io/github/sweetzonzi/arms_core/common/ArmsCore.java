@@ -70,11 +70,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 与 Machine-Max 的 {@code VehicleCore} 同级：由 {@link AbstractPart} 通过 {@link AbstractConnector}
  * 组装而成，实现 {@link IPartAssembly}，并额外持有角色运动控制器 {@link MechaControl}
- * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体
- * （见 `docs/总体设计文档.md` §2.1）。
+ * 与逻辑状态机。与载具不同，它不注册为世界实体，生命周期跟随宿主装配体。
  * <p>
- * <b>权威归属</b>：服务端是唯一权威端，客户端不运行角色控制器、不推进逻辑状态树
- * （`docs/ArmsCore双端权威与网络同步实现计划.md` D1、§1.3）。两条构造路径都持有
+ * <b>权威归属</b>：服务端是唯一权威端，客户端不运行角色控制器、不推进逻辑状态树。
+ * 两条构造路径都持有
  * {@link MechaControl}——表现层编排住在它里面，客户端也要有——差别只在身体与逻辑树：
  * <ul>
  *   <li><b>服务端</b>（{@link #ArmsCore(Level, UUID, BodyPart)}）：构造控制器刚体与逻辑状态树，由 Level 级
@@ -119,7 +118,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     public static final EntityDataAccessor<org.joml.Vector3f> DATA_POS =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.VECTOR3);
 
-    /** 控制器刚体的线速度（三个分量同为 m/s，见 `docs/角色控制器-刚体动力学方案.md` §6） */
+    /** 控制器刚体的线速度（三个分量同为 m/s） */
     public static final EntityDataAccessor<org.joml.Vector3f> DATA_VEL =
             SynchedEntityData.defineId(ArmsCore.class, EntityDataSerializers.VECTOR3);
 
@@ -226,7 +225,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 合法存在；客户端在创建包指定本地玩家时绑定宿主。三条使用路径的空值行为：位姿回写只跳过
      * {@code applyPose} / {@code applyVelocity} 两步而写包照常、伤害解析返回 {@code null}
      * （等价于「线段与宿主包围盒无交点」这一出口）、环境字段与控制权校验的调用方本身持有判据
-     * 因此拿不到 {@code null}。逐条见 `docs/宿主接入与伤害管线设计.md` §3.1.2。
+     * 因此拿不到 {@code null}。
      * <p>
      * 反向兜底——引用为 {@code null} 时去查「哪个玩家在控制这个装配体」——是禁止的：那会让
      * 「装配体属于谁」有两个来源。
@@ -258,8 +257,6 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 由 {@code mixin/EntityPositionWriteMixin} 的判定点写入、{@link #applyExternalDisplacement} 采纳，
      * 并在 {@code common/ArmsCoreServerEvents.java#syncToClients} 的位姿采样处消费 pin。两端各持有一份：
      * 客户端实例也持有它，因为客户端玩家实体走的是同一条 {@code Entity#setPos} 注入链。
-     * <p>
-     * 判据与状态机见 `docs/宿主位置权威与位移摄入设计.md` §5、§6。
      */
     @Getter
     private final HostPositionIntake positionIntake;
@@ -304,8 +301,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 着地扫掠与越障探针都从这个空间发起。
      * <p>
      * 刚体只被构造、<b>尚未加入物理空间</b>：入世需要调用方另经
-     * {@code SparkLevel.submitImmediateTask} 执行 {@link #enterPhysicsSpace(com.jme3.math.Vector3f)}，
-     * 见 `docs/ArmsCore双端权威与网络同步实现计划.md` 阶段 1.5。入世之前
+     * {@code SparkLevel.submitImmediateTask} 执行 {@link #enterPhysicsSpace(com.jme3.math.Vector3f)}。
+     * 入世之前
      * {@code getCollisionSpace()} 返回 {@code null}，控制器只依赖构造时注入的那一份空间引用。
      *
      * @param level      所在世界；其物理空间必须已初始化（见类注释的构造前置）
@@ -456,7 +453,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 服务端处理同步数据变化。
      * <p>
      * 服务端一律不把同步数据应用回物理体：位姿的权威方向是「控制器刚体 → syncedData」单向，
-     * 反向应用会与物理线程形成反馈回路（计划 §3.7、R3）。
+     * 反向应用会与物理线程形成反馈回路。
      */
     @Override
     public void onSyncedDataUpdated(@NotNull EntityDataAccessor<?> key) {
@@ -608,9 +605,8 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 给出 {@code tps = 60}，即约 {@code 0.0167 s}。
      * <p>
      * 刚体的 {@code getLinearVelocity} 三轴统一为 m/s，而宿主实体上
-     * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code ÷ 20}，与物理步长无关
-     * （`docs/角色控制器-刚体动力学方案.md` §6）。本值用于按时长累加的量——物理步长本身、
-     * 按秒计时的参数（跳跃助推窗口、闪避无敌）以及诊断。
+     * {@code deltaMovement} 的三个分量统一是「每 tick 位移」，换算就是 {@code ÷ 20}，与物理步长无关。
+     * 本值用于按时长累加的量——物理步长本身、按秒计时的参数（跳跃助推窗口、闪避无敌）以及诊断。
      *
      * @return 物理步长 (s)
      * @throws IllegalStateException 所在 Level 的物理空间尚未初始化（见类注释的构造前置）
@@ -660,7 +656,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         // 调试录制：未开启时只是一次 volatile 读，开销可忽略（见 common/debug/MechaTelemetry）
         MechaTelemetry.onPhysicsStep(this, dt);
 
-        // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体，见计划 §3.5）。
+        // ③ 发布逻辑状态到主线程（位姿由主线程直接读控制器刚体）。
         // 仅权威侧：客户端不从容器反推状态——它的四项是下行通道送来的，发布它们没有消费者，
         // 而同一条容器又会被下一步的下行写入覆盖，等于给同一个量造出两个来源。
         if (!authoritative) return;
@@ -684,7 +680,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * 位置先写、后入世：{@code MechaCharacter} 的构造不读物理空间，重力与扫掠都在入世之后才解析得到，
      * 因此这两步的先后不影响力模型。
      *
-     * @param controllerCenter 控制器碰撞体中心的世界坐标（不是脚底坐标，见计划 §3.14）
+     * @param controllerCenter 控制器碰撞体中心的世界坐标（不是脚底坐标）
      */
     public synchronized void enterPhysicsSpace(Vector3f controllerCenter) {
         if (!authoritative || isRemoved || isInLevel()) return;

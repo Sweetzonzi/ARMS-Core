@@ -11,8 +11,7 @@ import java.util.Map;
  * <p>
  * 之所以把映射集中在这里而不是写进图里：图的形状（节点与边）由
  * {@link MechaPresentationGraphs} 定义，而「一个节点播哪个动画」是内容侧的对应关系，
- * 将来由内容包提供 {@code animation_controllers} 替换姿态选择时，要换的正是这一张表
- * （{@code docs/表现层动画接入实现计划.md} §4.4、§8.3）。
+ * 将来由内容包提供 {@code animation_controllers} 替换姿态选择时，要换的正是这一张表。
  * <p>
  * 映射的键是「姿态 + 状态名」，状态名与 {@link MechaPresentationGraphs} 的节点名逐字相同；
  * 查不到映射的节点（例如 {@link MechaPresentationGraphs#INACTIVE}）不播动画，这是合法取值，
@@ -58,7 +57,7 @@ public final class MechaAnimPreset {
      * 常驻层槽位号 → 动画名。槽位号直接作为 Spark-Core 的
      * {@code AnimGroups.persistent(int)} 入参，首版接入槽位 0、1。
      * <p>
-     * 槽位缺失要静默跳过（{@code docs/表现层动画接入实现计划.md} §4.8 第 1 条）：
+     * 槽位缺失要静默跳过：
      * 资源侧的 {@code pre_parallel2}~{@code pre_parallel7} 是空占位，替换资源包时也可能整体缺席。
      */
     public static final Map<Integer, String> PERSISTENT_SLOT_ANIMATIONS = Map.of(
@@ -117,8 +116,7 @@ public final class MechaAnimPreset {
     /**
      * 姿态切换的进出场过渡时长 (s)。
      * <p>
-     * 取的是 {@code PlayAnimAction} 自身的默认值，实机上定值后改这里
-     * （{@code docs/表现层动画接入实现计划.md} §9 第 1 条）。
+     * 取的是 {@code PlayAnimAction} 自身的默认值，实机上定值后改这里。
      */
     public static final float POSTURE_BLEND_SECONDS = 0.15f;
 

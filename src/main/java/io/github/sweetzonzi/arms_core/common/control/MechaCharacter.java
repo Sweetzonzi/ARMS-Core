@@ -32,23 +32,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 机娘动力学角色控制器（对应设计文档：`docs/角色控制器-刚体动力学方案.md`）。
+ * 机娘动力学角色控制器（动态刚体圆柱承载）。
  * <p>
  * <b>承载物是一个动态刚体</b>：本类就是那个刚体（继承 {@link PhysicsRigidBody}），
  * 由求解器负责碰撞响应、位置积分与速度积分。控制器只做四件事：
  * <ol>
  *   <li><b>位姿写入</b> —— 每物理步把视野偏航绝对写进刚体姿态，并在倾角超过阈值时按
- *       {@code tilt ← (1 − λ)·tilt} 把上轴拉回竖直（§5.3、§5.4）</li>
- *   <li><b>着地判据</b> —— 向下形状扫掠 + 法线筛，给出着地布尔与支撑法线（§7.7）</li>
+ *       {@code tilt ← (1 − λ)·tilt} 把上轴拉回竖直</li>
+ *   <li><b>着地判据</b> —— 向下形状扫掠 + 法线筛，给出着地布尔与支撑法线</li>
  *   <li><b>行走力律</b> —— 两条：有驱动输入时按 Part 力速曲线合成、一次裁剪并写接触系数；
  *       没有驱动输入时按
  *       {@code F_net = min(k·computeDriveForce(v), μ_eff·N)}、{@code N = m·g·cosθ}，再叠加
  *       摩擦锥前馈 {@code μ_eff·N·û}</li>
- *   <li><b>越障三段</b> —— 抬升 → 前移 → 落位，同一物理步内完成，水平速度原样保留（§6.2）</li>
+ *   <li><b>越障三段</b> —— 抬升 → 前移 → 落位，同一物理步内完成，水平速度原样保留</li>
  * </ol>
  * 不自己写滑墙、不自己写被动摩擦、不自己做穿透恢复：那三件事属于求解器。
  * <p>
- * <b>速度语义。</b> 三个轴统一为 m/s（§6），不再是「水平为每物理步位移、垂直为 m/s」的混合量纲，
+ * <b>速度语义。</b> 三个轴统一为 m/s，不再是「水平为每物理步位移、垂直为 m/s」的混合量纲，
  * 因此读取速度不需要除以 {@code dt}，也不存在「动画位移叠加记账」那条影子通道。
  * <p>
  * 线程模型：
@@ -73,7 +73,7 @@ import java.util.List;
  *   <li>{@link #getBoostForce} — 助推窗口内的持续向上助推力（含多腿叠加）</li>
  *   <li>{@link #getJumpSpeedCap} — 冲击相的速度增量上限</li>
  *   <li>{@link #getEffectiveFriction} — 组合摩擦系数 {@code μ_eff}</li>
- *   <li>{@link #getControllerMass} — 力学质量（与刚体质量的语义差别见 §12.3）</li>
+ *   <li>{@link #getControllerMass} — 力学质量（手动积分 {@code a = F/m} 用，当前与刚体质量同值）</li>
  * </ul>
  *
  * @author Sweetzonzi
@@ -88,7 +88,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float EPSILON = MechaWalkingAttr.EPSILON;
 
     /**
-     * 「是地面还是墙」的法线竖直分量分界线（≈70°），`docs/角色控制器-刚体动力学方案.md` §7.7。
+     * 「是地面还是墙」的法线竖直分量分界线（≈70°）。
      * <p>
      * 它是着地支撑与越障立面共用的同一个阈值。它有一个硬约束：<b>必须大于
      * {@code atan(μ_eff_max)}</b>，否则爬得上去的坡度会被判成墙（爬坡上限由摩擦锥自然涌现，
@@ -106,14 +106,14 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float GROUND_PROBE_LENGTH = GROUND_WINDOW_ABOVE + GROUND_WINDOW_BELOW;
 
     /**
-     * 着地状态的最小保持步数（{@code docs/角色控制器-刚体动力学方案.md` §7.7 要求的那一项）。
+     * 着地状态的最小保持步数。
      * <p>
      * 合并地形的接缝处，一次向下扫掠可能整体漏判，若不加保持，{@code ON_GROUND} 会在一步内
      * 翻成假、地面驱动力断一拍、状态机的 posture 也跟着翻一次。取 2 步（服务端 20 ms）覆盖
      * 「漏判一步」这一形态。
      * <p>
-     * <b>时长与计法（按 dt 还是按步）尚未定</b>，最终值在 P1 的真地形回归里定
-     * （`docs/角色控制器-刚体动力学方案.md` §7.7）。这里按步计，2 步即 2 个物理步。
+     * <b>时长与计法（按 dt 还是按步）尚未定</b>，最终值待真地形回归标定。
+     * 这里按步计，2 步即 2 个物理步。
      */
     private static final int GROUND_MIN_HOLD_STEPS = 2;
 
@@ -126,11 +126,11 @@ public class MechaCharacter extends PhysicsRigidBody {
      */
     private static final float GROUNDED_VERTICAL_SNAP = 0.5f;
 
-    /** 倾角小于本值即认为已竖直 (rad)，`docs/角色控制器-刚体原型与引擎约束.md` §10.2。 */
+    /** 倾角小于本值即认为已竖直 (rad)。 */
     private static final float UPRIGHT_LOCK_RAD = (float) Math.toRadians(0.5);
 
     /**
-     * 姿态写入每步的收敛系数 λ（`docs/角色控制器-刚体动力学方案.md` §5.3）。
+     * 姿态写入每步的收敛系数 λ。
      * <p>
      * 倾角严格按 {@code tilt ← (1 − λ)·tilt} 衰减：0.20 时从 30° 收敛到 0.5° 约需 19 步。
      * 它同时是「冲击吸收可见度」的旋钮——λ 越大立正越快。
@@ -138,7 +138,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float SETTLE_LAMBDA = 0.20f;
 
     /**
-     * 朝向写入的让位阈值 (rad)：倾角超过本值就跳过本步的朝向写入（§5.3）。
+     * 朝向写入的让位阈值 (rad)：倾角超过本值就跳过本步的朝向写入。
      * <p>
      * 取 90°：朝向写入取的是局部 +Z 的<b>水平投影</b>，姿态躺平时该投影趋零、朝向误差的轴
      * 随之无定义。这种姿态只在「空中未收敛就再次落地」时出现，处置是让收敛写入先把它摆正。
@@ -146,7 +146,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float FACING_WRITE_TILT_LIMIT = (float) (Math.PI / 2);
 
     /**
-     * 越障探针的前向扫掠长度 (m)，`docs/角色控制器-刚体原型与引擎约束.md` §10.2。
+     * 越障探针的前向扫掠长度 (m)。
      * <p>
      * 必须 ≥ 0.4（引擎对 {@code sweepTest} 起终点距离的下限），因此不能等于每步位移
      * ——100 Hz 下 6 m/s 只有 6 cm。它同时决定越障的起判距离：碰撞体前缘离台阶超过
@@ -155,7 +155,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     private static final float STEP_PROBE_FORWARD = 1.2f;
 
     /**
-     * 摩擦锥前馈的释放余量（无量纲），见 §7.4 的力律。
+     * 摩擦锥前馈的释放余量（无量纲）。
      * <p>
      * 施加的法向摩擦前馈取 {@code μ_eff·N·(1 + 本值)}，而不是恰好的 {@code μ_eff·N}。原因是
      * 引擎对受力接触体给的是**静摩擦锁定**：实测把施加力恰好取成 {@code μ_eff·N} 时胶囊纹丝
@@ -177,7 +177,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 形状、探测点就在落位后的水平位置上（见 {@link #probeLandingBySweep}），底面与踏板的相交区有多
      * 深，读数就有多准。
      * <p>
-     * 取 0.1 m 是两侧夹出来的（实测见 `docs/角色控制器-刚体原型与引擎约束.md` §11.6）：
+     * 取 0.1 m 是两侧夹出来的：
      * <ul>
      *   <li><b>下限来自读数精度。</b>底面是圆，与踏板的相交区是弓形；引擎的凸体扫掠对这种「掠射
      *       接触」报出的命中时间系统性偏早。同一个 0.5 m 台阶，圆柱下扫的读数随相交深度变化为
@@ -209,7 +209,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <b>为什么必须挡坡。</b>落位是位置写入：底面直径 0.8 m，形状下扫读到的是<b>整个底面之下最高的
      * 那一点</b>。站在坡上时，底面之前 0.1 m 处的地面本来就比脚底高（{@code 0.1 × tanθ}），于是判据
      * 每一步都成立——10° 的坡上就是每步抬 1.76 cm、前移 {@link #STEP_STAND_ON}，即 10 m/s 的横向
-     * 瞬移，而坡本来就该由地面力律的摩擦锥爬（`docs/角色控制器-刚体动力学方案.md` §7.4）。
+     * 瞬移，而坡本来就该由地面力律的摩擦锥爬。
      * 竖直分量是唯一能把两者分开的读数：坡的读数本身就是坡的法线。
      */
     private static final float STEP_FACE_MAX_UP = 0.3f;
@@ -228,8 +228,8 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 素体裸足的越障高度 (m)，取值来自 {@link MechaWalkingAttr#STEP_HEIGHT_BASE}。
      * <p>
-     * 公开是因为它是控制器与外部（腿部助力子系统、测试）之间的契约值：越障判决的落差上限就是它
-     * （§6.2），腿部子系统提供 {@code step_height_bonus} 时会按它加成。
+     * 公开是因为它是控制器与外部（腿部助力子系统、测试）之间的契约值：越障判决的落差上限就是它。
+     * 腿部子系统提供 {@code step_height_bonus} 时会按它加成。
      * <p>
      * 语义与 KCC 时代的 {@code PhysicsCharacter#setStepHeight} 相同，但实现路径不同：那时是把这个值
      * 交给引擎的 {@code stepUp}，现在由 {@link #tryStepUp} 的三段判决自己比。
@@ -340,7 +340,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     private volatile float animDeltaZ;
 
     /**
-     * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）—— 阶段 4 的接入点，当前不参与朝向合成。
+     * 动画根骨骼帧间 Y 轴旋转增量（rad/tick）—— 动画驱动转身的接入点，当前不参与朝向合成。
      * <p>
      * 朝向的权威是 {@link #setViewYaw}（视野偏航绝对赋值）。动画驱动的转身（转身斩、回旋踢、
      * idle 微晃）需要先定义它与该权威的合成方式——叠加为随时间长回视野的偏移，或动画层
@@ -365,7 +365,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * 由 {@code MechaControl} 每物理步从状态变量 {@code MOVE_SPEED_MODIFIER} 读入，
      * 等于 {@code posture.speedModifier() × gait.baseSpeedModifier()}。它乘在**控制力**上：
-     * 蹲伏、卧倒、闪避、硬直都会按比例改变稳态速率（§7.4 的力平衡给出 {@code v ∝ 倍率}），
+     * 蹲伏、卧倒、闪避、硬直都会按比例改变稳态速率（力平衡给出 {@code v ∝ 倍率}），
      * 同时也在空中限制控制力不得超过地面同倍率下的顶速。
      * <p>
      * 默认 1.0 表示「逻辑层尚未写入时的中性值」，与完全不接逻辑层时的行为一致。
@@ -399,7 +399,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 当前是否处于闪避无敌窗口。
      * <p>
-     * 伤害系统尚未接入（`docs/总体设计文档.md:27-59` 的伤害转发在阶段 4），因此本标志
+     * 伤害系统尚未接入，因此本标志
      * 目前只被查询、没有消费方；它在伤害路径就位后直接可用。
      */
     @Getter
@@ -571,22 +571,22 @@ public class MechaCharacter extends PhysicsRigidBody {
         // 未显式设置重力的刚体由引擎按所在空间的重力处理，因此这里留空，
         // 两步之后由 prePhysicsTick 每步按 gravityScale 修正。
 
-        // 接触参数：角色侧摩擦要与地形侧相乘才是引擎使用的组合摩擦（§7.3），
+        // 接触参数：角色侧摩擦要与地形侧相乘才是引擎使用的组合摩擦，
         // 恢复系数取 0（KCC 的幽灵体没有弹性可言，落地不该反弹）
         setFriction(getEffectiveFriction() / MechaWalkingAttr.TERRAIN_FRICTION);
         setRestitution(0f);
-        // 阻尼不映射到刚体：速度相关阻力的唯一来源尚未定（§12.5），当前取 0
+        // 阻尼不映射到刚体：速度相关阻力的唯一来源尚未定，当前取 0
         setLinearDamping(MechaWalkingAttr.C1);
         setAngularDamping(0f);
-        // 姿态自由度：锁 pitch / roll、留 yaw（§4.1）。角因子的切换点只有这一处，
+        // 姿态自由度：锁 pitch / roll、留 yaw。角因子的切换点只有这一处，
         // 飞行放行那一跳将来落在同一点
         setAngularFactor(new Vector3f(0f, 1f, 0f));
-        // 碰撞过滤：只与地形碰撞（§2.2 选择 4）。与躯干的接触由约束层处理，不靠碰撞组
+        // 碰撞过滤：只与地形碰撞。与躯干的接触由约束层处理，不靠碰撞组
         setCollisionGroup(CollisionGroups.PAWN);
         setCollideWithGroups(CollisionGroups.TERRAIN);
 
         // 地形拼缝的窄相修正：只认 owner 是地形 section 的对方，把「朝上但歪」的接触法线摆正
-        // （机制见 docs/角色控制器-刚体原型与引擎约束.md §11.10，判据与本体的实现见
+        // （判据与本体的实现见
         // common/control/TerrainSeamContactCorrection.java）
         TerrainSeamContactCorrection.attachTo(this);
 
@@ -608,7 +608,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 设置视野偏航 —— 控制器朝向的权威输入，绝对赋值语义。
      * <p>
      * 写入即生效：本值被记为 {@link #getCurrentYaw()} 的权威，并由下一步的
-     * {@link #writeFacing} 落到刚体姿态上（§5.3 的朝向写入每物理步现算，不缓存旋转量）。
+     * {@link #writeFacing} 落到刚体姿态上（朝向每物理步现算，不缓存旋转量）。
      * 调用方（{@code MechaControl.applyFacing}）每个物理步在解算行走方向之前调用一次，
      * 因此同一物理步内的朝向、行走方向与闪避方向取的是同一个角。
      * <p>
@@ -694,7 +694,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 由上层控制编排（MechaControl）每物理步调用，写入当前帧与上帧根骨骼世界坐标差。
      * 单位：m/tick。
      * <p>
-     * <b>当前未接入运动。</b> 刚体路线上动画位移走标准力 / 冲量通道（§6 的 B3 行），
+     * <b>当前未接入运动。</b> 刚体路线上动画位移走标准力 / 冲量通道，
      * 而「动画位移 → 力」的映射还没有设计；本字段保留为接入点，{@code updateWalk} 不读它。
      *
      * @param dx 世界坐标 X 位移 (m/tick)
@@ -723,16 +723,14 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     /**
-     * 按姿态重建碰撞体 —— <b>当前不可用，未接入调用路径</b>（P5 的范围）。
+     * 按姿态重建碰撞体 —— <b>当前不可用，未接入调用路径</b>。
      * <p>
-     * 刚体路线解掉了 KCC 那条硬阻塞——{@code PhysicsRigidBody#setCollisionShape} 允许在世换形
-     * （`docs/角色控制器-刚体原型与引擎约束.md` §6.2 实测：换形后锁转仍有效、姿态不受扰动），
-     * 因此本方法不再受原生断言限制。
+     * 换形本身是允许的：{@code PhysicsRigidBody#setCollisionShape} 支持在世换形（实测：换形后
+     * 锁转仍有效、姿态不受扰动），没有原生断言挡路。
      * <p>
      * <b>但接管它需要两件本类还没有的东西</b>：① 变高之前先向上扫掠确认头顶空间（否则站起来
      * 会把人顶进天花板）；② 换形之后按新的半高把脚底重新对齐到换形前的脚底高度，否则碰撞体变矮
-     * 会把脚埋进地里。两件都是 P5 的内容（`docs/角色控制器-刚体动力学方案.md` §11 的 P5 行），
-     * 因此这里保留为返回 {@code false} 的占位，调用方不要接入。
+     * 会把脚埋进地里。这两件都还没有实现，因此这里保留为返回 {@code false} 的占位，调用方不要接入。
      *
      * @param posture 目标姿态
      * @return 始终 {@code false}
@@ -803,7 +801,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * <b>为什么走速度通道而不是位姿写入。</b> 闪避是动量的改写，不是落点的改写：写速度之后，接下来
      * 每一物理步都由求解器按真实接触继续积分，摩擦、坡度、撞墙都在里面；写成位姿则会绕过求解器，
-     * 撞墙时把人直接推进墙里（§6.1 的规则 1 反过来用）。
+     * 撞墙时把人直接推进墙里（写位置的同一物理步必须先处理速度）。
      * <p>
      * <b>赋值规则：只保留沿闪避轴的同向分量。</b> 记闪避轴为 {@code u}、本步读回的水平速度为
      * {@code v = a·u + w}（{@code a = v·u} 带符号，{@code w ⟂ u}），则赋值结果是
@@ -821,7 +819,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * TODO 持续推力：当前只实现一次性赋值。要做出「短促爆发 vs 长时平稳加速」的第二种手感，需要
      * 在 {@link #updateWalk} 的同一个注入点再支持一条「窗口内恒定的加速度」（推力），而不是把它
-     * 做成随时间衰减的位移。设计约束见 `docs/角色控制器-行走物理设计.md` §3.8。
+     * 做成随时间衰减的位移。
      *
      * @param dirX          世界坐标 X 方向（水平，无需预先归一化）
      * @param dirZ          世界坐标 Z 方向（水平，无需预先归一化）
@@ -860,7 +858,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 把一个落点与一份速度直接写进刚体 —— 全部位姿写入的唯一底层入口。
      * <p>
-     * {@code docs/角色控制器-刚体动力学方案.md` §6.1 的四条规则在这里一次性落实：
+     * 位姿写入的四条规则在这里一次性落实：
      * <ol>
      *   <li><b>速度与位置同一步处理</b>：{@code verticalVelocity} 由调用方给出，写位置的同一步就写</li>
      *   <li><b>落点留净空</b>：本方法不做穿透恢复，落点由调用方给</li>
@@ -884,16 +882,16 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 外部位移的摄入落点（warp）—— 外部把宿主搬到另一个位置时，把控制器刚体也搬过去。
      * <p>
-     * 刚体上收成两项（§6.3）：
+     * 刚体上收成两项：
      * <table>
      *   <tr><td>落点</td><td>{@code PhysicsRigidBody#setPhysicsLocation}，落点留净空（规则 2）</td></tr>
      *   <tr><td>速度</td><td>{@code setLinearVelocity}：清垂直分量、保留水平动量</td></tr>
      * </table>
      * 三轴同为一个量纲（m/s），因此不存在 KCC 那种「只有整向量为零才清掉垂直通道」的约束。
      * <p>
-     * <b>KCC 时代承担过的另外两件事已经移走</b>：动画位移叠加记账随量纲统一消失（§6），而
+     * <b>另有两件事不在本类</b>：动画位移叠加记账没有影子通道（三轴同单位，直接读速度即可），而
      * 「终止跳跃助推窗口」与「作废当步输入意图」属于「这次位移的后果」，归
-     * {@code common/HostPositionIntake.java#intake} 的采纳分支（§6.3）。
+     * {@code common/HostPositionIntake.java#intake} 的采纳分支。
      * <p>
      * <b>每次调用都会终止正在进行的跳跃助推窗口，因此这条路径只允许被真正的位移调用。</b>
      * 把宿主实体的每一次位置写入都当成位移来采纳，助推窗口就活不过一个 tick；
@@ -920,8 +918,8 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 每物理步调用一次，完成全部行走/跳跃物理计算。
      * <p>
      * 调用顺序：重力调制与角因子 → 位姿写入（朝向 → 收敛）→ 着地判据 → 跳跃 → 行走力与越障 →
-     * 无敌计时。位姿写入排在着地判据之前，是因为收敛要基于「本步已写入朝向之后」的姿态算倾斜
-     * （§5.3），而着地判据与行走力都读本步姿态。
+     * 无敌计时。位姿写入排在着地判据之前，是因为收敛要基于「本步已写入朝向之后」的姿态算倾斜，
+     * 而着地判据与行走力都读本步姿态。
      *
      * @param dt 物理步长 (s)，通常 1/100
      */
@@ -932,21 +930,21 @@ public class MechaCharacter extends PhysicsRigidBody {
         // 0. 重力：刚体的重力 = 物理空间重力 × gravityScale，空间重力在入世之后才读得到
         applyScaledGravity();
 
-        // 1. 位姿写入（§5.3）：先朝向、后收敛，两者各一次、互不抵消
+        // 1. 位姿写入：先朝向、后收敛，两者各一次、互不抵消
         //    viewYaw 已由编排层（MechaControl.applyFacing → setViewYaw）在本步之前绝对赋值
         writeFacing();
         settleUpright();
 
-        // 2. 着地判据（§7.7）：向下形状扫掠 + 法线筛 + 最小保持
+        // 2. 着地判据：向下形状扫掠 + 法线筛 + 最小保持
         updateGround();
 
         // 3. 跳跃：瞬时冲量（applyCentralImpulse）与助推窗口（逐步 applyCentralForce）
         updateJump(dt);
 
-        // 4. 越障（§6.2）：抬升 → 前移 → 落位，同一物理步内
+        // 4. 越障：抬升 → 前移 → 落位，同一物理步内
         steppedUpThisStep = tryStepUp(dt);
 
-        // 5. 行走力：地面按力律、空中按 F_max × AIR_CONTROL（§7.4）
+        // 5. 行走力：地面按力律、空中按 F_max × AIR_CONTROL
         updateWalk(dt);
 
         // 6. 无敌计时递减
@@ -991,7 +989,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     // ═══════════════════════════════════════════════
-    // 位姿写入：朝向与落地收敛（§5.3）
+    // 位姿写入：朝向与落地收敛
     // ═══════════════════════════════════════════════
 
     /**
@@ -999,13 +997,13 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * 全部输入取自<b>本步开始时的当前姿态</b>，任何一步都不缓存、不复用上一拍的旋转量：
      * 写入是幂等的绝对对齐而不是增量累加，因此本步开始时刚体既吃了上一拍的写入、也吃了求解器
-     * 在上一拍注入的角速度，两个误差都从这份当前姿态重新量出来（§5.3 的纪律）。
+     * 在上一拍注入的角速度，两个误差都从这份当前姿态重新量出来。
      * <p>
      * 绕世界 Y 的旋转不改变上轴与竖直方向的夹角，因此它与 {@link #settleUpright} 的收敛写入
      * 互不抵消；顺序上先写朝向、再按写入之后的姿态算倾斜，两个目标的输入姿态因此是同一份。
      * <p>
      * 倾角超过 {@link #FACING_WRITE_TILT_LIMIT} 时跳过：那时局部 +Z 的水平投影趋零、朝向误差
-     * 的轴无定义，交给收敛写入先摆正（§5.3）。
+     * 的轴无定义，交给收敛写入先摆正。
      * <p>
      * <b>残留量是步内转动，不是累积误差。</b> 写入把朝向对到目标的下一刻，本步剩余的角速度仍会
      * 把它转走 {@code ω_y·Δt}，直到下一步写回，因此朝向在目标附近以固定小幅摆动，幅度正比于
@@ -1050,11 +1048,11 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * 旋转轴取 {@code u × (0, 1, 0)}（{@code u} = 刚体局部 +Y 的世界方向，模长恒为
      * {@code sin(tilt)}），因此倾角严格按 {@code tilt ← (1 − λ)·tilt} 衰减，不超调；轴上只用得到
-     * {@code tilt} 一个角，{@code acos} / {@code asin} / {@code atan2} 都不出现（§5.3）。
+     * {@code tilt} 一个角，{@code acos} / {@code asin} / {@code atan2} 都不出现。
      * <p>
      * 角速度的 pitch / roll 分量按同一系数衰减，<b>yaw 分量不动</b>：落地那一帧自带的角速度
      * 不清掉会与姿态写入打架，而 yaw 分量每步被 {@link #writeFacing} 重设，残留只表现为步内的
-     * 那一小段转动（§5.3、§12.8）。
+     * 那一小段转动。
      * <p>
      * 倾角小于 {@link #UPRIGHT_LOCK_RAD} 时清掉全部角速度并把角因子写成 {@code (0, 1, 0)}：
      * 收敛结束，此后一直锁转。角度制与弧度制的换算只在本方法内出现一次。
@@ -1104,7 +1102,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     // ═══════════════════════════════════════════════
-    // 着地判据（§7.7）
+    // 着地判据
     // ═══════════════════════════════════════════════
 
     /**
@@ -1217,7 +1215,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     /**
-     * 当前是否着地 —— 状态机 {@code ON_GROUND}、力模型与宿主写回共用的唯一来源（§7.7）。
+     * 当前是否着地 —— 状态机 {@code ON_GROUND}、力模型与宿主写回共用的唯一来源。
      * <p>
      * 可覆写：它由 {@link #updateGround()} 每物理步写入，测试与将来的腿部子系统可以覆写它来
      * 构造「离地 / 着地」的场景而不必真的把刚体放进物理空间。
@@ -1230,9 +1228,8 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 当前是否着地，与 {@link #isOnGround()} 同值。
      * <p>
      * <b>只为兼容既有测试类的符号而保留</b>，新代码一律用 {@link #isOnGround()}——
-     * {@code onGround()} 这个名字来自 KCC 的 {@code PhysicsCharacter#onGround}，而刚体路线
-     * 已经没有那个父类了。测试基线重建（`docs/角色控制器-刚体动力学方案.md` §11 的 P2 行）
-     * 之后本方法随之删除。
+     * 这个名字取自 KCC 的 {@code PhysicsCharacter#onGround}；本类继承 {@link PhysicsRigidBody}，
+     * 着地状态由 {@code updateGround} 自己算。测试基线重建之后本方法随之删除。
      *
      * @deprecated 改用 {@link #isOnGround()}
      */
@@ -1258,7 +1255,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     // ═══════════════════════════════════════════════
-    // 行走力模型（§7.4）
+    // 行走力模型
     // ═══════════════════════════════════════════════
 
     /**
@@ -1394,11 +1391,11 @@ public class MechaCharacter extends PhysicsRigidBody {
         } else if (!grounded && hasInput) {
             // 空中：控制力取 F_max 的一个比例，不扣内阻/坡度——没有蹬地反力，
             // 内阻与坡度都是地面接触现象，扣掉它们会让空中控制力恒为零。
-            // 也不加摩擦前馈：没有接触，就没有那份反向摩擦要抵消（§7.4 的「空中」行）
+            // 也不加摩擦前馈：没有接触，就没有那份反向摩擦要抵消
             float control = MechaWalkingAttr.F_MAX * MechaWalkingAttr.AIR_CONTROL * forceScale;
             forceX = control * dirX;
             forceZ = control * dirZ;
-            // §3.7「不可加速」：地面能维持的顶速是本步空中控制力的速率天花板
+            // 「不可加速」：地面能维持的顶速是本步空中控制力的速率天花板
             float groundHold = MechaWalkingAttr.C0 * bodyMass * MechaWalkingAttr.GRAVITY;
             airCeiling = equilibriumSpeed(groundHold) * forceScale;
         }
@@ -1541,7 +1538,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 地面驱动力是否叠加摩擦锥前馈 {@code μ_eff·N·û}。
      * <p>
-     * <b>这是一处正在实测判决的开关</b>（`docs/角色控制器-刚体动力学方案.md` §7.4）。引擎对
+     * <b>这是一处正在实测判决的开关</b>。引擎对
      * 受力接触体给出的响应不是「从施加的力里减掉 {@code μ_eff·N}」，而是**静摩擦锁定**：
      * 实测施加刚好等于 {@code μ_eff·N} 的力时胶囊纹丝不动（50 步平均加速度 0.0007 m/s²），
      * 而把摩擦设成 0 的同一组立刻回到 4.9 m/s²。前馈因此在低加速区正好把施加力推到锁定点上，
@@ -1575,22 +1572,22 @@ public class MechaCharacter extends PhysicsRigidBody {
     }
 
     // ═══════════════════════════════════════════════
-    // 越障（§6.2）
+    // 越障
     // ═══════════════════════════════════════════════
 
     /**
-     * 越障：探落脚面 → 落位，两步在<b>同一个物理步内</b>走完（§6.2）。
+     * 越障：探落脚面 → 落位，两步在<b>同一个物理步内</b>走完。
      * <p>
      * 越障走位置写入而不是力，是为了不依赖接触能否把人推上去：底面为平面的形体压在台阶立面上时
      * 接触法线水平，接触力只能把人顶住、不能把人抬起来（球面底更差——棱角一旦高过球心，接触法线
-     * 的竖直分量就朝下）。判据与常量见 `docs/角色控制器-刚体原型与引擎约束.md` §10。
+     * 的竖直分量就朝下）。
      * <p>
      * <b>水平速度原样保留。</b>落位只把碰撞体推进本步应有的那一段，这一步的积分仍按写入前的
      * 水平速度走。清零水平速度会让人物卡在台阶前缘并丢掉动量，那正是刚体路线要修掉的那类表现。
      * 因此越障<b>不改速度通道</b>，也就不需要在越障期间把刚体切成运动学。
      * <p>
      * <b>垂直速度必须清零。</b>不清的话，下一步的积分会把判决刚对齐的脚底再拽下去
-     * （`docs/角色控制器-刚体原型与引擎约束.md` §4 实测 0.5067 m 的落差）。
+     * （实测不清零时一步能拽下去 0.5067 m）。
      * <p>
      * <b>一次下扫同时回答两件事。</b>下扫用的是碰撞体自己的形状、位置就是落位后的水平位置
      * （见 {@link #probeLandingBySweep}），因此它量到的「第一个接触」既是落脚面的高度，也是
@@ -1655,7 +1652,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * <b>必须用脚底高度（抬 1 cm）的碰撞体 sweep，不能用中心高度的射线。</b>半砖顶面只有 0.5 m、
      * 而碰撞体中心在 1.2 m，从中心打出的射线整条从台阶上方穿过去，命中数恒为 0——表现是
-     * 「越障永不触发」且没有任何报错（`docs/角色控制器-刚体原型与引擎约束.md` §11.1）。
+     * 「越障永不触发」且没有任何报错。
      * 抬 1 cm 是为了跳过「脚下的地板」：站在地上时脚底与地面接触，从脚底精确起扫会把地板
      * 当成 0 距离的命中。
      * <p>
@@ -1702,8 +1699,8 @@ public class MechaCharacter extends PhysicsRigidBody {
                 new Transform(end, IDENTITY_ROTATION, Vector3f.UNIT_XYZ),
                 sweepResults, 0f);
 
-        // 先筛再取：sweepTest 的结果是无序的，取 get(0) 会得到与地形分块顺序有关的行为
-        // （§11.5）。这里筛掉自身与非地形，**不按「法线朝不朝移动方向」筛**——见方法说明
+        // 先筛再取：sweepTest 的结果是无序的，取 get(0) 会得到与地形分块顺序有关的行为。
+        // 这里筛掉自身与非地形，**不按「法线朝不朝移动方向」筛**——见方法说明
         PhysicsSweepTestResult nearest = null;
         float bestFraction = Float.POSITIVE_INFINITY;
         for (PhysicsSweepTestResult result : sweepResults) {
@@ -1716,7 +1713,7 @@ public class MechaCharacter extends PhysicsRigidBody {
         }
         if (nearest == null) return Float.NaN;
         // 命中比例 1 是「障碍恰好在探针终点」，交给下一步再判；命中比例 0 是<b>合法且常见</b>的
-        // 信号（出发即接触），必须限幅而不能判失败（§11.2）
+        // 信号（出发即接触），必须限幅而不能判失败
         if (bestFraction >= 1f) return Float.NaN;
 
         // 命中的必须是**立面**：竖直分量超过 {@link #STEP_FACE_MAX_UP} 的面是地面或坡。
@@ -1743,13 +1740,12 @@ public class MechaCharacter extends PhysicsRigidBody {
      * advance}。位置对准之后，读数里就同时包含了两件事——落脚面的高度，以及底面任何一部分会先碰到
      * 的更高的东西。旁边更高的地形因此<b>自动</b>进入判决：碰到的面超过步高就整步拒绝，不超过就把
      * 脚底抬到它上面。落位不需要第二次下扫，也不需要「整个底面都有支撑」这类净空判据——接触就是
-     * 支撑的全部要求（`docs/角色控制器-刚体动力学方案.md` §6.2）。
+     * 支撑的全部要求。
      * <p>
      * <b>形状必须是碰撞体自己的。</b>换成一个小探针就丢掉了这条判据的全部宽度：底面直径 0.8 m，
      * 小探针只反映探测点那一点的地形，旁边（同一个水平面内、离中心不到一个半径处）更高的地形
      * 就看不见了——实测 L 形两级（一级 0.5 m，右侧紧挨顶面 0.7 m 的二级）下，小探针读到 0.5 m 放行、
-     * 落位把底面 0.1 m 压进二级，再由求解器把机体横推 0.25 m 出来（`docs/角色控制器-刚体原型与
-     * 引擎约束.md` §11.6 末段）。
+     * 落位把底面 0.1 m 压进二级，再由求解器把机体横推 0.25 m 出来。
      * <p>
      * <b>读数只在相交深度够大时才准。</b>底面是圆，与踏板的相交区是弓形；引擎的凸体扫掠对这种
      * 「掠射接触」报出的命中时间系统性偏早，深度 1 mm 时 0.5 m 的台阶只读到 0.4379 且法线竖直分量
@@ -1762,7 +1758,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * <b>命中必须限在地形上，且结果无序。</b>{@code sweepTest} 没有碰撞组参数，会把物理空间里所有
      * 物体都报出来；本方法按 {@link CollisionGroups#TERRAIN} 筛，并且只取命中比例最小的那一条
-     * （{@code get(0)} 会得到与地形分块顺序有关的行为，§11.5）。
+     * （{@code get(0)} 会得到与地形分块顺序有关的行为）。
      *
      * @param probeX 落位后的碰撞体中心 X (m)
      * @param probeZ 落位后的碰撞体中心 Z (m)
@@ -1814,7 +1810,7 @@ public class MechaCharacter extends PhysicsRigidBody {
         Vector3f center = getPhysicsLocation(tmp2);
         Vector3f target = new Vector3f(
                 center.x + dirX * advance, stepTop + bodyHalfTotal, center.z + dirZ * advance);
-        // 规则 1：写位置的同一物理步处理速度。水平分量原样保留（§6.2），垂直清零
+        // 规则 1：写位置的同一物理步处理速度。水平分量原样保留，垂直清零
         displaceTo(target, 0f);
     }
 
@@ -1918,7 +1914,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 子类覆写以实现多源叠加（本体 + 各腿部助力子系统），
      * 每个源自据其 P / v_rated / F_max 独立计算 F_i 后求和。
      * <p>
-     * 返回值是<b>净力曲线</b>：它随后被截到摩擦锥 {@code μ_eff·N} 上（§7.4）。
+     * 返回值是<b>净力曲线</b>：它随后被截到摩擦锥 {@code μ_eff·N} 上。
      *
      * @param currentSpeed 当前水平速率 (m/s)，从刚体 {@code getLinearVelocity} 读取
      * @return 总驱动力 (N)
@@ -1982,8 +1978,8 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 默认实现：裸足 {@link MechaWalkingAttr#MU_NAKED} 乘以地形默认值
      * {@link MechaWalkingAttr#TERRAIN_FRICTION}。子类覆写为 {@code max(各腿 μ_foot) × 地形侧}。
      * <p>
-     * <b>它是配置约定，不是每拍问引擎要的读数</b>（§7.6 的代价 2）：逐方块材质接入之后
-     * （§7.5）它随接触对变，但力律的形式不变。
+     * <b>它是配置约定，不是每拍问引擎要的读数</b>：逐方块材质接入之后
+     * 它随接触对变，但力律的形式不变。
      * <p>
      * <b>覆写必须在构造期就返回正确值。</b> 本方法有两个调用点：构造器用它反解角色侧的
      * {@code setFriction}（除以地形侧），{@link #updateWalk} 用它算摩擦锥。构造器那一次发生在
@@ -2007,8 +2003,8 @@ public class MechaCharacter extends PhysicsRigidBody {
      * {@link #getEffectiveFriction()} 的同一条说明）。默认值就是刚体质量，因此它与碰撞质量
      * 当前是同一个值。
      * <p>
-     * 语义上仍有一处未定：{@code Δv = I / m} 该取控制器质量还是（双体接入后的）刚体系统总质量
-     * （`docs/角色控制器-刚体动力学方案.md` §12.3）。等躯干刚体接上、约束建立之后再定，
+     * 语义上仍有一处未定：{@code Δv = I / m} 该取控制器质量还是（双体接入后的）刚体系统总质量。
+     * 等躯干刚体接上、约束建立之后再定，
      * 落点就在本方法。
      *
      * @return 控制器质量 (kg)，等于 {@code PhysicsRigidBody#getMass()}
@@ -2025,7 +2021,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 当前朝向（弧度，Minecraft 约定：0 = 南 +Z，+90° = 西 −X）。
      * <p>
      * 返回的是**朝向权威值**，也就是最后一次 {@link #setViewYaw} 写下的那个角。它与刚体姿态上的
-     * 朝向是同一个量：{@link #writeFacing} 每物理步把姿态精确对到本值上（§5.3 的朝向写入每步
+     * 朝向是同一个量：{@link #writeFacing} 每物理步把姿态精确对到本值上（朝向每步
      * 现算、不缓存），因此读权威值等于读「本步写入之后应该看到」的朝向，且不依赖本步物理是否
      * 已经步进。
      * <p>
@@ -2042,7 +2038,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * 当前水平速度 (m/s)，写入 {@code storeResult} 的 x / z；y 原样保留。
      * <p>
      * 刚体的三个轴统一是 m/s，因此本方法只做一次读取：没有量纲换算，也没有「动画位移叠加
-     * 记账」那种影子通道要扣（§6 的量纲统一）。
+     * 记账」那种影子通道要扣。
      * <p>
      * 闪避改写的动量在这一份读数里照实出现——这与「闪避改写了动量」这一事实一致。
      *
@@ -2067,8 +2063,7 @@ public class MechaCharacter extends PhysicsRigidBody {
      * <p>
      * <b>只为兼容既有测试类的符号而保留</b>，新代码一律用 {@link #getHSpeed()}——参数
      * {@code dt} 来自 KCC 时代「水平分量是每物理步位移、要除以步长才是速率」那条换算，
-     * 刚体上三轴同为 m/s，已经不需要它。测试基线重建（`docs/角色控制器-刚体动力学方案.md`
-     * §11 的 P2 行）之后本方法随之删除。
+     * 刚体上三轴同为 m/s，已经不需要它。测试基线重建之后本方法随之删除。
      *
      * @param dt 已忽略
      * @deprecated 改用 {@link #getHSpeed()}
@@ -2081,7 +2076,7 @@ public class MechaCharacter extends PhysicsRigidBody {
     /**
      * 离地间隙 (m)：向下扫掠命中的那一份距离，无命中时为窗口上沿。
      * <p>
-     * fraction 只用于测距（表现层与落地收敛的触发），<b>不作接受判据</b>（§7.7）。
+     * fraction 只用于测距（表现层与落地收敛的触发），<b>不作接受判据</b>。
      */
     public float getGroundGap() {
         return groundGap;

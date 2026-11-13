@@ -16,13 +16,13 @@ import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
  * 每物理步都在改刚体姿态，扫掠与探针若依赖朝向就得跟着转，而长方体在斜向接近台阶角时
  * 实测会卡住（yaw 30°/45° 上 0.5 m 半砖全部失败，圆柱与胶囊都成功）。
  * <p>
- * 这组值是**目前仓库中唯一的碰撞体尺寸来源**：`docs/角色控制器-行走物理设计.md` §5.1
- * 「素体级参数表」只定义行走物理参数（功率、速度、摩擦等），不含碰撞体尺寸与质量；
+ * 这组值是**目前仓库中唯一的碰撞体尺寸来源**：参数表只定义行走物理参数（功率、速度、
+ * 摩擦等），不含碰撞体尺寸与质量；
  * `mech_chassis.json` 的 `controller` 段尚未落地。因此本类就是当前权威，
  * 服务端出生点与客户端锚点都必须读它，不得各自硬编码。
  * <p>
- * `docs/ArmsCore双端权威与网络同步实现计划.md` 的阶段 4.6 会用素体定义替换本类，
- * 届时这组值需要补进上述文档 §5.1 的参数表。
+ * 等 {@code mech_chassis.json} 的 {@code controller} 段落定之后，这组值应改由它提供，
+ * 本类随之退化为缺省。
  * <p>
  * 全部采用国际单位制，单位 m。
  *
@@ -54,7 +54,7 @@ public final class MechaBodyPreset {
      * 卧倒姿态的圆柱全高 (m)。
      * <p>
      * 取 {@link #CROUCH_HEIGHT}：两者同为目标最低轮廓（1.2 m）在半径 0.4 m 下能达到的值。
-     * 要真正压到 0.6 m 需要同时缩小半径，那属于素体定义（阶段 4.6）的范围。
+     * 要真正压到 0.6 m 需要同时缩小半径，那属于素体定义的范围。
      * <p>
      * <b>不得取 0</b>：零高度圆柱是退化形状，Bullet 在 {@code PhysicsCharacter.setCollisionShape}
      * 内部的原生断言会直接中止进程（Windows 上表现为 JVM 退出码 {@code 0xC0000409}），
@@ -75,9 +75,7 @@ public final class MechaBodyPreset {
      * <p>
      * 轴向取 {@code PhysicsSpace.AXIS_Y}（值 1），即圆柱的轴与本地 +Y 对齐——这与刚体姿态
      * 写入所依赖的「上轴 = 本地 +Y」是同一个方向，两者的对应关系写在
-     * {@code common/control/MechaCharacter.java#writeFacing}。碰撞边距不写，取引擎默认值；
-     * 这条旋钮的实测阶梯（五档底缘边距与四档地形盒边距）见
-     * `docs/角色控制器-刚体原型与引擎约束.md` §11.10。
+     * {@code common/control/MechaCharacter.java#writeFacing}。碰撞边距不写，取引擎默认值。
      *
      * @return 新的圆柱形状实例（Bullet 形状不可跨物理空间共享，每次构造新实例）
      */

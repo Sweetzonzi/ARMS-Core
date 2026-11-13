@@ -140,7 +140,7 @@ class TerrainSeamContactTest {
 
     /**
      * 地形侧摩擦系数。全仓没有一处对地形刚体调用 {@code setFriction}，因此引擎用的是
-     * {@code btCollisionObject} 的默认 0.5（`docs/角色控制器-刚体动力学方案.md` §7.3）。
+     * {@code btCollisionObject} 的默认 0.5。
      */
     private static final float TERRAIN_FRICTION = 0.5f;
 
@@ -205,8 +205,7 @@ class TerrainSeamContactTest {
      * 圆柱底缘边距的<b>参照档</b> (m)：Bullet / jme3 对凸体的默认碰撞边距。
      * <p>
      * ①② 两组（接缝对比与速度阶梯）固定在这一档；边距本身的扫描在 ③ 组
-     * （{@link #measureCylinderRimMarginLadder}）里做，五档对照见
-     * `docs/角色控制器-刚体原型与引擎约束.md` §11.10。
+     * （{@link #measureCylinderRimMarginLadder}）里做。
      */
     private static final float REFERENCE_RIM_MARGIN = 0.04f;
 

@@ -93,8 +93,7 @@ public final class MechaStateActions {
      * 把 posture 枚举 + 7 个 one-hot 布尔键写进变量容器。
      * <p>
      * 这是 {@link #postureFlags} 的实现主体，独立成容器级入口是为了让没有
-     * {@link StateGraphController} 的调用方复用同一份口径——客户端的下行状态通道按它填入
-     * （{@code docs/表现层动画接入实现计划.md} §4.1.3），不必再写一遍 one-hot 派生。
+     * {@link StateGraphController} 的调用方复用同一份口径——客户端的下行状态通道按它填入，不必再写一遍 one-hot 派生。
      *
      * @param variables 目标变量容器
      * @param p         当前姿态
@@ -145,8 +144,8 @@ public final class MechaStateActions {
     /**
      * 把 gait 枚举 + 移动速度修正系数 + all one-hot 布尔 + 派生键写进变量容器。
      * <p>
-     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的
-     * （{@code docs/表现层动画接入实现计划.md} §4.1.3），口径与状态机动作同源。
+     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的，
+     * 口径与状态机动作同源。
      *
      * @param variables 目标变量容器
      * @param g         当前 gait 枚举值
@@ -227,8 +226,7 @@ public final class MechaStateActions {
     /**
      * 把 vertical 枚举 + 6 个 one-hot 布尔键写进变量容器。
      * <p>
-     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的
-     * （{@code docs/表现层动画接入实现计划.md} §4.1.3）。
+     * 与 {@link #postureFlags} 同理，容器级入口是给客户端的下行状态通道用的。
      *
      * @param variables 目标变量容器
      * @param v         当前垂直模式

@@ -3,7 +3,6 @@ package io.github.sweetzonzi.arms_core.common.control.attr;
 /**
  * 跳跃物理参数（硬编码，后续改为数据驱动）
  * <p>
- * 对应设计文档 `docs/跳跃-瞬时冲量持续助推设计.md` §1.2。
  * 跳跃以「瞬时冲量 + 持续助推窗口」建模：按下当步按 {@link #I_BASE} 施放冲量并离地，
  * 保持按住期间在窗口内持续施加 {@link #F_BOOST}，窗口硬上限为 {@link #T_BOOST_MAX}。
  * <p>

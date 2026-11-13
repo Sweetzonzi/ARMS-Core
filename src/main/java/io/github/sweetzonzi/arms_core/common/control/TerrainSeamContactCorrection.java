@@ -14,7 +14,7 @@ import com.jme3.math.Vector3f;
  * <b>为什么修接触而不是调形状。</b>地形按区块 section 切成静态刚体、节内再合并成盒
  * （{@code ../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/physics/terrain/PhysicsChunkSection.kt#buildCollisionShape}），
  * 窄相算在「缩掉碰撞边距的核心」上：圆柱核心的底缘压过邻块盒核心的棱时，最近的那对特征给出的
- * 法线是斜的（成因、法线式与边距阶梯见 {@code docs/角色控制器-刚体原型与引擎约束.md} §11.10）。
+ * 法线是斜的。
  * 求解器沿这条斜法线把前进动量拆成「向上一份、向后一份」，于是过缝抬起来一下、高速时会飞起来。
  * 同一条 manifold 里已经有平底对顶面那条正确的 ±Y 接触，因此摆正这条多余的接触比压形状参数直接：
  * 形状侧的旋钮只能把幻影的倾角压小，这里把它的方向换成正确的那条。

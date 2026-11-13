@@ -17,8 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * KCC 自动越障（auto-step）阈值测试。
  * <p>
  * <b>本轮已停用，等待基线重建。</b>越障不再由引擎的 {@code btKinematicCharacterController#stepUp}
- * 完成，而是 {@code MechaCharacter#tryStepUp} 自己做的三段判决 + 位姿写入
- * （`docs/角色控制器-刚体动力学方案.md` §6.2），因此本类里「步高交给引擎」那条判据已经不成立，
+ * 完成，而是 {@code MechaCharacter#tryStepUp} 自己做的三段判决 + 位姿写入。
+ * 因此本类里「步高交给引擎」那条判据已经不成立，
  * 而「半砖上得去 / 整格上不去」两条要在重建时把控制器真的加入物理空间并逐步步进。重建依据与
  * 数值来源同 {@link MechaCharacterWalkPhysicsTest}。
  * <p>
@@ -31,13 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * （`../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#stepForwardAndStrafe`）。
  * 本类把这个阈值钉成可执行判据：半砖上得去，1 格完整方块上不去。
  * <p>
- * 直接搭真实 {@link PhysicsSpace}（地面 + 台阶），按游戏内物理步频（100 Hz，见
- * `docs/ArmsCore双端权威与网络同步实现计划.md` §3.6）驱动
+ * 直接搭真实 {@link PhysicsSpace}（地面 + 台阶），按游戏内物理步频（100 Hz）驱动
  * {@link MechaCharacter#prePhysicsTick}。不经过 {@code MechaControl}：状态机与逻辑层产出与越障无关。
  *
  * @author Sweetzonzi
  */
-@Disabled("KCC 承载时期的基线，按 docs/角色控制器-刚体动力学方案.md §11 的 P2 行重建后再启用")
+@Disabled("KCC 承载时期的基线，待按刚体路线重建后启用")
 class MechaCharacterStepTest {
 
     /** 与游戏内一致的物理步长：tps = 100（Spark-Core `PhysicsLevel.baseStep = 5`） */
@@ -100,7 +99,7 @@ class MechaCharacterStepTest {
     /**
      * 步高确实交到了控制器手上，而不是只写在常量里。
      * <p>
-     * 刚体路线的越障由 {@code MechaCharacter} 自己实现（`docs/角色控制器-刚体动力学方案.md` §6.2），
+     * 刚体路线的越障由 {@code MechaCharacter} 自己实现，
      * 因此判据落在 {@code MechaCharacter#tryStepUp} 读到的那个常量上。
      */
     @Test
@@ -125,7 +124,7 @@ class MechaCharacterStepTest {
     /**
      * 1 格完整方块（1.0 m）超出素体裸足步高，应被挡在台阶前沿。
      * <p>
-     * 想上 1 格需要跳跃，或等腿部子系统提供 {@code step_height_bonus}（行走物理设计 §8.2）。
+     * 想上 1 格需要跳跃，或等腿部子系统提供 {@code step_height_bonus}。
      */
     @Test
     void isBlockedByAFullBlockStep() {

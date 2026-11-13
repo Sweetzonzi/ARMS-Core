@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * 宿主实体位置写入的判定点与作用域 —— {@code docs/宿主位置权威与位移摄入设计.md} §5 的检测层。
+ * 宿主实体位置写入的判定点与作用域。
  * <p>
  * <b>本类做两件事</b>：
  * <ol>

@@ -125,7 +125,7 @@ public final class ArmsCoreDebugCommand {
         }
         ArmsCore core = ArmsCore.fromFrame(level, coreId, frameId, new Transform());
 
-        // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心（计划 §3.14）
+        // 出生点：目标脚底位置 + HALF_TOTAL = 控制器碰撞体中心
         float[] center = MechaBodyPreset.controllerCenterFromFeet(
                 (float) player.getX(), (float) player.getY(), (float) player.getZ());
 

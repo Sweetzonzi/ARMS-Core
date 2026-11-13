@@ -43,7 +43,7 @@ import java.util.Locale;
  * 权威侧与客户端各自做属于自己的一半；重命名会牵动文档里数十处 {@code 路径#符号} 引用，
  * 因此以这段说明承接，不以此为由把类名与实现拉齐。
  * <p>
- * 两个相位的职责（计划 D8、D9、§3.9）：
+ * 两个相位的职责：
  * <ul>
  *   <li>{@code PhysicsLevelTickEvent.Pre}（物理线程，两端）：按 Level 扇出
  *       {@link ArmsCore#prePhysicsTick(float)}，每步恰好一次。两端各有自己的物理级别
@@ -80,8 +80,7 @@ public final class ArmsCoreServerEvents {
      * <p>
      * 驱动源是 Level 级注册表而不是宿主：宿主形态各异、驱动时机不同，漏调一次就停摆。
      * <p>
-     * {@code dt} 取 {@code 1f / tps}：单步 dt 是恒定值，负载自适应调整的是每 tick 的步数
-     * （计划 §3.6）。
+     * {@code dt} 取 {@code 1f / tps}：单步 dt 是恒定值，负载自适应调整的是每 tick 的步数。
      */
     @SubscribeEvent
     public static void onPrePhysicsTick(PhysicsLevelTickEvent.Pre event) {
@@ -250,8 +249,7 @@ public final class ArmsCoreServerEvents {
      * <p>
      * 回写宿主实体与写包同相位，使同步出去的 {@code DATA_POS} 与宿主实体位置取自同一次采样。
      * <b>宿主为 {@code null} 时只跳过回写两步，写包照常执行</b>：客户端可视锚点依赖
-     * {@code DATA_POS}，连写包一起跳过会让未绑定宿主的装配体在客户端停在上一次采样上
-     * （`docs/宿主接入与伤害管线设计.md` §3.1.2 的空值规则表）。
+     * {@code DATA_POS}，连写包一起跳过会让未绑定宿主的装配体在客户端停在上一次采样上。
      * <p>
      * <b>为什么服务端回写不能放在 {@code PlayerTickEvent.Post}</b>：服务端玩家不在 {@code Entity#tick}
      * 路径上，{@code ServerGamePacketListenerImpl#tick} 在调用 {@code ServerPlayer#doTick} 之后紧接着
@@ -269,8 +267,8 @@ public final class ArmsCoreServerEvents {
         Vector3f velocity = body.getLinearVelocity(null);
 
         // pin：外部位移被采纳之后、warp 真正落地之前，DATA_POS 取 pin 的目标而不是刚体位置。
-        // 没有这一笔，客户端会在 warp 生效前收到旧位置并把自己放回旧处（§3.1）；这也是 DATA_POS 的第二
-        // 个取值来源（`docs/ArmsCore双端权威与位移摄入设计.md` §6.2）。
+        // 没有这一笔，客户端会在 warp 生效前收到旧位置并把自己放回旧处；这也是 DATA_POS 的第二
+        // 个取值来源。
         HostPositionIntake.PinView pin = core.getPositionIntake().getPin();
         Vector3f position = bodyPosition;
         if (pin != null) {
@@ -349,7 +347,7 @@ public final class ArmsCoreServerEvents {
      * 每 tick 的只读断言：作用域深度必须归零。
      * <p>
      * 作用域的平衡由两个 {@code @WrapMethod} 包装体与两端运行时回写（{@code applyPoseToHost}、
-     * {@code client/ClientHostPoseEvents.java#applySyncedPose}）的 {@code try/finally} 保证（§5.2），
+     * {@code client/ClientHostPoseEvents.java#applySyncedPose}）的 {@code try/finally} 保证，
      * 因此这里只报告、不清状态。清理会把「某个注入点没配对」这个状态错误藏起来，而它的
      * 后果是此后<b>每一次</b>位置写入都被当作已知镜像、外部位移永远不再被摄入。
      */
@@ -393,9 +391,8 @@ public final class ArmsCoreServerEvents {
      * 把控制器刚体的位姿与速度写进宿主实体，并按固定间隔记录刚体与宿主实体的偏移。
      * <p>
      * 位置按 {@code 宿主位置 = 胶囊中心 − MechaBodyPreset.HALF_TOTAL} 换算到包围盒底面，换算由
-     * 宿主实现负责（{@code IArmsHost#applyPose} 的入参就是胶囊中心，见
-     * `docs/IArmsHost宿主接口设计.md` §2.1）。直接把胶囊中心写进实体位置会把宿主整体抬高
-     * {@code HALF_TOTAL}，当前素体取值下为 {@code 1.2 m}。
+     * 宿主实现负责（{@code IArmsHost#applyPose} 的入参就是胶囊中心）。直接把胶囊中心写进实体位置
+     * 会把宿主整体抬高 {@code HALF_TOTAL}，当前素体取值下为 {@code 1.2 m}。
      * <p>
      * 速度也写：{@code noPhysics} 为真时 {@code Entity#move} 不参与碰撞求解，写进去的
      * {@code deltaMovement} 不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到控制器的
@@ -413,8 +410,7 @@ public final class ArmsCoreServerEvents {
         Vec3 entityBefore = host.getHostEntity().position();
         float yRot = (float) Math.toDegrees(body.getCurrentYaw());
         // 第 4 类作用域（本模组运行时回写）：本模组自己写的这一笔不能被判成外部位移，否则每 tick 一次误判。
-        // 用 try/finally 而不是「每个返回点各注入一次」——异常路径也要把栈弹干净
-        // （`docs/宿主位置权威与位移摄入设计.md` §5.2）。
+        // 用 try/finally 而不是「每个返回点各注入一次」——异常路径也要把栈弹干净。
         // 类别码只影响日志标注与锚点推进：判定只看栈空不空，见 common/HostPositionIntake.java#isInScope
         int outerDepth = core.getPositionIntake()
                 .enterScope(HostPositionIntake.SCOPE_RUNTIME_WRITEBACK);

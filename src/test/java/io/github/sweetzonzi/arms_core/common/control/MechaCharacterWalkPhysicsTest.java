@@ -23,23 +23,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <b>本轮已停用，等待基线重建。</b>本类是 KCC 承载时期的基线，它钉住的量里有三样随承载物换成
  * 动力学刚体而失效：水平速度的量纲（KCC 是每物理步位移、刚体是 m/s）、稳态速率的来历（KCC 是
  * 力平衡的根、刚体是引擎接触摩擦与驱动力的平衡点）、以及轨迹（本类不把刚体加入物理空间，因此
- * 它现在量不到任何位移）。重建的依据是 `docs/角色控制器-刚体动力学方案.md` §11 的 P2 行，
- * 而 P2 行要求先取 §12.9 三项数值——那三项已由
+ * 它现在量不到任何位移）。重建要先取三项数值——越障步的速率残留、步内朝向偏差峰峰值、起步加速度，
+ * 那三项已由
  * {@code RigidBodyControllerMeasurementTest} 给出，因此下一轮可以直接按它量到的数重建。
  * <p>
  * 下面保留原有的类说明与判据，供重建时逐条对照。
  * <p>
- * 全部在真实 {@link PhysicsSpace} 里按游戏内物理步频（100 Hz，见
- * `docs/ArmsCore双端权威与网络同步实现计划.md` §3.6）驱动
+ * 全部在真实 {@link PhysicsSpace} 里按游戏内物理步频（100 Hz）驱动
  * {@link MechaCharacter#prePhysicsTick}，因此断言的是**力学结果**而不是中间变量：
- * 速率由力平衡（§3.6）产生、由摩擦（§3.5、§3.9）与空中控制力（§3.7）改写。
+ * 速率由力平衡产生、由摩擦与空中控制力改写。
  * 不经过 {@code MechaControl}：状态机与这里的力学无关。
  * <p>
  * 判据里的期望值都可由 {@link MechaWalkingAttr} 的常量算出来，写在各测试的注释里。
  *
  * @author Sweetzonzi
  */
-@Disabled("KCC 承载时期的基线，按 docs/角色控制器-刚体动力学方案.md §11 的 P2 行重建后再启用")
+@Disabled("KCC 承载时期的基线，待按刚体路线重建后启用")
 class MechaCharacterWalkPhysicsTest {
 
     /** 与游戏内一致的物理步长：tps = 100（Spark-Core {@code PhysicsLevel.baseStep = 5}） */
@@ -124,7 +123,7 @@ class MechaCharacterWalkPhysicsTest {
     /**
      * {@code setLinearVelocity} 写入的水平分量在下一次物理步仍读得回来，且只被地面摩擦改写。
      * <p>
-     * 控制力模型每步都要读回上一步的速度（§3.8 的手动积分把 KCC 当速度存储），
+     * 控制力模型每步都要读回上一步的速度（手动积分把 KCC 当速度存储），
      * 因此这条语义必须先钉住：写入 = 每物理步位移 (m/tick)，读出 ÷dt = m/s。
      * 无输入时唯一的水平制动是 μ·g = 9.81 m/s²，10 步（0.1 s）应掉约 0.98 m/s。
      */
@@ -200,7 +199,7 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     // ═══════════════════════════════════════════════
-    // 无输入制动（§3.9）
+    // 无输入制动
     // ═══════════════════════════════════════════════
 
     /** 松开方向键后，地面摩擦刹车应在 1 s 内把角色停住。 */
@@ -249,7 +248,7 @@ class MechaCharacterWalkPhysicsTest {
     /**
      * 起跳继承水平速度：离地后不再输入，水平速率应原样带到落地。
      * <p>
-     * 空中没有地面接触也就没有摩擦（§3.9 的刹车只在地面生效），因此这里唯一会改变水平速率的
+     * 空中没有地面接触也就没有摩擦（刹车只在地面生效），因此这里唯一会改变水平速率的
      * 是空中控制力，而它需要输入才会施力。旧行为（无输入也按 μ·g 刹车）会在 0.6 s 内把速度抹平。
      */
     @Test
@@ -307,7 +306,7 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     /**
-     * 空中控制力不得把速率推过地面顶速（§3.7「不可加速」）。
+     * 空中控制力不得把速率推过地面顶速（「不可加速」）。
      * <p>
      * 按住前进键起跳：若空中控制力可以自由加速，一次跳跃就能把 6 m/s 推到 8 m/s 以上，
      * 反复起跳会累积成地面永远达不到的速度。空中天花板取地面同倍率下的顶速 = v_ref。
@@ -331,7 +330,7 @@ class MechaCharacterWalkPhysicsTest {
     /**
      * 空中控制力不得被姿态倍率二次折减：AIR 姿态的倍率必须是中性 1.0。
      * <p>
-     * 空中的控制力强度由 {@link MechaWalkingAttr#AIR_CONTROL} 单独给出（§3.7）。若姿态再压一次，
+     * 空中的控制力强度由 {@link MechaWalkingAttr#AIR_CONTROL} 单独给出。若姿态再压一次，
      * 两者相乘（例如 0.05 × 0.30 = 1.5%）会让空中彻底失去操作，而上面那条"空中应保留一点
      * 操作手感"的判据只在 {@code setMoveSpeedModifier} 默认值下成立——这条把它钉在状态机侧。
      */
@@ -511,7 +510,7 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     /**
-     * 空中闪避不被「不可加速」天花板吃掉（§3.7）。
+     * 空中闪避不被「不可加速」天花板吃掉。
      * <p>
      * 这条钉住赋值顺序：{@code hSpeed} 必须在赋值之后读，否则 {@code ceiling = max(airCeiling,
      * hSpeed)} 拿到的是不含本次闪避的旧速率（空中约 0.47 m/s），赋值后的速率会被 {@code ceiling/speedNow}
@@ -575,7 +574,7 @@ class MechaCharacterWalkPhysicsTest {
     }
 
     // ═══════════════════════════════════════════════
-    // 瞬时冲量 + 持续助推窗口（§1 模型的不变量）
+    // 瞬时冲量 + 持续助推窗口
     // ═══════════════════════════════════════════════
 
     /** 一个独立的物理空间 + 地面 + 角色，用于助推窗口生效的力学测试。 */
@@ -618,7 +617,7 @@ class MechaCharacterWalkPhysicsTest {
     /**
      * 按住 {@code holdSteps} 个物理步后松开，继续步进直到落地，返回相对起点的最大上升高度 (m)。
      * <p>
-     * 松开后不再按住，因此落地不会再次起跳（§8 的「落地时若仍按住则再次起跳」因此不参与本测量）。
+     * 松开后不再按住，因此落地不会再次起跳（「落地时若仍按住则再次起跳」因此不参与本测量）。
      * 落地判据取 {@link MechaCharacter#onGround()}。
      */
     private static float maxRiseWhileHolding(Rig rig, int holdSteps) {

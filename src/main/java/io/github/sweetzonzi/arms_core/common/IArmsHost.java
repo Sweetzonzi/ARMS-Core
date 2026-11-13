@@ -15,7 +15,7 @@ import org.jetbrains.annotations.Nullable;
  *   <li><b>位姿落地</b>：{@link ArmsCore} 把 KCC 算出的位姿写进宿主实体。</li>
  * </ol>
  * 其余一切（相机、交互、背包、无敌帧、护甲、附魔、事件、输入采集、伤害落地）都由原版或别的
- * 机制承担，不进本接口。逐条理由见 `docs/IArmsHost宿主接口设计.md` §四。
+ * 机制承担，不进本接口。
  * <p>
  * <b>命名约束</b>：本接口的方法名刻意避开 {@link Entity} 的既有成员。{@code Entity#setPos(Vec3)}
  * 与 {@code Entity#getPosition(float)} 都是 {@code final}，在 Mixin 里实现同签名方法会导致类加载
@@ -63,7 +63,7 @@ public interface IArmsHost {
     /**
      * 把控制器刚体的线速度写进宿主实体。由 {@link ArmsCore} 在服务端主线程调用。
      * <p>
-     * <b>三个轴同为 m/s。</b> 刚体路线统一了速度的量纲（`docs/角色控制器-刚体动力学方案.md` §6），
+     * <b>三个轴同为 m/s。</b> 刚体路线统一了速度的量纲，
      * 不再有「水平是每物理步位移、垂直是 m/s」那种混合语义，因此换算只剩一个因子：
      *
      * <pre>

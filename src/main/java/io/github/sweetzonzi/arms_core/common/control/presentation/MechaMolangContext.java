@@ -14,8 +14,7 @@ import org.jetbrains.annotations.Nullable;
  * <p>
  * 基类 {@link SparkMolangContext} 只提供五个通用查询（{@code anim_time} / {@code lod} 等），
  * 内容包用到的运动与姿态量在引擎里没有来源：未绑定的 {@code query.*} 会被编译成常量 0，
- * 而且它在布尔上下文里会产出非法字节码。本类把这些名字接到本仓库的状态上，
- * 清单与来源见 {@code docs/MoLang查询面接入实现计划.md} §0.3、§3。
+ * 而且它在布尔上下文里会产出非法字节码。本类把这些名字接到本仓库的状态上。
  *
  * <h3>为什么泛型取 {@code IAnimatable<ArmsCore>}</h3>
  * 求值对象是装配体 {@link ArmsCore}，经 {@code getEntity().getAnimatable()} 直接取到，
@@ -164,7 +163,7 @@ public class MechaMolangContext extends SparkMolangContext<IAnimatable<ArmsCore>
     // 运动与朝向
     // ==========================================
 
-    /** 水平速度 (m/s)。内容包用它当转身/摆臂强度，见计划 §3.4。 */
+    /** 水平速度 (m/s)。内容包用它当转身/摆臂强度。 */
     @QueryBinding("ground_speed")
     public double queryGroundSpeed() {
         return groundSpeed;

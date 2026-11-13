@@ -39,7 +39,7 @@ class MechaMolangContextTest {
     }
 
     // ==========================================
-    // 阶段 1：两个运动量
+    // 第一组：两个运动量
     // ==========================================
 
     @Test
@@ -88,8 +88,7 @@ class MechaMolangContextTest {
      * 内容包里以一元负号开头的调用：{@code -math.clamp(query.ground_speed*4,0,40)} 是 jump / fly
      * 手臂旋转的分量之一（{@code bmpt_main.animation.json:2861} 等 6 处），驱动随水平速度的摆臂。
      * <p>
-     * 解析器对「负号直接贴住成员函数调用」这一形状错位时，这两条断言都得到 0；修正在
-     * {@code ../Spark-Core/docs/molang_compiled_path_defects_plan.md} §4。
+     * 解析器对「负号直接贴住成员函数调用」这一形状错位时，这两条断言都得到 0。
      */
     @Test
     void negatedClampCurveKeepsItsValue() {
@@ -105,7 +104,7 @@ class MechaMolangContextTest {
     }
 
     // ==========================================
-    // 阶段 2：朝向、位移、寿命
+    // 第二组：朝向、位移、寿命
     // ==========================================
 
     @Test
@@ -129,7 +128,7 @@ class MechaMolangContextTest {
     }
 
     // ==========================================
-    // 阶段 2：逻辑状态两项
+    // 第二组：逻辑状态两项
     // ==========================================
 
     @Test

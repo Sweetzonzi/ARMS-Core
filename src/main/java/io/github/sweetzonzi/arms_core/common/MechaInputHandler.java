@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 上行输入的服务端处理链。
  * <p>
- * 处理顺序（计划 §3.11）：
+ * 处理顺序：
  * <ol>
  *   <li>权限校验：该玩家是否是此 {@link ArmsCore} 的控制者</li>
  *   <li>合并：上行（输入 / 视角 / 按键）+ 服务端本地查询（环境类）</li>

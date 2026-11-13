@@ -11,7 +11,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Locale;
 
 /**
- * 外部位移的摄入 —— {@code docs/宿主位置权威与位移摄入设计.md} §5、§6 的落地。
+ * 外部位移的摄入。
  * <p>
  * <b>它回答两个问题</b>：这一次 {@code net.minecraft.world.entity.Entity#setPos} 是不是外部位移，
  * 以及采纳之后要把 KCC 搬到哪、在它落地之前 {@code DATA_POS} 取什么。
@@ -44,13 +44,13 @@ import java.util.Locale;
  * {@code ArmsCoreServerEvents#syncToClients} 在同一 tick 稍后（乃至下一个物理步）读到，那时
  * {@code setPos} 的栈帧早已退出。
  * <p>
- * <b>为什么需要 pin。</b> 服务端 tick 内命令相位早于 level 相位（§1.2）：`/tp` 在命令相位把实体写到目标，
+ * <b>为什么需要 pin。</b> 服务端 tick 内命令相位早于 level 相位：`/tp` 在命令相位把实体写到目标，
  * 摄入在此发生；而 {@code syncToClients} 在 level 相位才采样 KCC，此刻 KCC 还停在旧位置。没有 pin，
- * 这一拍的 {@code DATA_POS} 就是旧值 —— 客户端把自己放回旧处、上报旧值、服务端采纳，传送被整条回路吃掉
- * （§3.3）。有了它，客户端被钉在目标上，直到 KCC 的 warp 真正落地。
+ * 这一拍的 {@code DATA_POS} 就是旧值 —— 客户端把自己放回旧处、上报旧值、服务端采纳，传送被整条回路吃掉。
+ * 有了它，客户端被钉在目标上，直到 KCC 的 warp 真正落地。
  * <p>
- * <b>不承担生命周期。</b> 跨维度的搬迁由装配体重建承担（{@code docs/宿主接入与伤害管线设计.md} §3.1.3：
- * 「换维度（非重生）」判为重建），因此本类不做维度守卫，也不保存任何等级引用。
+ * <b>不承担生命周期。</b> 跨维度的搬迁由装配体重建承担——换维度（非重生）走的就是重建，
+ * 因此本类不做维度守卫，也不保存任何等级引用。
  * <p>
  * <b>线程模型</b>：作用域栈、锚点、pin 的目标与剩余 tick 都是主线程的普通字段（位置写入、包处理、
  * 同步写包都在主线程）。跨线程的只有两项：待投递的落点（{@link #intake} 在主线程写，
@@ -68,7 +68,7 @@ import java.util.Locale;
 public final class HostPositionIntake {
 
     // ═══════════════════════════════════════════════
-    // 作用域类别码（取设计文档 §5.1 的行号，只用于日志）
+    // 作用域类别码（只用于日志标注）
     // ═══════════════════════════════════════════════
 
     /** 第 1 类「自身运动」：{@code Entity#move} 的两条分支，tick 内发生、随即被基准复位抹掉 */
@@ -371,7 +371,7 @@ public final class HostPositionIntake {
      *       {@code connection.teleport(当前位置)}，目标都取自锚点本身，在这里被吞掉；</li>
      *   <li><b>幂等</b> —— 目标与当前 pin 的落点相同则不重复采纳（实体正在追平一个已在途的目标）。</li>
      * </ol>
-     * 通过则按 §6.2 钉住 {@code DATA_POS}、推进锚点，并提交到 Spark 物理空间的 PRE 队列。
+     * 通过则钉住 {@code DATA_POS}、推进锚点，并提交到 Spark 物理空间的 PRE 队列。
      * 投递与判据同处一个调用栈：落点先写进 {@link #warpPending} 与三个落点
      * 字段，任务只取它们，因此同一 tick 内的多次摄入按最后写入者生效。
      *
