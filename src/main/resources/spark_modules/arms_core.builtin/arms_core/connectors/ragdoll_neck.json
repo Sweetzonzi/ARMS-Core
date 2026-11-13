@@ -1,0 +1,27 @@
+{
+  "type": "advanced",
+  "direction": "yn",
+  "joint_attrs": {
+    "xr": {
+      "lower_limit": -70,
+      "upper_limit": 70,
+      "equilibrium": 0,
+      "stiffness": 0.1,
+      "damping": 0.014
+    },
+    "yr": {
+      "lower_limit": -40,
+      "upper_limit": 40,
+      "equilibrium": 0,
+      "stiffness": 0.16,
+      "damping": 0.022
+    },
+    "zr": {
+      "lower_limit": -55,
+      "upper_limit": 60,
+      "equilibrium": -10,
+      "stiffness": 0.18,
+      "damping": 0.024
+    }
+  }
+}
