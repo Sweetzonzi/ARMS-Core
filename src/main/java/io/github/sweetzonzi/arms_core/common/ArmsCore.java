@@ -661,7 +661,7 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
         // 仅权威侧：客户端不从容器反推状态——它的四项是下行通道送来的，发布它们没有消费者，
         // 而同一条容器又会被下一步的下行写入覆盖，等于给同一个量造出两个来源。
         if (!authoritative) return;
-        // 四项与上一步全同时沿用旧对象、不新建：读取端（common/ArmsCoreServerEvents.java#writeSyncedData）
+        // 四项与上一步全同时沿用旧对象、不新建：读取端（common/ArmsCoreServerEvents.java#syncToClients）
         // 每 tick 取一次组件值、不比较引用，因此沿用旧对象对它不可见；而逻辑层每个物理子步推进一次、
         // 主线程每 tick 才取一次读，多数子步的四项与上一步相同。
         MechaControl.LogicStateSnapshot previous = this.logicState;

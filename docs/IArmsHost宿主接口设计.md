@@ -190,8 +190,8 @@ public interface IArmsHost {
 | 项 | 取值 |
 | --- | --- |
 | 类型 | `IArmsHost`，可空（`null` 表示未绑定） |
-| 读取入口 | `common/ArmsCore.java#getHost` |
-| 写入入口 | `common/ArmsCore.java#setHost`，只由 `IArmsHost#setControlledArmsCore` 的实现调用；直接调它会让宿主一侧仍指着旧装配体 |
+| 读取入口 | `common/ArmsCore.java#host`（Lombok 生成 `getHost()`） |
+| 写入入口 | 同一字段 `common/ArmsCore.java#host`（Lombok 生成 `setHost(...)`），只由 `IArmsHost#setControlledArmsCore` 的实现调用；直接调它会让宿主一侧仍指着旧装配体 |
 | 写入点 | 绑定建立时运行时注入；另有同维度重生时的一次重设（§6.2 的表）。注入不能在构造器里做：`common/ArmsCore.java` 的构造签名是 `ArmsCore(Level, UUID)`，而创建流程（`common/command/ArmsCoreDebugCommand.java#spawn`）先构造装配体、再投递入世任务 |
 | 线程 | 只在主线程读写，与绑定字段同一纪律（§5.3） |
 

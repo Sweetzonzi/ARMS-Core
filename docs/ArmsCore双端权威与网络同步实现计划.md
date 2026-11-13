@@ -751,7 +751,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | # | 任务 | 说明 |
 |---|------|------|
 | 4.1 | 引入 `IArmsHost` | 宿主上下文接口。**已落地**，接口面与本文设想不同：`common/IArmsHost.java` 只承载绑定关系与位姿入口（`getHostEntity`、`getControlledArmsCore`、`setControlledArmsCore`、`applyPose`、`applyVelocity`），不含 `getLevel()` 与伤害转发；玩家宿主经 `mixin/PlayerHostMixin.java` 实现。逐条理由见 `docs/IArmsHost宿主接口设计.md` |
-| 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标。**已落地**：`common/ArmsCore.java#getHost` / `#setHost` / `#bindHostOf`，创建包与移除包的实现见 `network/payload/ArmsCoreCreatePayload.java#handle`、`network/payload/ArmsCoreRemovePayload.java#handle` |
+| 4.2 | `ArmsCore` 持有宿主引用 | 创建包开始携带真实 `hostEntityId`；客户端据此解析渲染 / 交互目标。**已落地**：`common/ArmsCore.java#host`（Lombok 一对访问器） / `#bindHostOf`，创建包与移除包的实现见 `network/payload/ArmsCoreCreatePayload.java#handle`、`network/payload/ArmsCoreRemovePayload.java#handle` |
 | 4.3 | 拆分 `MechaConditionSnapshot` 的职责 | 现 15 个字段按来源分为三类：输入（`inputForward` / `inputStrafe` / `jumpPressed` / `trySprint` / `tryWalk` / `tryCrouch`）、视角（`viewYaw` / `viewPitch`）、环境（`inWater` / `inLava` / `isDead` / `isSleeping` / `isFallFlying` / `isInWall` / `isOnFire`）。**环境类由 `ArmsCore` 每物理帧从 `IArmsHost.getHostEntity()` 查询**，宿主只负责提供输入与视角 |
 | 4.4 | 宿主输入实现 | 按宿主形态各自实现输入来源：玩家宿主读取上行包，Doll 宿主读取服务端 AI 决策，SubPart 宿主读取信号总线。跨端传递由宿主负责，跨线程传递由 `ArmsCore` 现有的 `volatile` 快照 + `AtomicReference<Set<MechaEvent>>` 事件闩锁负责（`MechaControl.java#pendingEventBuffer`、`#postEvent`） |
 | 4.5 | `rootSubPart` 与 `Part` 装配接入 | 补 `getRootSubPart()`；接 `ArmsCore.prePhysicsTick()` 第 ① 步（§3.6）；同时启用 `extractAnimRootDelta()` 的真实实现，`DATA_YAW` 从本阶段起才有验收意义（§3.12） |
@@ -876,7 +876,7 @@ Machine-Max 对同类问题（SubPart 的位姿如何到达客户端）给出的
 | 上行输入的发送条件 | `client/input/RawInputHandler.java#handleMoveInputs`；`network/payload/MovementInputPayload.java#STREAM_CODEC`、`#serverHandler` |
 | 两套注册表 | `common/mech/ObjectManager.java#levelVehicles`、`#levelDestroyableObjects` |
 | tick 与物理步扇出 | `common/mech/ObjectManager.java#onPreTick`、`#onPostTick`、`#onPrePhysicsTick`、`#onPostPhysicsTick` |
-| 整数 id 的创建包交接 | `common/mech/vehicle/Part.java#Part`（构造器里按客户端接收 id） |
+| 整数 id 的创建包交接 | `common/mech/part/AbstractPart.java#AbstractPart`（成员身份随装配数据构造；id 由创建包在客户端落地时写入） |
 | 装配体自驱动 `Part` 动画 | `common/mech/vehicle/VehicleCore.java#prePhysicsTick` |
 | 位姿回写的两段式实现（物理体 → 实体 → 原版追踪） | `common/mech/vehicle/SubPart.java#preTick`、`#postTick`、`#setPosition`；`common/entity/MMPartEntity.java#MMPartEntity`（构造器）、`#baseTick`、`#shouldCreateDefaultPhysicsBody`、`#move`、`#setPos` |
 

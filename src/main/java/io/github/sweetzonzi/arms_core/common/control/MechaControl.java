@@ -945,7 +945,7 @@ public class MechaControl {
      * {@code previous}**、不新建对象。
      * <p>
      * 给物理线程用来发布逻辑状态：逻辑层每个物理子步推进一次，而主线程每 tick 才取一次读，
-     * 多数子步的四项与上一步相同。读取端（{@code common/ArmsCoreServerEvents.java#writeSyncedData}）
+     * 多数子步的四项与上一步相同。读取端（{@code common/ArmsCoreServerEvents.java#syncToClients}）
      * 只取组件值、不比较引用，因此"值相同就沿用旧对象"对它不可见。
      * <p>
      * 四个变量各读一次，因此未变的那些步既不分配、也不比 {@link #snapshotLogicState()} 多读。

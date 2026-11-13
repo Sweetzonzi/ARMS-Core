@@ -827,7 +827,7 @@ class RigidBodyControllerPrototypeTest {
      * 纯俯仰与纯侧滚走完全程朝向一动不动；倾斜方向斜置时局部 +Z 的水平投影不在水平面内，每步被转走
      * {@code tilt · λ} 量级，累计量随倾角超线性增长（实测 27.99° 给 3.53°、70° 给 10–30°、85° 给 40–57°）。
      * 这一项按**设计**保留：机体是被撞歪的，收敛只做「把上轴转正」这一件事，不为抹掉这个偏差再加一步。
-     * 落地后朝向由 `common/control/MechaControl.java#currentYaw` 的写入方每物理步从输入绝对覆盖
+     * 落地后朝向由 `common/control/MechaCharacter.java#getCurrentYaw` 的写入方每物理步从输入绝对覆盖
      * （见该类的 `#applyFacing`），因此它只在收敛窗口内存在。
      *
      * @param body     控制器刚体
