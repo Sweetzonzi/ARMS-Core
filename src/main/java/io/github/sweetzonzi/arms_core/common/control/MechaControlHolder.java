@@ -2,6 +2,7 @@ package io.github.sweetzonzi.arms_core.common.control;
 
 import cn.solarmoon.spark_core.physics.PhysicsHost;
 import io.github.sweetzonzi.arms_core.common.IArmsHost;
+import io.github.sweetzonzi.arms_core.common.control.attr.LegDriveAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.machine_max.common.entity.MMPartEntity;
 import io.github.sweetzonzi.machine_max.common.mech.ObjectManager;
@@ -12,6 +13,7 @@ import net.minecraft.world.entity.LivingEntity;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collection;
+import java.util.List;
 
 /**
  * MechaControl 的持有者接口。
@@ -48,6 +50,20 @@ public interface MechaControlHolder extends PhysicsHost {
      * 当前持有的 MechaControl 实例，用于 default 方法委托。
      */
     MechaControl getMechaControl();
+
+    /**
+     * 本装配体在当前物理步贡献的地面驱动能力。
+     *
+     * <p>只返回<b>本步有效</b>的驱动源：未装配、毁坏、失去支撑等硬条件由实现方在这里剔除，
+     * 控制器不再逐 Part 复查。没有驱动 Part 的实现方返回空表，控制器据此回到兜底的地面力律。
+     *
+     * <p>线程：物理线程，每步调用一次。
+     *
+     * @return 驱动能力列表，按装配顺序；无驱动能力时为空表
+     */
+    default List<LegDriveAttr> getDrivingAttrs() {
+        return List.of();
+    }
 
     /**
      * 根 SubPart（躯干锚点）。

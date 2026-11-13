@@ -28,9 +28,9 @@ public record MechaConditionSnapshot(
         float inputStrafe,
         /** 跳跃键是否按住（持续状态，用于保持跳跃助推窗口） */
         boolean jumpPressed,
-        /** 冲刺键是否按住 */
+        /** 玩家是否处于冲刺（含双击 W 与冲刺键两条触发路径） */
         boolean sprintPressed,
-        /** 慢走键是否按住（精细移动，触发 creep gait） */
+        /** 慢走输入（精细移动，触发 creep gait）；客户端当前由潜行键驱动 */
         boolean walkKeyPressed,
         /** 玩家是否处于蹲伏（连续状态，hold 语义：蹲下即 crouch、站直即 stand，驱动 posture stand ↔ crouch） */
         boolean sneaking,

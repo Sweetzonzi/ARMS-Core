@@ -56,11 +56,11 @@ public record MechaInputPayload(
 
     /** 跳跃键按住（连续量） */
     public static final int BIT_JUMP = 1;
-    /** 冲刺键按住（连续量） */
+    /** 冲刺（连续量）：原版冲刺状态，涵盖双击 W 与冲刺键两条触发路径 */
     public static final int BIT_SPRINT = 1 << 1;
-    /** 慢走键按住（连续量） */
+    /** 慢走（连续量）：精细移动，触发 creep gait；客户端当前由潜行键驱动 */
     public static final int BIT_WALK = 1 << 2;
-    /** 蹲伏（连续量） */
+    /** 蹲伏（连续量）：原版蹲伏状态 */
     public static final int BIT_SNEAK = 1 << 3;
 
     /**

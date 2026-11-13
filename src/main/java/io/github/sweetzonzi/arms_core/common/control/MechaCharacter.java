@@ -1,6 +1,9 @@
 package io.github.sweetzonzi.arms_core.common.control;
 
 import cn.solarmoon.spark_core.physics.body.CollisionGroups;
+import cn.solarmoon.spark_core.physics.body.ManifoldPoint;
+import cn.solarmoon.spark_core.physics.body.PhysicsBodyEvent;
+import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
 import com.jme3.bullet.CollisionSpace;
 import com.jme3.bullet.PhysicsSpace;
 import com.jme3.bullet.collision.PhysicsCollisionObject;
@@ -12,10 +15,15 @@ import com.jme3.math.Matrix3f;
 import com.jme3.math.Quaternion;
 import com.jme3.math.Transform;
 import com.jme3.math.Vector3f;
+import io.github.sweetzonzi.arms_core.common.control.attr.LegDriveAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaJumpAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
+import io.github.sweetzonzi.arms_core.util.control.ContactBudget;
+import io.github.sweetzonzi.arms_core.util.control.GroundDrive;
+import io.github.sweetzonzi.arms_core.util.control.SupportLoadCache;
+import kotlin.Unit;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
@@ -32,8 +40,10 @@ import java.util.List;
  *   <li><b>位姿写入</b> —— 每物理步把视野偏航绝对写进刚体姿态，并在倾角超过阈值时按
  *       {@code tilt ← (1 − λ)·tilt} 把上轴拉回竖直（§5.3、§5.4）</li>
  *   <li><b>着地判据</b> —— 向下形状扫掠 + 法线筛，给出着地布尔与支撑法线（§7.7）</li>
- *   <li><b>行走力律</b> —— 地面按 {@code F_net = min(k·computeDriveForce(v), μ_eff·N)}、
- *       {@code N = m·g·cosθ}，再叠加摩擦锥前馈 {@code μ_eff·N·û}，以质心中心力施加（§7.4、§7.6）</li>
+ *   <li><b>行走力律</b> —— 两条：有驱动输入时按 Part 力速曲线合成、一次裁剪并写接触系数；
+ *       没有驱动输入时按
+ *       {@code F_net = min(k·computeDriveForce(v), μ_eff·N)}、{@code N = m·g·cosθ}，再叠加
+ *       摩擦锥前馈 {@code μ_eff·N·û}</li>
  *   <li><b>越障三段</b> —— 抬升 → 前移 → 落位，同一物理步内完成，水平速度原样保留（§6.2）</li>
  * </ol>
  * 不自己写滑墙、不自己写被动摩擦、不自己做穿透恢复：那三件事属于求解器。
@@ -427,6 +437,83 @@ public class MechaCharacter extends PhysicsRigidBody {
     private int groundHoldSteps;
 
     private PhysicsRigidBody deckSupport;
+
+    /**
+     * 支撑法线的竖直分量门槛：只有 {@code |n.y|} 不小于它的接触点参与摩擦写入与载荷聚合。
+     * <p>
+     * 侧墙（{@code n.y ≈ 0}）与顶棚不参与保持：那里的摩擦不是承重面，把它按支撑处理会让贴墙
+     * 与头顶接触也拿回基准组合值。Post 相位的载荷收集器（
+     * {@code common/ArmsCoreServerEvents.java#collectSupportImpulses}）用同一个门，
+     * 否则侧墙反力会进腿的附着预算。
+     */
+    public static final float SUPPORT_NORMAL_Y = 0.5f;
+
+    /**
+     * 上一物理步求解出的支撑法向冲量缓存。
+     *
+     * <p>写入点是 Post 相位的收集器，读取点是本类 {@link #planDrive}；两者都在物理线程，
+     * 因此这里不需要同步。没有样本时 {@link #planDrive} 回落到静态重力估算。
+     */
+    private final SupportLoadCache supportLoad = new SupportLoadCache();
+
+    /** 上一次 {@link #planDrive} 使用的等效载荷 {@code N_eff}（N），仅供读数与诊断。 */
+    @Getter
+    private double lastEffectiveLoad = Double.NaN;
+
+    /**
+     * 本步的驱动输入，由编排层在 {@link #prePhysicsTick} 之前写入。
+     * <p>
+     * {@code null} 表示没有任何 Part 提供地面能力，行走力律走旧的那一条
+     * （{@code min(k·computeDriveForce, μ_eff·N)} 加摩擦前馈）。
+     */
+    private volatile DriveInput driveInput;
+
+    /** 本步计划：{@code prePhysicsTick} 写、窄相回调读，都在物理线程，因此不需要同步。 */
+    private StepPlan stepPlan;
+
+    private final Vector3f tmpNormal = new Vector3f();
+
+    /**
+     * 驱动输入快照：有效驱动源与档位权重。
+     *
+     * <p>两个数组都在构造时复制，写入方之后改动自己的副本不影响本步。权重顺序见
+     * {@code util/control/GearResponse#GEARS}。
+     *
+     * @param attrs   有效驱动源，空表示没有 Part 提供地面能力
+     * @param weights 档位权重
+     */
+    public record DriveInput(List<LegDriveAttr> attrs, double[] weights) {
+        public DriveInput {
+            attrs = List.copyOf(attrs);
+            weights = weights.clone();
+        }
+    }
+
+    /**
+     * 本步计划里需要跨越物理阶段携带的那几项。
+     *
+     * @param forceAlong    沿移动意图的有符号力（N）
+     * @param forceSide     沿水平侧向基 {@code (−dirZ, dirX)} 的有符号力（N）
+     * @param brakeMagnitude 无输入时反向制动的模长（N）
+     * @param frictionWrite  本步写给受控支撑点的组合摩擦：保持门通过时是基准值，否则是 0
+     */
+    private record StepPlan(double forceAlong, double forceSide, double brakeMagnitude, double frictionWrite) {
+    }
+
+    /**
+     * 写入本步的驱动输入。由编排层在 {@link #prePhysicsTick} 之前调用（物理线程）。
+     *
+     * @param attrs   有效驱动源
+     * @param weights 档位权重
+     */
+    public void setDriveInput(List<LegDriveAttr> attrs, double[] weights) {
+        this.driveInput = attrs.isEmpty() ? null : new DriveInput(attrs, weights);
+    }
+
+    /** 清空驱动输入：此后行走力律回到旧的那一条，接触系数也不由本控制器写入。 */
+    public void clearDriveInput() {
+        this.driveInput = null;
+    }
     private final Vector3f deckVelocity = new Vector3f();
     private final Vector3f candidateDeckVelocity = new Vector3f();
 
@@ -502,6 +589,15 @@ public class MechaCharacter extends PhysicsRigidBody {
         // （机制见 docs/角色控制器-刚体原型与引擎约束.md §11.10，判据与本体的实现见
         // common/control/TerrainSeamContactCorrection.java）
         TerrainSeamContactCorrection.attachTo(this);
+
+        // 地面驱动的接触写入：新点在窄相的 Collide.Pre、持久点在每步的 Collide.Processed，
+        // 两者都早于求解器，所以写进去的组合摩擦就是本步求解所用的值。
+        // 没有驱动输入时 plan 为 null，不写任何点。
+        PhysicsBodyExtensionKt.onCollidePre(this, this::onContactPre);
+        PhysicsBodyExtensionKt.onCollideProcessed(this, event -> {
+            onContactProcessed(event);
+            return Unit.INSTANCE;
+        });
     }
 
     // ═══════════════════════════════════════════════
@@ -830,6 +926,9 @@ public class MechaCharacter extends PhysicsRigidBody {
      * @param dt 物理步长 (s)，通常 1/100
      */
     public void prePhysicsTick(float dt) {
+        // 0. 载荷样本老化一步：Post 写入的样本只在本步有效，没有新样本就回落到静态估算
+        supportLoad.advance();
+
         // 0. 重力：刚体的重力 = 物理空间重力 × gravityScale，空间重力在入世之后才读得到
         applyScaledGravity();
 
@@ -1163,43 +1262,18 @@ public class MechaCharacter extends PhysicsRigidBody {
     // ═══════════════════════════════════════════════
 
     /**
-     * 计算行走控制力并施加到质心（物理线程），支持多通道合成。
-     * <p>
-     * <b>模型是力，不是速度。</b>输入只决定力的方向与大小，本步能改变多少水平速度由
-     * {@code a = F/m} 给出，因此速度是一个有惯性的矢量：加速要时间、转向要先把侧向动量
-     * 抵掉、起跳时水平速度原样带走。每物理步的流程：
-     * <ol>
-     *   <li>取走本步的闪避冲量（若有），按 {@code Δv = I / m} 换算后把读回的水平速度<b>赋值</b>到
-     *       闪避轴上：只保留沿轴的同向分量，再叠加 Δv</li>
-     *   <li>读刚体水平速度矢量。刚体三轴同为 m/s，没有量纲换算，也没有动画位移叠加记账</li>
-     *   <li>解出沿输入方向的净控制力：地面 {@code min(力-速曲线, μ_eff·N)}，空中
-     *       {@code F_max × AIR_CONTROL}（§7.4、§7.6）</li>
-     *   <li>地面再叠加摩擦锥前馈 {@code μ_eff·N·û}，与净力合成后<b>一次</b>
-     *       {@code applyCentralForce} 施加（§8.1 的单一施加点）</li>
-     *   <li>空中另受「不可加速」约束：控制力可以转向、可以减速，但水平速率不会超过地面同倍率下
-     *       能维持的顶速，超出时按比例缩回</li>
-     * </ol>
-     * <p>
-     * <b>摩擦由引擎承担，前馈只把那一份加回去。</b>接触点上求解器给出的切向摩擦反着相对滑动
-     * 方向，最多到 {@code μ_eff·N}；前馈按目标移动方向 {@code û} 把这一份额度补上，使实际净力
-     * 等于 {@code F_net}。因此施加的峰值是 {@code k·F_MAX + μ_eff·N}，净力仍被截在
-     * {@code μ_eff·N} 上（§7.4）。
-     * <p>
-     * <b>为什么必须有 {@code min(·, μ_eff·N)}。</b>引擎的摩擦只从施加的力里减掉 {@code μ_eff·N}，
-     * 它不限制我们能造出多大的净力：去掉这一条，施加 {@code 3μ_eff·N} 就能得到 {@code 2μ_eff·N}
-     * 的净力，冰面上照样起步。
-     * <p>
-     * <b>为什么 {@code N} 取静态估算。</b>{@code N = m·g·cosθ}，不读接触点的瞬时法向冲量：
-     * 每步不需要订阅接触事件、不需要遍历全场 manifold。代价见 §7.6，证伪办法是
-     * §12.9 的「起步头十步平均加速度」。
-     * <p>
-     * <b>坡度分量不由力模型扣。</b>刚体上重力是求解器真实施加的力，沿坡分量自己就存在；力模型
-     * 再扣一次等于把同一次重力算两遍（§7.2）。内阻仍按 {@code c₀·m·g} 计，不随坡度缩放。
-     * <p>
-     * 稳态速率不是被钳制出来的，而是力平衡的自然结果：沿向分量上
-     * {@code k·min(P/v, F_max)·exp(−(v−v_rated)/λ) = c₀·m·g}，解出 {@code v = k·P/(c₀·m·g)}
-     * （{@code k} 见 {@link #controlForceScale()}）。因此缩放控制力就缩放了顶速：蹲伏 0.3 →
-     * 1.8 m/s、站立 1.0 → 6.0 m/s。
+     * 求本步水平运动力并施加到刚体。
+     *
+     * <p>有驱动输入时，由 {@link #planDrive} 求沿向力速请求与摩擦量级的侧向制动，
+     * 合成后共用整机能力与附着预算；无输入时沿完整相对速度反向制动。
+     * 接触组合摩擦由 {@link #writeSupportFriction} 按保持门写入。
+     *
+     * <p>驱动输入为空时，使用 {@link #computeDriveForce} 与摩擦前馈的回退分支；
+     * 该分支按 {@code N = m·g·cosθ} 估静态载荷，前馈带正偏置且不随缩放系数关闭，
+     * 空中的控制力也没有持续加速的上限。
+     * 空中控制、闪避和越障按各自分支执行。
+     *
+     * @param dt 本物理步时长（s）
      */
     private void updateWalk(float dt) {
         // ── 快照 volatile 输入与调制量 ──
@@ -1252,6 +1326,9 @@ public class MechaCharacter extends PhysicsRigidBody {
 
         float hSpeed = (float) Math.sqrt(vx * vx + vz * vz);
 
+        // 本步计划在下面按分支重算；空中、越障与无驱动输入的三条路都不写接触系数
+        stepPlan = null;
+
         // > 0 表示本步在空中，按此速率上限约束控制力
         float airCeiling = 0f;
         // 本步要施加的合力（0 表示没有）
@@ -1264,11 +1341,27 @@ public class MechaCharacter extends PhysicsRigidBody {
             float slopeCos = supportSlopeCos();
             float friction = deckSupport == null ? getEffectiveFriction()
                     : Math.min(10f, getFriction() * deckSupport.getFriction());
-            float traction = friction * bodyMass * MechaWalkingAttr.GRAVITY * slopeCos;
             float relativeX = vx - deckVelocity.x;
             float relativeZ = vz - deckVelocity.z;
             float relativeSpeed = (float) Math.sqrt(relativeX * relativeX + relativeZ * relativeZ);
 
+            DriveInput pending = this.driveInput;
+            if (pending != null) {
+                // 驱动模型：逐 Part 力速曲线 → 合成 → 一次裁剪；主动阶段接触摩擦为 0
+                stepPlan = planDrive(pending, dt, mass, bodyMass, slopeCos, friction,
+                        relativeX, relativeZ, relativeSpeed, dirX, dirZ);
+                if (hasInput) {
+                    float along = (float) stepPlan.forceAlong();
+                    float side = (float) stepPlan.forceSide();
+                    forceX = along * dirX - side * dirZ;
+                    forceZ = along * dirZ + side * dirX;
+                } else if (stepPlan.brakeMagnitude() > 0.0 && relativeSpeed > EPSILON) {
+                    float brake = (float) stepPlan.brakeMagnitude();
+                    forceX = -brake * (relativeX / relativeSpeed);
+                    forceZ = -brake * (relativeZ / relativeSpeed);
+                }
+            } else {
+            float traction = friction * bodyMass * MechaWalkingAttr.GRAVITY * slopeCos;
             float controlX = 0f;
             float controlZ = 0f;
             if (hasInput) {
@@ -1281,8 +1374,7 @@ public class MechaCharacter extends PhysicsRigidBody {
                 controlX = drive * dirX;
                 controlZ = drive * dirZ;
             } else if (relativeSpeed > EPSILON) {
-                // 无输入：引擎的接触摩擦就是刹车，这里不再自己算减速度（§7.1 移出项二）。
-                // 但「引擎摩擦反着滑动方向」是负反馈，不能前馈，因此只施加控制力、不加前馈。
+                // 无输入：附着与剩余动量限制主动制动力，求解器同时处理默认接触摩擦。
                 // 上限取「一步之内把动量停住」所需的力，避免大幅超调
                 float brake = Math.min(traction, bodyMass * relativeSpeed / dt);
                 controlX = -brake * (relativeX / relativeSpeed);
@@ -1298,6 +1390,7 @@ public class MechaCharacter extends PhysicsRigidBody {
             }
             forceX = controlX;
             forceZ = controlZ;
+            }
         } else if (!grounded && hasInput) {
             // 空中：控制力取 F_max 的一个比例，不扣内阻/坡度——没有蹬地反力，
             // 内阻与坡度都是地面接触现象，扣掉它们会让空中控制力恒为零。
@@ -1318,9 +1411,7 @@ public class MechaCharacter extends PhysicsRigidBody {
         }
 
         // ── 空中天花板（在闪避赋值与力计算之后统一执行）──
-        // airCeiling 只压「加速」，不压转向：超限时按比例缩回，方向仍然转了（速率保持，矢量
-        // 朝输入方向旋转）；已高于天花板的动量（同向闪避得到的 |v| + Δv、被击飞、从高处冲下）
-        // 原样保留
+        // 只抬高天花板、不限制持续加速：力尚未积分，此处读到的速度不含本步的空中控制加速。
         if (airCeiling > 0f) {
             float ceiling = Math.max(airCeiling, hSpeed);
             Vector3f current = getLinearVelocity(tmp2);
@@ -1348,6 +1439,103 @@ public class MechaCharacter extends PhysicsRigidBody {
                 setLinearVelocity(tmp2.set(vx, vy + boostDvY, vz));
             }
         }
+    }
+
+    /**
+     * 求本步计划：力请求、保持门与要写进接触点的组合摩擦。
+     *
+     * <p>进入 {@link GroundDrive#evaluate} 的是<b>合成后的整机请求</b>，附着预算也是一份：
+     * 多接触不产生额外额度。
+     * 载荷优先取上一物理步的 Post 样本 {@code Σ|J_n|/dt}（{@link #recordSupportImpulse}），
+     * 没有样本时回落到静态估算 {@code m·g·cosθ}；两条都经 {@link ContactBudget#softCompress}
+     * 按重力归一化软压缩，因此落地冲击不会以原始峰值进入预算。
+     *
+     * @param drive         本步驱动输入
+     * @param dt            物理步长（s）
+     * @param mass          参与制动的质量（kg）
+     * @param bodyMass      刚体质量（kg），静态载荷按它算
+     * @param slopeCos      支撑坡度余弦
+     * @param muPairBase    接触对基准组合摩擦
+     * @param relativeX     相对支撑的水平速度 X（m/s）
+     * @param relativeZ     相对支撑的水平速度 Z（m/s）
+     * @param relativeSpeed 相对支撑的水平速率（m/s）
+     * @param dirX          移动意图的世界方向 X（已归一化，无输入时为 0）
+     * @param dirZ          移动意图的世界方向 Z
+     * @return 本步计划
+     */
+    private StepPlan planDrive(DriveInput drive, float dt, float mass, float bodyMass, float slopeCos,
+                               float muPairBase, float relativeX, float relativeZ, float relativeSpeed,
+                               float dirX, float dirZ) {
+        double along = relativeX * dirX + relativeZ * dirZ;
+        double side = -relativeX * dirZ + relativeZ * dirX;
+        double gravityLoad = bodyMass * MechaWalkingAttr.GRAVITY * slopeCos;
+        // 原始载荷优先取上一物理步的 Post 样本（Σ|J_n|/dt），没有样本才回落到 m·g·cosθ
+        double rawLoad = supportLoad.rawLoad(gravityLoad);
+        double effectiveLoad = ContactBudget.softCompress(rawLoad, gravityLoad,
+                MechaWalkingAttr.LOAD_KNEE, MechaWalkingAttr.LOAD_LOG_SCALE);
+        lastEffectiveLoad = effectiveLoad;
+        GroundDrive.Plan plan = GroundDrive.evaluate(drive.attrs(), drive.weights(), inputHasMove,
+                inputHasMove ? along : relativeSpeed, side, dt, mass, muPairBase, effectiveLoad,
+                MechaWalkingAttr.GRAVITY);
+        double normalSpeed = Math.abs(getLinearVelocity(tmp4).y);
+        boolean gate = ContactBudget.holdGate(true, grounded, inputHasMove, relativeSpeed, normalSpeed,
+                plan.holdSpeedBound(), MechaWalkingAttr.HOLD_NORMAL_SPEED);
+        return new StepPlan(plan.forceAlong(), plan.forceSide(), plan.brakeMagnitude(), gate ? muPairBase : 0.0);
+    }
+
+    /**
+     * 窄相新点：{@code Collide.Pre}，接触点加入 manifold 之前。
+     *
+     * @param event 接触事件
+     * @return 恒为 true（这条接触照常保留）
+     */
+    private boolean onContactPre(PhysicsBodyEvent.Collide.Pre event) {
+        writeSupportFriction(event.getO1Point());
+        return true;
+    }
+
+    /**
+     * 持久点：{@code Collide.Processed}，每步刷新一次，仍早于求解器。
+     *
+     * @param event 接触事件
+     */
+    private void onContactProcessed(PhysicsBodyEvent.Collide.Processed event) {
+        writeSupportFriction(event.getO1Point());
+    }
+
+    /**
+     * 写入上一物理步求解出的支撑法向冲量之和（物理线程，Post 相位）。
+     *
+     * <p>只由 {@code common/ArmsCoreServerEvents.java#collectSupportImpulses} 调用：它每步扫一遍
+     * manifold，取 {@code |n.y| ≥ }{@link #SUPPORT_NORMAL_Y} 的点，把 {@code Σ|appliedImpulse|}
+     * 连同那一步的步长交进来。零冲量与非有限值都等于没有样本
+     * （{@code util/control/SupportLoadCache.java#sample}），因此接触断开的那些步不需要额外判断。
+     *
+     * @param impulse 支撑法向冲量之和（N·s），非负
+     * @param dt      产生该冲量的物理步长（s）
+     */
+    public void recordSupportImpulse(double impulse, float dt) {
+        supportLoad.sample(impulse, dt);
+    }
+
+    /**
+     * 按本步计划写受控支撑点的组合摩擦。
+     *
+     * <p>只写法线朝上的接触：侧墙、顶棚与非承重接触不参与。保持门通过时写回基准组合值，
+     * 主动阶段写 0。
+     *
+     * @param point 本步的接触点
+     */
+    private void writeSupportFriction(ManifoldPoint point) {
+        StepPlan current = stepPlan;
+        if (current == null) {
+            return;
+        }
+        Vector3f normal = point.getNormalWorld(tmpNormal);
+        if (Math.abs(normal.y) < SUPPORT_NORMAL_Y) {
+            return;
+        }
+        point.setCombinedFriction((float) current.frictionWrite());
     }
 
     /**

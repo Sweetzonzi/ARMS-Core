@@ -2,6 +2,10 @@ package io.github.sweetzonzi.arms_core.common;
 
 import cn.solarmoon.spark_core.event.PhysicsLevelTickEvent;
 import cn.solarmoon.spark_core.physics.body.PhysicsBodyExtensionKt;
+import cn.solarmoon.spark_core.physics.level.PhysicsLevel;
+import com.jme3.bullet.PhysicsSpace;
+import com.jme3.bullet.collision.ManifoldPoints;
+import com.jme3.bullet.collision.PersistentManifolds;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
@@ -86,6 +90,81 @@ public final class ArmsCoreServerEvents {
         for (ArmsCore core : MechaCoreRegistry.all(level)) {
             core.prePhysicsTick(dt);
         }
+    }
+
+    /**
+     * Post 相位（求解之后、物理线程）：把每个控制器刚体本步的支撑法向冲量交给它自己缓存。
+     *
+     * <p>相位是这套缓存存在的全部理由：窄相回调（{@code Collide.Pre} / {@code Collide.Processed}，
+     * 写组合摩擦的地方）早于求解器，那一刻本步的法向冲量还不存在，读到的只是上一步的值
+     * （实测逐点相等）。因此唯一能拿到
+     * 「本步最终法向冲量」的时点是这里，而它只能供下一步使用。
+     *
+     * <p>聚合规则与摩擦写入共用同一条门：{@code |n.y| ≥ }
+     * {@code common/control/MechaCharacter.java#SUPPORT_NORMAL_Y} 的点才算承重接触，侧墙、顶棚与
+     * 非承重接触不进腿的载荷。整机求和后再交给缓存，不逐点各给一份——附着预算只有一份。
+     *
+     * <p>复杂度是「manifold 数 × 控制器数」的线性扫描：控制器数是个位数，而按刚体反查 manifold
+     * 在引擎里没有索引。一次扫描覆盖本 Level 的所有控制器，不每个刚体扫一遍。
+     */
+    @SubscribeEvent
+    public static void onPostPhysicsTick(PhysicsLevelTickEvent.Post event) {
+        PhysicsLevel physicsLevel = event.getLevel();
+        collectSupportImpulses(physicsLevel.getMcLevel(), 1f / physicsLevel.getTps());
+    }
+
+    /**
+     * 扫一遍本 Level 物理空间的 manifold，把每个控制器的支撑法向冲量之和写进它的缓存。
+     *
+     * <p>没有承重接触（离地、站立在无接触的帧）时写入 0，缓存据此失效、下一步回落到静态估算；
+     * 调用方不需要区分「没有接触」与「载荷为零」。
+     *
+     * <p>所有控制器刚体都假定在同一个物理空间（每个 Level 一个）。跨维度的装配体注册在目标
+     * Level 的表里，因此这里不需要分组。
+     *
+     * @param level 该 Level（物理级别与它一一对应）
+     * @param dt    本步步长（s），沿用 {@code 1 / PhysicsLevel#getTps()}
+     */
+    private static void collectSupportImpulses(Level level, float dt) {
+        List<MechaCharacter> bodies = new ArrayList<>();
+        for (ArmsCore core : MechaCoreRegistry.all(level)) {
+            if (!core.isInLevel()) continue;
+            MechaControl control = core.getMechaControl();
+            if (control == null || !control.hasBody()) continue;
+            MechaCharacter body = control.getBody();
+            if (body == null || !body.isInWorld()) continue;
+            bodies.add(body);
+        }
+        if (bodies.isEmpty()) return;
+
+        int count = bodies.size();
+        double[] normalImpulse = new double[count];
+        if (bodies.get(0).getCollisionSpace() instanceof PhysicsSpace space) {
+            Vector3f normal = new Vector3f();
+            for (long manifoldId : space.listManifoldIds()) {
+                int index = indexOfBody(bodies, PersistentManifolds.getBodyAId(manifoldId));
+                if (index < 0) {
+                    index = indexOfBody(bodies, PersistentManifolds.getBodyBId(manifoldId));
+                }
+                if (index < 0) continue;
+                for (long pointId : PersistentManifolds.listPointIds(manifoldId)) {
+                    ManifoldPoints.getNormalWorldOnB(pointId, normal);
+                    if (Math.abs(normal.y) < MechaCharacter.SUPPORT_NORMAL_Y) continue;
+                    normalImpulse[index] += Math.abs(ManifoldPoints.getAppliedImpulse(pointId));
+                }
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            bodies.get(i).recordSupportImpulse(normalImpulse[i], dt);
+        }
+    }
+
+    /** 按原生 id 找控制器刚体在本次收集里的下标；找不到返回 {@code -1}。 */
+    private static int indexOfBody(List<MechaCharacter> bodies, long nativeId) {
+        for (int i = 0; i < bodies.size(); i++) {
+            if (bodies.get(i).nativeId() == nativeId) return i;
+        }
+        return -1;
     }
 
     // ==========================================

@@ -5,16 +5,20 @@ import cn.solarmoon.spark_core.state_machine.graph.StateVariableContainer;
 import cn.solarmoon.spark_core.state_machine.presets.StateVariableKeys;
 import com.jme3.math.Vector3f;
 import io.github.sweetzonzi.arms_core.ARMS;
+import io.github.sweetzonzi.arms_core.common.control.attr.LegDriveAttr;
+import io.github.sweetzonzi.arms_core.common.control.attr.MechaWalkingAttr;
 import io.github.sweetzonzi.arms_core.common.control.presentation.MechaAnimPresenter;
 import io.github.sweetzonzi.arms_core.common.control.state.MechaLogicStateMachine;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Posture;
 import io.github.sweetzonzi.arms_core.common.control.state.domain.Vertical;
 import io.github.sweetzonzi.arms_core.common.control.state.graph.MechaStateActions;
+import io.github.sweetzonzi.arms_core.util.control.GearResponse;
 import lombok.Getter;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -109,6 +113,14 @@ public class MechaControl {
     /** 持有者引用，构造时绑定 */
     @Getter
     private final MechaControlHolder holder;
+
+    /**
+     * 档位响应的权重状态。
+     * <p>
+     * 只在这里持有：它属于控制编排，不属于刚体。{@code null} 表示上一步没有驱动源，
+     * 下一步见到驱动源时从全零开始建立出力。
+     */
+    private double[] driveWeights;
 
     /**
      * 控制器刚体（动力学胶囊：地面力律 + 跳跃 + 着地判据 + 越障）。
@@ -436,6 +448,7 @@ public class MechaControl {
 
         // —— 4. 动画根位移与控制器物理步（仅权威侧） ——
         if (hasBody()) {
+            pushDriveInput(dt);
             extractAnimRootDelta();
             body.prePhysicsTick(dt);
         }
@@ -677,6 +690,33 @@ public class MechaControl {
      * @param str     左右意图，[-1, 1]，正 = 左移
      * @param allowed 本步是否允许移动
      */
+    /**
+     * 把本步的驱动输入交给控制器：有效驱动源 + 按当前档位递推的权重。
+     *
+     * <p>没有驱动源时清空控制器的输入，行走力律回到兜底的 {@code computeDriveForce} 分支；
+     * 权重状态同时作废，下次建立出力从零开始。响应只作用于主动地面驱动请求，
+     * 重力、碰撞与推进器不经过这层低通。
+     *
+     * @param dt 物理步长（s）
+     */
+    private void pushDriveInput(float dt) {
+        List<LegDriveAttr> attrs = holder.getDrivingAttrs();
+        if (attrs.isEmpty()) {
+            driveWeights = null;
+            body.clearDriveInput();
+            return;
+        }
+        if (driveWeights == null) {
+            driveWeights = GearResponse.zeroWeights();
+        }
+        int target = GearResponse.GEARS.indexOf(getCurrentGait());
+        if (target >= 0) {
+            driveWeights = GearResponse.step(driveWeights,
+                    GearResponse.alpha(dt, MechaWalkingAttr.RESPONSE_TAU), target);
+        }
+        body.setDriveInput(attrs, driveWeights);
+    }
+
     private void applyMoveIntent(float fwd, float str, boolean allowed) {
         if (!allowed) {
             body.setMoveIntent(0f, 0f);

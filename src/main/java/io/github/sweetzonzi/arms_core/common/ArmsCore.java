@@ -13,6 +13,7 @@ import io.github.sweetzonzi.arms_core.ARMS;
 import io.github.sweetzonzi.arms_core.common.control.MechaCharacter;
 import io.github.sweetzonzi.arms_core.common.control.MechaControl;
 import io.github.sweetzonzi.arms_core.common.control.MechaControlHolder;
+import io.github.sweetzonzi.arms_core.common.control.attr.LegDriveAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.presentation.MechaBodyAnimation;
@@ -914,6 +915,31 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
     @Override
     public MechAttr getAttr() {
         return null;
+    }
+
+    /**
+     * 逐腿的地面驱动能力：两条腿各一份 {@link LegDriveAttr}。
+     *
+     * <p><b>来源是硬编码常量。</b>装配体的 Part 不上报驱动能力，这份数据与零件构成无关：
+     * 任何装配体都按两腿返回同一组数值。逐 Part 的来源（Part 定义里的可选字段，加上按实际
+     * 零件汇总）属于待接入项，当前还没有字段承载它。
+     *
+     * <p>取值：单腿 {@code F_i = 350 N}、{@code B_i = 350 N}，两腿合计 700 N，与
+     * {@code common/control/attr/MechaWalkingAttr.java#F_MAX} 同值；三档空载速度
+     * 1.6 / 4.317 / 5.612 m/s 按慢走、常速、冲刺的顺序排列；后两档对齐原版草地普通行走与疾跑，
+     * 合计 700 N 高于平地的附着上限 {@code μ_pair_base·m·g ≈ 686.7 N}，因此低速区的推进由附着截住。
+     * 两腿的 {@code brakeAssist = 1}，低速停车与收侧速按标准指数响应混入；
+     * 该辅助可以超过基础制动能力和附着预算。
+     *
+     * <p>列表不可变、元素是值对象，物理线程每步直接交出，不需要复制；逐件求和与档位混合都不依赖顺序。
+     */
+    private static final List<LegDriveAttr> DRIVE_ATTRS = List.of(
+            new LegDriveAttr(350f, 350f, 1.6f, 4.317f, 5.612f, 1f),
+            new LegDriveAttr(350f, 350f, 1.6f, 4.317f, 5.612f, 1f));
+
+    @Override
+    public List<LegDriveAttr> getDrivingAttrs() {
+        return DRIVE_ATTRS;
     }
 
     @Override

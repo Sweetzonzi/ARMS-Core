@@ -242,6 +242,24 @@
 
 首个验收场景选可观察的单旋转轴：肢体因重力从偏转初态运动，受限位约束，挂点不持续漂离，外力扰动后连接仍在。随后分别加多 SubPart 手臂和 RegularPart 支架，验证内部关节与部件间关节能同时存在，以及绕行路径是否正确参与分裂判定。
 
+### 5.1 人形被动关节预设
+
+内置内容包在 `src/main/resources/spark_modules/arms_core.builtin/arms_core/connectors/` 提供 `arms_core:ragdoll_neck` 和 `arms_core:ragdoll_{left,right}_{shoulder,elbow,hip,knee}`。近端使用对应的高级端，远端使用 `arms_core:allbody_body_plug`。两端的挂点在身体伸直、上臂垂下的零位上共点同向，高级端 `yn` 与简单端 `yp` 的装配法线相对。`arms_core:allbody_joint_test` 使用 §2.3 的单轴夹具。
+
+模型换算后的身体方向为右 `+X`、上 `+Y`、前 `−Z`。两端 Locator 的 X、Y、Z 轴分别对齐身体 `+Y`、`+Z`、`+X`。若挂点所属骨骼的静止轴与身体轴重合，Blockbench Locator 可用 `rotation: [-90, 0, 90]`。骨骼本身有旋转时，按最终挂点朝向换算。轴的来源见 `../Spark-Core/src/main/kotlin/cn/solarmoon/spark_core/pack/modules/ModelModule.kt#read` 和 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/attr/SubPartAttr.java#addLocator`。
+
+| JSON 转轴 | 解剖动作与正号 |
+|---|---|
+| `xr` | 远端绕自身长轴扭转。颈部正向左转，右侧肢体正向内旋，左侧肢体负向内旋。肘部按掌心朝内的零位，右侧正向旋前，左侧负向旋前。 |
+| `yr` | 颈部正向左侧屈，右肩与右髋正向外展，左肩与左髋负向外展。肘和膝锁住该轴。 |
+| `zr` | 肩、肘、髋正向前屈，颈和膝负向屈曲。 |
+
+Machine-Max 用 `RotationOrder.XYZ` 建关节，并在写入原生 `yr` 限位与平衡角时反号。长轴放在 `xr`，让肘和膝弯曲后仍可沿远端长轴扭转。三自由度关节使用独立的角度区间，肩部外展上限取 80°，给 `yr` 的 ±90° 奇异位形留余量。膝部在整个屈伸范围内保留小幅扭转，实际人体的轴向活动度随屈膝角变化。见 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#attachJoint`、`../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#adjustJoint` 和 [膝关节轴向旋转测量](https://pubmed.ncbi.nlm.nih.gov/6869656/)。
+
+活动区间参考成人关节测量，并为模型选取独立轴限位。平衡姿态取低头 10°、肩前屈 30° / 外展 20° / 内旋 20°、屈肘 65°、屈髋 30° / 外展 10°、屈膝 40°。这些角度取自 NASA STS‑57 表 1 所展示的姿态趋势，向较舒展、手臂靠近身体的形态取值。见 [CDC 成人关节活动范围](https://archive.cdc.gov/www_cdc_gov/ncbddd/jointrom/index_1715172647.html)、[颈部活动度测量](https://pmc.ncbi.nlm.nih.gov/articles/PMC6341704/)、[肩部主动活动度测量](https://pmc.ncbi.nlm.nih.gov/articles/PMC9937824/) 和 [NASA/TM-2003-104805 表 1](https://ntrs.nasa.gov/api/citations/20040200967/downloads/20040200967.pdf)。
+
+`lower_limit`、`upper_limit` 和 `equilibrium` 用度，`stiffness` 用 N·m/度，`damping` 用 N·m·s/度。未声明的自由度锁定。直伸姿态与 `equilibrium` 的角差提供被动弹簧的初始力矩，大小约为刚度乘角差。弹簧增益按人形零件的估算惯量起步，最终姿态与回弹速度取决于零件惯量、重力和碰撞。主动马达接管哪个轴，就暂时关闭该轴的被动弹簧，释放马达时恢复弹簧。参数写入见 `../Machine-Max/src/main/java/io/github/sweetzonzi/machine_max/common/mech/vehicle/connector/AbstractConnector.java#adjustJoint`，单轴切换见 `common/control/presentation/MechaBodyAnimation.java#Drive`。
+
 ## 6. 后续字段与动画接线
 
 ### 6.1 整机配置

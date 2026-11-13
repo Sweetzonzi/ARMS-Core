@@ -167,9 +167,18 @@ public final class ARMSClient {
 
         int keyFlags = 0;
         if (jumpDown) keyFlags |= MechaInputPayload.BIT_JUMP;
-        if (mc.options.keySprint.isDown()) keyFlags |= MechaInputPayload.BIT_SPRINT;
-        if (player.isCrouching()) keyFlags |= MechaInputPayload.BIT_SNEAK;
-        // 慢走键：暂未绑定独立按键，保持 false（creep 由单元测试与 /arms 命令覆盖）
+        // 冲刺取原版冲刺状态，不取冲刺键：双击 W 走的是 sprintTriggerTime → setSprinting(true)，
+        // 那一刻 keySprint 并没有按下。isSprinting() 同时覆盖双击与按键两条路径，松手、撞墙、
+        // 饱食度不足这些原版门控也一并沿用，模组不需要再实现一遍。
+        if (player.isSprinting()) keyFlags |= MechaInputPayload.BIT_SPRINT;
+        // 蹲伏同样取原版状态：它已经把飞行 / 游泳 / 骑乘 / 蹲伏盒能否放下这些门都过了，
+        // 而这几种情形在姿态图里各有自己的姿态（air / water / riding），都不接受 crouch 边。
+        boolean crouching = player.isCrouching();
+        if (crouching) keyFlags |= MechaInputPayload.BIT_SNEAK;
+        // 慢走复用潜行键。驱动分支按 gait 选档、不乘 MOVE_SPEED_MODIFIER
+        // （common/control/MechaControl.java#pushDriveInput、common/control/MechaCharacter.java#updateWalk），
+        // 蹲伏要真正慢下来只能靠 creep 档：1.6 m/s 对 jog 的 4.317 m/s。
+        if (crouching) keyFlags |= MechaInputPayload.BIT_WALK;
 
         float viewYaw = player.getYRot();
         float viewPitch = player.getXRot();

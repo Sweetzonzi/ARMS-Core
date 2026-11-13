@@ -206,7 +206,7 @@ public final class MechaStateVariableKeys {
     public static final StateVariableKey<Boolean> HAS_INPUT =
             key("arms_core:has_input", false);
 
-    /** 慢走键是否按住（精细移动，触发 creep gait） */
+    /** 慢走输入是否按住（精细移动，触发 creep gait）；客户端当前由潜行键驱动 */
     public static final StateVariableKey<Boolean> WALK_KEY_DOWN =
             key("arms_core:walk_key_down", false);
 

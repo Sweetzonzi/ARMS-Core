@@ -116,4 +116,33 @@ public final class MechaWalkingAttr {
 
     /** 数值精度阈值，用于避免除零奇点 */
     public static final float EPSILON = 0.01f;
+
+    // ==========================================
+    // 地面驱动的参数
+    // ==========================================
+
+    /**
+     * 档位权重的一阶响应时间常数 (s)。
+     * <p>
+     * 首轮取 0.15 s：100 Hz 下每步系数 {@code α = 1 − exp(−dt/τ) ≈ 0.065}，约 0.4 s 建立到九成。
+     * 冲刺档与慢走档应取不同值，具体数值待标定；当前三档共用，先让过渡可见。
+     */
+    public static final float RESPONSE_TAU = 0.15f;
+
+    /**
+     * 保持门的法向速度门限 {@code v_normal_hold} (m/s)。
+     * <p>
+     * 明显的法向接近速度使落地冲击不能进入保持。首轮取 0.5 m/s，待标定。
+     */
+    public static final float HOLD_NORMAL_SPEED = 0.5f;
+
+    /**
+     * 载荷软压缩的真值区上界 κ（无量纲）。
+     * <p>
+     * 载荷低于 {@code κ·m·g·cosθ} 时按真值进入附着预算，高于它转为对数压缩。
+     */
+    public static final float LOAD_KNEE = 2.0f;
+
+    /** 载荷软压缩的对数尺度 a（无量纲）；与 κ 一起归控制器共用，内容包作者无需逐腿填写。 */
+    public static final float LOAD_LOG_SCALE = 1.0f;
 }
