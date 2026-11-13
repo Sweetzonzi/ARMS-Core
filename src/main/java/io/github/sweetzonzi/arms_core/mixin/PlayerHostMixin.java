@@ -98,6 +98,9 @@ public class PlayerHostMixin implements IArmsHost {
             core.setHost(this);
         } else {
             MechaInputHandler.resetInput(previous);
+            // 冲刺旗标交还原版：绑定期间它由机体决定，解绑后若留着冲刺修饰符，玩家会带着 +30%
+            // 的移动速度加成离开机体。此时绑定字段已清空，本模组不再改写这一笔写入。
+            getHostEntity().setSprinting(false);
             if (previous != null) {
                 // 解绑时清空分类状态：作用域栈与 pin 都属于这一次绑定，不该留给下一次
                 previous.getPositionIntake().reset();

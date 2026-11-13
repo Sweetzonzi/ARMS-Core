@@ -294,6 +294,15 @@ public final class ArmsCoreServerEvents {
             core.getSyncedData().set(ArmsCore.DATA_ENERGY, state.energy());
         }
 
+        // 宿主实体的冲刺旗标与逻辑层同源：原版对它的三处消费（视野缩放、攻击击退、疾跑速度修饰符）
+        // 在受控宿主上都应当与机体同义。每 tick 断言一次是必须的——原版的取消条件读宿主实体自己的
+        // 碰撞与输入，而受控宿主的位移由控制器写回，那些条件与机体无关。
+        // 幂等性由宿主实现负责（IArmsHost#applySprinting）。
+        IArmsHost host = core.getHost();
+        if (host != null) {
+            host.applySprinting(core.isSprintGait());
+        }
+
         // 位姿心跳：这条包同时喂客户端的呈现缓冲，而缓冲按「每 tick 一个样本」播放，
         // 样本只认「包里出现过 DATA_POS 或 DATA_YAW」，不认值有没有变（见
         // `common/ArmsCore.java#onSyncedDataUpdated(List)`）。判断因此必须落在键上：

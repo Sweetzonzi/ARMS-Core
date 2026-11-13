@@ -17,6 +17,7 @@ import io.github.sweetzonzi.arms_core.common.control.attr.LegDriveAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechAttr;
 import io.github.sweetzonzi.arms_core.common.control.attr.MechaBodyPreset;
 import io.github.sweetzonzi.arms_core.common.control.presentation.MechaBodyAnimation;
+import io.github.sweetzonzi.arms_core.common.control.state.domain.Gait;
 import io.github.sweetzonzi.arms_core.common.debug.MechaTelemetry;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyData;
 import io.github.sweetzonzi.arms_core.common.part.ArmsBodyAssembly;
@@ -802,6 +803,27 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
                     "客户端 ArmsCore 不持有控制器（计划 D1：客户端不运行物理模拟）");
         }
         return control.getBody();
+    }
+
+    /**
+     * 本装配体当前是否处于冲刺步态。主线程可读，两端同义。
+     * <p>
+     * 权威侧读逻辑树发布的快照，客户端读下行通道送来的那一份；两者都是
+     * {@link MechaControl.LogicStateSnapshot}，主线程读它们不需要碰物理线程独占的状态变量容器。
+     * <p>
+     * 消费者是宿主实体的冲刺旗标：绑定期间该旗标连同 {@code MOVEMENT_SPEED} 上的冲刺修饰符由本方法
+     * 决定，见 {@link IArmsHost#applySprinting(boolean)}。原版把「冲刺」用于视野缩放、攻击击退与
+     * 疾跑速度修饰符三处，因此宿主实体必须与机体同义，不能各说各话。
+     *
+     * @return 步态为 {@link Gait#SPRINT} 时为 {@code true}；尚未发布过逻辑状态时为 {@code false}
+     */
+    public boolean isSprintGait() {
+        MechaControl control = this.mechaControl;
+        if (control == null) return false;
+        MechaControl.LogicStateSnapshot state = authoritative
+                ? this.logicState
+                : control.getSyncedLogicState();
+        return state != null && state.gait() == Gait.SPRINT;
     }
 
     @Override

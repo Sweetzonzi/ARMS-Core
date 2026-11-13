@@ -45,10 +45,20 @@ public interface IArmsHost {
 
     /** 把 KCC 的线速度写进宿主实体。由 ArmsCore 在服务端主线程调用。 */
     void applyVelocity(Vec3 velocity, float physicsStepSeconds);
+
+    /**
+     * 把机体的冲刺状态写进宿主实体的冲刺旗标。
+     * 两端每 tick 各调用一次，实现负责幂等（见 §5.2）。
+     */
+    default void applySprinting(boolean sprinting) {
+        getHostEntity().setSprinting(sprinting);
+    }
 }
 ```
 
-五个方法，三类职责。`getHostEntity()` 与绑定两个方法解决第 1 件事，`applyPose` 与 `applyVelocity` 解决第 2 件。
+六个方法，三类职责。`getHostEntity()` 与绑定两个方法解决第 1 件事，`applyPose` 与 `applyVelocity` 解决第 2 件，
+`applySprinting` 解决第 3 件：机体状态（本章只有冲刺一项）落到宿主实体上。它带默认实现，因此不影响
+"宿主实现五个方法即可成立"这一条。
 
 ### 2.1 参数的基准与单位
 
@@ -127,7 +137,7 @@ public interface IArmsHost {
 | 成员 | 建议名 | 说明 |
 | --- | --- | --- |
 | 绑定字段 | `armsCore$controlledCore` | 类型 `@Nullable ArmsCore`，`volatile`（见 §5.3）。`armsCore$` 前缀避免与其它模组的注入成员撞名 |
-| 接口方法 | `getHostEntity` / `getControlledArmsCore` / `setControlledArmsCore` / `applyPose` / `applyVelocity` | 直接实现接口方法，无需改名——这五个名字都不与原版 `Player`、`LivingEntity`、`Entity` 的成员冲突 |
+| 接口方法 | `getHostEntity` / `getControlledArmsCore` / `setControlledArmsCore` / `applyPose` / `applyVelocity` | 直接实现接口方法，无需改名——这五个名字都不与原版 `Player`、`LivingEntity`、`Entity` 的成员冲突。第六个方法 `applySprinting` 带默认实现，玩家宿主不重写它 |
 
 **调用点必须写成经接口的形态。** Mixin 的注入成员在编译期不存在于目标类上，因此
 `player.setControlledArmsCore(...)` 这类直接调用**编译不过**，必须写
@@ -145,6 +155,7 @@ public interface IArmsHost {
 - `applyVelocity(velocity)` 写 `deltaMovement`，**必须先做 m/s → 每 tick 位移的换算（三轴统一 `÷ 20`）**：1 tick = 1/20 s，因此 1 m/s 就是每 tick 走 1/20 格，与物理步频无关。`noPhysics` 为真时该值不产生实际位移，作用只是让外部查询（动画、其它模组、调试）看到 KCC 的真实速度。
 - **位置回写是过渡态。** `docs/宿主位置权威与位移摄入设计.md` §九 第 4 步会删掉服务端每 tick 的位置回写，只留速度那一笔：位置由客户端上报与 §5 的位移摄入通道维护。理由是每 tick 的位置回写会覆盖同一 tick 的外部位移，使控制器不知道 `/tp` 一类的写入发生过。
 - 位置回写后调用 `net.minecraft.world.entity.Entity#resetFallDistance`——实体被外部搬动时原版会按位置差累计坠落距离，不重置会让玩家持续受到坠落伤害。位置回写移除之后，这一职责要重新指派：当前它是服务端唯一的坠距重置点（`common/PlayerHostEvents.java#onPlayerTickPost` 走的是 `Player#tick` 末尾的玩家 tick 事件，服务端玩家不在该路径上），可选落点是对账用的 `net.minecraft.server.network.ServerGamePacketListenerImpl#handleMovePlayer` 采纳分支。
+- `applySprinting(sprinting)` 写冲刺旗标，**两端每 tick 各调用一次，幂等由实现负责**。调用方不能按「旗标是否已经一致」决定要不要调用：旗标有两个写入者——本模组，以及 `SynchedEntityData` 的同步（客户端），而同步那条只写共享位、不碰 `Attributes#MOVEMENT_SPEED` 上的冲刺修饰符，因此「共享位已经对了、修饰符没跟上」是一个可达状态，只比较共享位会永久跳过那份修正，表现为冲刺的视野效果时有时无。默认实现同时比较这两处：只比共享位会永久跳过那份修正，而每次都写会重建修饰符——修饰符增删会标记属性脏，服务端每个脏属性每 tick 换一条属性同步包。判据里的修饰符 id 是原版那一个（`minecraft:sprinting`），接口只读它、不写它。写这个旗标的动因是原版对它的三处消费——视野缩放按 `Attributes#MOVEMENT_SPEED` 算，冲刺修饰符正是 `+30%`；攻击击退与暴击互斥；疾跑速度加成。
 - 绑定字段的每一次变化都要重置输入状态，否则状态机会卡在上一帧（例如 `jumpPressed` 永久为真，`docs/ArmsCore双端权威与网络同步实现计划.md` R11）。`common/MechaInputHandler.java#resetInput` 已提供该动作，绑定实现调用它即可。
 - `setControlledArmsCore` 是绑定关系的**唯一入口**，两个方向的一致性由它负责，三条换绑路径都要覆盖：写入新值前解除本宿主此前承载的装配体；新装配体此前承载于别的宿主时，先解除那一侧的绑定；同一装配体重复绑定直接返回，连输入都不重置——重置会让正在进行的跳跃助推窗口凭空终止。单宿主唯一性与「同一装配体换宿主」都收敛在这一处，调用方只需回答「这个宿主现在承载谁」。
 - 绑定期间授予飞行许可，解除时收回，并调用 `net.minecraft.server.level.ServerPlayer#onUpdateAbilities` 同步给客户端：`docs/宿主接入与伤害管线设计.md` §5.2 末段的「飞行过久」检测在 `noPhysics` 为真时不再有脚下碰撞支撑，悬停与滑翔会被踢。**用 `NeoForgeMod#CREATIVE_FLIGHT` 属性上的修饰符，不要直写 `net.minecraft.world.entity.player.Abilities#mayfly`**——该字段已被 NeoForge 标记为 `@Deprecated` 并明确劝阻直写，许可的正确判据是 `IPlayerExtension#mayFly`（游戏模式或属性值大于 0 二者之一）。修饰符 id 固定（`arms_core:mecha_flight`），因此重复绑定不叠加、收回只撤掉自己那一个，不会覆盖别的模组或游戏模式给出的许可。

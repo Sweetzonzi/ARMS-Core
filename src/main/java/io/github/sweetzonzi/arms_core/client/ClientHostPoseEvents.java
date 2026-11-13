@@ -102,5 +102,9 @@ public final class ClientHostPoseEvents {
             intake.exitScope(outerDepth);
         }
         player.setDeltaMovement(Vec3.ZERO);
+        // 冲刺旗标：客户端这一份决定视野缩放（原版按 MOVEMENT_SPEED 上的冲刺修饰符算），而原版自己的
+        // 维持条件读的是傀儡宿主的水平碰撞与前进输入，冲刺途中会被反复取消。断言必须落在实体 tick
+        // 之后、渲染之前——视野是渲染期按当时的旗标算的，中途取消会直接表现为视野退回常态。
+        ((IArmsHost) player).applySprinting(core.isSprintGait());
     }
 }

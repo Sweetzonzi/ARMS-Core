@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * 客户端（无身体）形态的 MechaControl 接线测试。
@@ -64,6 +65,29 @@ class MechaControlClientTest {
         assertEquals(Gait.SPRINT, control.getCurrentGait());
         assertEquals(Vertical.FALL, control.snapshotLogicState().vertical());
         assertEquals(42f, control.snapshotLogicState().energy(), 1.0e-6f);
+    }
+
+    /**
+     * 主线程侧的投影出口：发布的那一份可读，等值重复发布不换引用。
+     * <p>
+     * 消费者是宿主实体的冲刺旗标，它每 tick 在主线程读一次；那份判定不能绕道状态变量容器
+     * （物理线程独占）。
+     */
+    @Test
+    void syncedLogicStateIsPublishedForMainThreadReaders() {
+        MechaControl control = new MechaControl(holder, null);
+        assertNull(control.getSyncedLogicState(), "尚未投影过时为空");
+
+        MechaControl.LogicStateSnapshot sprint =
+                new MechaControl.LogicStateSnapshot(Posture.STAND, Gait.SPRINT, Vertical.GROUND, 10f);
+        control.applySyncedLogicState(sprint);
+
+        assertEquals(sprint, control.getSyncedLogicState());
+        assertEquals(Gait.SPRINT, control.getSyncedLogicState().gait());
+
+        control.applySyncedLogicState(new MechaControl.LogicStateSnapshot(
+                Posture.STAND, Gait.SPRINT, Vertical.GROUND, 10f));
+        assertSame(sprint, control.getSyncedLogicState(), "等值重复发布沿用旧引用，不产生新对象");
     }
 
     /** 客户端物理步不碰角色控制器，因此在没有身体时也必须安全。 */

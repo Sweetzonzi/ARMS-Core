@@ -344,6 +344,20 @@ public class MechaControl {
     }
 
     /**
+     * 下行通道送来的那一份逻辑状态；权威侧恒为 {@code null}。
+     * <p>
+     * 与 {@link #getCurrentGait()} 的区别是线程：那个方法读状态变量容器（物理线程独占），本方法读的是
+     * 主线程写入的不可变引用，因此主线程可以直接读。消费者是宿主的冲刺旗标
+     * （{@link io.github.sweetzonzi.arms_core.common.IArmsHost#applySprinting(boolean)}），
+     * 它在主线程每个 tick 跑一次。
+     *
+     * @return 最近一次投影的逻辑状态；尚未收到任何同步数据时为 {@code null}
+     */
+    public @Nullable LogicStateSnapshot getSyncedLogicState() {
+        return syncedLogicState;
+    }
+
+    /**
      * 把下行逻辑状态写进变量容器（物理步帧首）。
      * <p>
      * one-hot 派生复用状态机动作的同一份实现（{@link MechaStateActions} 的容器级入口），

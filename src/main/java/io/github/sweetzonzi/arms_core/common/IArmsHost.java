@@ -1,7 +1,10 @@
 package io.github.sweetzonzi.arms_core.common;
 
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.phys.Vec3;
 
 import org.jetbrains.annotations.Nullable;
@@ -9,10 +12,11 @@ import org.jetbrains.annotations.Nullable;
 /**
  * 机娘宿主 —— 承载一份 {@link ArmsCore} 的实体。
  * <p>
- * 本接口只回答两件事：
+ * 本接口回答三件事：
  * <ol>
  *   <li><b>绑定关系</b>：这个宿主当前承载哪一个装配体。这是「是不是机娘」的唯一判据。</li>
- *   <li><b>位姿落地</b>：{@link ArmsCore} 把 KCC 算出的位姿写进宿主实体。</li>
+ *   <li><b>位姿落地</b>：{@link ArmsCore} 把控制器算出的位姿与线速度写进宿主实体。</li>
+ *   <li><b>状态落地</b>：机体的冲刺步态写成宿主实体的冲刺旗标，见 {@link #applySprinting(boolean)}。</li>
  * </ol>
  * 其余一切（相机、交互、背包、无敌帧、护甲、附魔、事件、输入采集、伤害落地）都由原版或别的
  * 机制承担，不进本接口。
@@ -77,4 +81,43 @@ public interface IArmsHost {
      * @param velocity 控制器线速度 (m/s)，三个轴同单位
      */
     void applyVelocity(Vec3 velocity);
+
+    /**
+     * 原版冲刺速度修饰符的 id。
+     * <p>
+     * 本接口只读它、不写它：判据「冲刺是否已经落到速度属性上」需要知道原版用的是哪一个修饰符，
+     * 而 {@link LivingEntity#setSprinting(boolean)} 增删的正是这一个（{@code +30%}，
+     * {@code ADD_MULTIPLIED_TOTAL}）。id 写错时的后果是每次都判定为「未生效」、每 tick 重建一次
+     * 修饰符，行为仍然正确。
+     */
+    ResourceLocation SPRINT_MODIFIER_ID = ResourceLocation.withDefaultNamespace("sprinting");
+
+    /**
+     * 把机体的冲刺状态落到宿主实体的冲刺旗标上。绑定期间两端每 tick 各调用一次。
+     * <p>
+     * <b>调用方每 tick 无脑调用，不做比较。</b> 比较放在本方法内，而且必须同时看旗标与速度属性上的
+     * 冲刺修饰符：旗标有两个写入者——本模组，以及 {@code SynchedEntityData} 的同步（客户端），而同步
+     * 那条只写旗标、不碰修饰符，因此「旗标已经对了、修饰符没跟上」是一个可达状态。只看旗标就会永久
+     * 跳过那份修正，表现为冲刺的视野效果时有时无。
+     * <p>
+     * 两处都已一致时一次写入都不做：{@link LivingEntity#setSprinting(boolean)} 每次调用都会先摘掉
+     * 再装回那个修饰符，而修饰符的增删会标记属性脏；服务端的每个脏属性每 tick 换一条属性同步包发给
+     * 附近所有玩家。
+     * <p>
+     * <b>旗标取的是冲刺步态而不是按键。</b> 原版对这个旗标有三处消费：视野缩放（
+     * {@link LivingEntity} 的客户端子类按速度属性算，冲刺修饰符正是 {@code +30%}）、攻击击退与暴击
+     * 互斥、以及疾跑的速度加成。机体冲刺时这三处都应当与机体同义。
+     * <p>
+     * 断言点在两侧各自 tick 的末尾（服务端写包相位、客户端实体 tick 之后），因此渲染读到的永远是
+     * 本 tick 写下的值；原版在 tick 中途的取消会在同一 tick 内被盖回来。
+     *
+     * @param sprinting 机体是否处于冲刺步态；解绑前的最后一笔传 {@code false}
+     */
+    default void applySprinting(boolean sprinting) {
+        LivingEntity self = getHostEntity();
+        AttributeInstance speed = self.getAttribute(Attributes.MOVEMENT_SPEED);
+        boolean speedApplied = speed != null && speed.hasModifier(SPRINT_MODIFIER_ID);
+        if (self.isSprinting() == sprinting && speedApplied == sprinting) return;
+        self.setSprinting(sprinting);
+    }
 }
