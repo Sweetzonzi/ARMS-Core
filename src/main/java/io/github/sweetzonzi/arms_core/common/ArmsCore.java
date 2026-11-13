@@ -965,11 +965,11 @@ public class ArmsCore implements IPartAssembly, MechaControlHolder, SyncedDataHo
      * <p><b>为什么不用 ignore list</b>：忽略条目确实每个物理步都重查（{@code btCollisionDispatcher::needsCollision}
      * 里两向 {@code checkCollideWith}，见 {@code ../Libbulletjme/src/main/native/bullet3/BulletCollision/CollisionDispatch/btCollisionDispatcher.cpp}），
      * 但它让 {@code processCollision} 整个跳过，那条 manifold 不再刷新：残留接触点仍被求解器按旧冲量
-     * 积分。实测（Libbulletjme 23.1.2、100 Hz、两个盒子）屏蔽后恒速推开约 1.2 cm/步且不衰减。</p>
+     * 积分：机体被恒速推开且不衰减。</p>
      *
      * <p><b>为什么只有否决不够</b>：{@code onContactConceived} 只在新接触点产生时被问，上车前已有的
-     * 接触点由各算法的 {@code refreshContactPoints()} 继续维持。同场景实测：接触点建立之后再开始否决，
-     * 6 步共下移 0.11 m 且每步仍在增大，而 {@code onContactProcessed} 每步仍为 4 条旧点派发。
+      * 接触点由各算法的 {@code refreshContactPoints()} 继续维持——接触点建立之后再开始否决没有用，
+      * 旧点每步仍在派发、机体继续下沉。
      * 这批旧点由 {@link #neutralizeRideContact} 在同一物理步里取消求解。</p>
      *
      * <p><b>为什么是这里</b>：{@code Collide.Pre} 由窄相里的 {@code onContactConceived} 派发

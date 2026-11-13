@@ -19,8 +19,7 @@ package io.github.sweetzonzi.arms_core.common.control;
  * <p>
  * <b>线上身份</b>：{@code MechaInputPayload.eventBits} 的位序取 {@link #ordinal()}，
  * 因此新常量只能追加在末尾；在中间插入会让该位置之后的位全部平移，双端事件错配。
- * `src/test/java/io/github/sweetzonzi/arms_core/network/ARMSNetworkCodecTest.java#eventOrdinalsAreAppendOnly`
- * 钉住这份顺序。
+ * {@code ARMSNetworkCodecTest#eventOrdinalsAreAppendOnly} 钉住这份顺序。
  *
  * @author Sweetzonzi
  */

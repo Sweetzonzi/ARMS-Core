@@ -27,10 +27,9 @@ import com.jme3.math.Vector3f;
  * 装置内部拼缝上同源的幻影不在本修正的范围内。
  * <p>
  * <b>判据与写法。</b>门之外只有一条几何判据：{@code 0.2 < |n.y| < 0.999}（朝上但歪）。距离不设条件
- * ——贴着的与尚未接触的一起处理，实测前者是高速残留的唯一来源；写法只改法线：深度进求解器的唯一
- * 去处是速度约束的容许接近量（实测按新法线重投影、甚至归零，四项读数逐位相同），接触点位置进
- * 求解器的只有力臂（锁转丢掉了 pitch/roll 力矩，实测改与不改的 yaw 逐位相同）。逐档读数见
- * {@code src/test/java/io/github/sweetzonzi/arms_core/common/control/TerrainSeamContactTest.java}。
+ * ——贴着的与尚未接触的一起处理，贴着的那些是高速残留的来源；写法只改法线：深度只进速度约束的
+ * 容许接近量，接触点位置只进力臂（锁转已丢掉 pitch/roll 力矩），改这两样与不改没有区别。
+ * 逐档读数由 {@code TerrainSeamContactTest} 打出来。
  * <p>
  * <b>时机。</b>本类挂在刚体的 {@code Collide.Pre} 事件上，由窄相里的
  * {@code onContactConceived} 派发（{@code .../physics/level/PhysicsWorld.kt#onContactConceived}），

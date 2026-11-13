@@ -57,11 +57,9 @@ import java.util.Locale;
  * {@link #runWarpTask} 在物理线程读）与 pin 的落地标志（物理线程写、主线程读）。落点走「先写字段、再投递只读字段的任务」，与既有的
  * {@code common/MechaCoreRegistry.java#enterPhysicsSpace} 同形。
  * <p>
- * <b>为什么单独成类。</b> 作用域栈、锚点与 pin 都是「一个装配体一份」的状态，与 {@code ArmsCore} 的生命周期
- * 完全一致：本类由 {@link ArmsCore} 在自己的构造末尾持有，作用域与 pin 都跟着装配体生灭。独立成类只是
- * 为了让这份状态有自己的文件与 Javadoc，不引入任何额外的抽象层。验证走 GameTest 车道
- * （{@code common/gametest/ArmsCoreGameTest.java}）：那里能拿到真的 {@link ArmsCore}，比测试替身更接近
- * 实际调用路径。
+ * <b>状态归谁所有。</b> 作用域栈、锚点与 pin 都是「一个装配体一份」的状态，与 {@code ArmsCore} 的
+ * 生命周期完全一致：本类由 {@link ArmsCore} 在自己的构造末尾持有，作用域与 pin 都跟着装配体生灭，
+ * 因此本类不引入额外的抽象层。
  *
  * @author Sweetzonzi
  */

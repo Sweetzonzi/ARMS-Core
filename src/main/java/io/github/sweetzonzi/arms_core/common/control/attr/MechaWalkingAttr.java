@@ -83,18 +83,13 @@ public final class MechaWalkingAttr {
     /** 重力加速度 (m/s²) */
     public static final float GRAVITY = 9.81f;
 
-    /**
-     * 素体裸足越障高度 (m)，{@code step_height_base}。
-     * <p>
-     * 0.6 的语义是「能上 0.5 m 半砖 / 地毯，上不了 1.0 m 完整方块」。越障由 Bullet 的
-     * `../Libbulletjme/src/main/native/bullet3/BulletDynamics/Character/btKinematicCharacterController.cpp#stepUp`
-     * 完成：先把胶囊抬高 {@code m_stepHeight} 再水平 sweep，因此可越障碍的高度上限就是本值。
-     * 上得去的上限还**略小于**本值：水平 sweep 会把形状 margin 临时加大
-     * {@code m_addedMargin = 0.02}（同文件的 {@code stepForwardAndStrafe}），等于把胶囊底面又压低 2 cm。
-     * 要上 1 格完整方块需靠跳跃，或腿部子系统提供的 {@code step_height_bonus}。
-     * <p>
-     * 回归测试：`MechaCharacterStepTest.java#climbsAHalfSlabStep` 与 `#isBlockedByAFullBlockStep`。
-     */
+     /**
+      * 素体裸足越障高度 (m)，{@code step_height_base}。
+      * <p>
+      * 0.6 的语义是「能上 0.5 m 半砖 / 地毯，上不了 1.0 m 完整方块」。控制器侧的
+      * {@code MechaCharacter.STEP_HEIGHT_BASE} 直接取本值，越障判决的落差上限就是它；腿部子系统
+      * 提供 {@code step_height_bonus} 时还得在那一侧加成。要上 1 格完整方块需靠跳跃。
+      */
     public static final float STEP_HEIGHT_BASE = 0.6f;
 
     /** 控制器-身体最大分离距离 (m)，{@code sep_max}——超过后触发 RAGDOLL */

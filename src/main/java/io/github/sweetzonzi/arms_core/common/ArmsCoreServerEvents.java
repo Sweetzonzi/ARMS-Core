@@ -235,8 +235,8 @@ public final class ArmsCoreServerEvents {
      * （{@code PhysicsLevel#requestStep} 在主线程 {@code LevelTickEvent.Pre} 发请求，物理线程随后
      * 跑完 {@code dynamicRepeat} 个子步），而本方法是同一 tick 的 {@code Post} 相位，此刻那一批
      * 子步可能刚起步、跑到一半、或已经跑完。直接读实时刚体就会按「本 tick 已经走了几个子步」取样，
-     * 于是相邻 tick 的位移在半个子步到一个半子步之间摆动：稳态行走时实测每 tick 位移的
-     * 变异系数 0.40、相邻 tick 的一阶自相关 0.27，而真实轨迹是 0.26 / 0.99。
+     * 于是相邻 tick 的位移在半个子步到一个半子步之间摆动：稳态行走时，每 tick 的位移量抖动得
+     * 比真实轨迹本身的变化还大。
      * 快照由 {@code requestStep} 在发请求之前写入（{@code stateOf(body).update()}），一批子步对应一份，
      * 因此它永远是「一个完整批次之后」的位姿，与物理线程自己看到的读数逐 tick 一致。
      * <p>
