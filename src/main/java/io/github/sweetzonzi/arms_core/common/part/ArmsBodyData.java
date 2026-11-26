@@ -78,8 +78,8 @@ public record ArmsBodyData(String name, UUID corePartId, List<AbstractPartData> 
             if (!bodyCore) return DataResult.error(() -> "核心必须指向成员集合中的 BodyPart");
             var occupied = new HashSet<Endpoint>();
             for (var edge : connections) {
-                var a = new Endpoint(UUID.fromString(edge.partUuidA), edge.subPartNameA, edge.advConnectorName);
-                var b = new Endpoint(UUID.fromString(edge.partUuidS), edge.subPartNameS, edge.simpleConnectorName);
+                var a = new Endpoint(edge.partUuidA, edge.subPartNameA, edge.advConnectorName);
+                var b = new Endpoint(edge.partUuidS, edge.subPartNameS, edge.simpleConnectorName);
                 if (a.part.equals(b.part) || !ids.contains(a.part) || !ids.contains(b.part)) {
                     return DataResult.error(() -> "连接必须指向两个不同的成员：" + edge);
                 }

@@ -110,7 +110,7 @@ public final class BodyPartGameTest {
             shin.setTransform(bent);
 
             // 混装存档由本端定义选择 Codec，同时保留普通部件的专用状态。
-            var armorType = PartFactory.resolve(false, ResourceLocation.parse("machine_max:2s38_addon_armor"));
+            var armorType = PartFactory.resolve(false, ResourceLocation.parse("2s38:2s38_addon_armor"));
             var armor = (RegularPart) PartFactory.create(armorType, "left_1", level, BodyPart.CONTEXT);
             armor.setMaterialProgress(2);
             source.addPart(armor);

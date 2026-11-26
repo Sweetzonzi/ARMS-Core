@@ -35,8 +35,8 @@ public record ArmsBodyAssembly(BodyPart core, List<AbstractPart<?>> parts, List<
     /** 真实外部边及其安装时参考系。客户端保留端点与参考系供展示使用。 */
     public record Link(AbstractConnector advanced, SimpleConnector simple, Transform frameA, Transform frameS) {
         public ConnectionData save() {
-            return new ConnectionData(advanced.subPart.part.uuid.toString(), advanced.subPart.name, advanced.name,
-                    new PosRot(frameA.clone()), simple.subPart.part.uuid.toString(), simple.subPart.name,
+            return new ConnectionData(advanced.subPart.part.uuid, advanced.subPart.name, advanced.name,
+                    new PosRot(frameA.clone()), simple.subPart.part.uuid, simple.subPart.name,
                     simple.name, new PosRot(frameS.clone()));
         }
 
@@ -107,8 +107,8 @@ public record ArmsBodyAssembly(BodyPart core, List<AbstractPart<?>> parts, List<
             var core = (BodyPart) members.get(data.corePartId());
             var links = new ArrayList<Link>();
             for (var saved : data.connections()) {
-                var a = resolve(members.get(UUID.fromString(saved.partUuidA)), saved.subPartNameA, saved.advConnectorName);
-                var b = resolve(members.get(UUID.fromString(saved.partUuidS)), saved.subPartNameS, saved.simpleConnectorName);
+                var a = resolve(members.get(saved.partUuidA), saved.subPartNameA, saved.advConnectorName);
+                var b = resolve(members.get(saved.partUuidS), saved.subPartNameS, saved.simpleConnectorName);
                 if (!(b instanceof SimpleConnector simple)) {
                     throw new IllegalArgumentException("保存连接的对接端必须是简单连接点：" + saved);
                 }

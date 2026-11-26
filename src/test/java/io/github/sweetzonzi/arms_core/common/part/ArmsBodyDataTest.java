@@ -1,7 +1,10 @@
 package io.github.sweetzonzi.arms_core.common.part;
 
 import com.google.gson.JsonParser;
+import com.jme3.math.Transform;
 import com.mojang.serialization.JsonOps;
+import io.github.sweetzonzi.machine_max.common.mech.vehicle.data.ConnectionData;
+import io.github.sweetzonzi.machine_max.util.data.PosRot;
 import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +32,24 @@ class ArmsBodyDataTest {
         assertTrue(new ArmsBodyData("", null, List.of(part(first))).validate().error().isPresent());
         assertTrue(new ArmsBodyData("", first, List.of()).validate().error().isPresent());
         assertTrue(ArmsBodyData.codec(false).parse(JsonOps.INSTANCE, JsonParser.parseString("{}")).error().isPresent());
+    }
+
+    @Test void connectionUuidRecordsRemainStringEncodedAndValidateAsMembers() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        var frame = new PosRot(new Transform());
+        var connection = new ConnectionData(first, "body", "advanced", frame,
+                second, "body", "simple", frame);
+        var body = new ArmsBodyData("sample", first, List.of(part(first), part(second)), List.of(connection));
+
+        assertTrue(body.validate().isSuccess());
+        var encoded = ConnectionData.CODEC.encodeStart(JsonOps.INSTANCE, connection).getOrThrow().getAsJsonObject();
+        assertTrue(encoded.getAsJsonPrimitive("partUuidA").isString());
+        assertTrue(encoded.getAsJsonPrimitive("partUuidS").isString());
+
+        var decoded = ConnectionData.CODEC.parse(JsonOps.INSTANCE, encoded).getOrThrow();
+        assertEquals(first, decoded.getPartUuidA());
+        assertEquals(second, decoded.getPartUuidS());
     }
 
     @Test void collisionModelIsOneBoneOneCubeWithoutUvOrTextureAssets() throws Exception {
