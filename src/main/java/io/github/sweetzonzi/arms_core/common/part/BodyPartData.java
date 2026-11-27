@@ -17,12 +17,13 @@ public final class BodyPartData extends AbstractPartData {
             Codec.STRING.fieldOf("variant").forGetter(data -> data.variant),
             Codec.FLOAT.optionalFieldOf("shared_durability_ratio", 1f).forGetter(data -> data.sharedDurabilityRatio),
             Codec.STRING.optionalFieldOf("texture_name", "default").forGetter(data -> data.textureName),
-            SubPartData.MAP_CODEC.fieldOf("sub_parts").forGetter(data -> data.subParts)
+            SubPartData.MAP_CODEC.fieldOf("sub_parts").forGetter(data -> data.subParts),
+            Codec.floatRange(0f, 1f).optionalFieldOf("staleness", 0f).forGetter(data -> data.staleness)
     ).apply(instance, BodyPartData::new));
 
     public BodyPartData(ResourceLocation id, String name, String uuid, String variant, float ratio,
-                        String texture, Map<String, SubPartData> subParts) {
-        super(id, name, uuid, variant, ratio, texture, Map.copyOf(subParts));
+                        String texture, Map<String, SubPartData> subParts, float staleness) {
+        super(id, name, uuid, variant, ratio, texture, Map.copyOf(subParts), staleness);
     }
 
     public BodyPartData(BodyPart part) { super(part); }

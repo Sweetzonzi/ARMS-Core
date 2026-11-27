@@ -361,7 +361,7 @@ public final class BodyPartGameTest {
             helper.assertTrue(Math.abs(skeleton.getSharedDurability() - skeleton.getSharedMaxDurability()) < 0.001f,
                     "Structure-only restore skips damage");
             BodyPartData incomplete = new BodyPartData(first.type.getRegistryKey(), first.name, first.uuid.toString(),
-                    "default", 1f, "default", Map.of());
+                    "default", 1f, "default", Map.of(), 0f);
             var previous = restored.getPartMap();
             boolean rejected = false;
             try {

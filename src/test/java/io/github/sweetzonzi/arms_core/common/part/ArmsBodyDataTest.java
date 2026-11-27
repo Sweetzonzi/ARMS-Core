@@ -19,7 +19,20 @@ import static org.junit.jupiter.api.Assertions.*;
 class ArmsBodyDataTest {
     private static BodyPartData part(UUID uuid) {
         return new BodyPartData(ResourceLocation.parse("arms_core:minimal_body"), "body", uuid.toString(),
-                "default", 0.5f, "default", Map.of());
+                "default", 0.5f, "default", Map.of(), 0f);
+    }
+
+    @Test void bodyPartStalenessRoundTripsAndDefaultsForLegacyData() {
+        var source = new BodyPartData(ResourceLocation.parse("arms_core:minimal_body"), "body",
+                UUID.randomUUID().toString(), "default", 1f, "default", Map.of(), 0.35f);
+        var encoded = BodyPartData.CODEC.encodeStart(JsonOps.INSTANCE, source).getOrThrow().getAsJsonObject();
+        var decoded = BodyPartData.CODEC.parse(JsonOps.INSTANCE, encoded).getOrThrow();
+        assertEquals(0.35f, decoded.staleness, 0.0001f);
+
+        var legacy = encoded.deepCopy();
+        legacy.remove("staleness");
+        var legacyDecoded = BodyPartData.CODEC.parse(JsonOps.INSTANCE, legacy).getOrThrow();
+        assertEquals(0f, legacyDecoded.staleness, 0.0001f);
     }
 
     @Test void compositionRejectsAmbiguousIdentities() {
